@@ -72,7 +72,7 @@ Without a role, the briefing omits the role parts and the next package and says 
 - **MCP tool `session_start`** (no parameters): `structuredContent` holds the structured briefing; the text content holds the Markdown. Part of the clean-room tool set.
 - **MCP prompt `start`:** the server advertises the `prompts` capability with one prompt, `start`, whose single user message is the Markdown briefing followed by "Begin with the claimed or next work package." Clients that map MCP prompts to commands (Claude Code: `/mcp__airlock__start`) make the kickoff a single command.
 
-With this, the agent-facing instruction files of a project (`CLAUDE.md`, `AGENTS.md`, …) need one line: *"Coordinate through Airlock: call `session_start` (or run `airlock start`) before anything else."*
+With this, the agent-facing instruction files of a project (`CLAUDE.md`, `AGENTS.md`, …) no longer need Airlock *setup* knowledge — MCP configuration per role, fixed session ids, `AIRLOCK_SESSION`, kickoff prompts. They keep the project's own rules (process, clean-room boundaries, conventions) and gain a short Airlock section telling agents to start with the briefing and follow the claim/heartbeat/complete workflow; the quickstart provides a ready-made one. Role-specific rules and reading lists move into the role configuration (§4), so the briefing can point each session at them.
 
 ---
 

@@ -101,7 +101,46 @@ airlock setup dsh > ~/.dsh/airlock/my-project-engine.yml   # patch overlay; star
 
 Per-directory harnesses (Claude Code) only need `airlock mcp` — role and session come from the binding. Global configurations carry the worktree with `-C <dir>`. For a clean-room role the agent only sees the tools it needs and only its own role's tasks and questions (Spec 03 §2.1).
 
-The agent's first action is the briefing: the MCP tool `session_start`, the MCP prompt `start` (in Claude Code: `/mcp__airlock__start`), or `airlock start`. One line in `CLAUDE.md` / `AGENTS.md` is enough: *"Coordinate through Airlock: call `session_start` (or run `airlock start`) before anything else."*
+The agent's first action is the briefing: the MCP tool `session_start`, the MCP prompt `start` (in Claude Code: `/mcp__airlock__start`), or `airlock start`.
+
+### Instructing agents
+
+Your project's instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, …) keep everything that describes *the project*: its process, clean-room boundaries, conventions, and documentation map. What they no longer need is Airlock *setup* knowledge — MCP configuration per role, fixed session ids, `AIRLOCK_SESSION`, or kickoff prompts; bindings and the briefing take care of that. Put role-specific rules and reading lists into the roles, so the briefing shows them:
+
+```bash
+airlock role set engine --instructions "Never read decompiled output; work only from docs/spec." \
+  --read CLAUDE.md --read docs/PROCESS.md
+```
+
+Then add this section to the instruction files (adjust the paths in the last bullet to your exports):
+
+```markdown
+## Coordination (Airlock)
+
+Work is coordinated through Airlock; this checkout is bound to your role and session.
+
+- **Start every session with the briefing:** call the MCP tool `session_start`
+  (or run `airlock start`). It tells you your role, the rules and files to read,
+  the task you already hold, or the next work package.
+- **One task at a time:** claim it before you start (`task_claim` /
+  `airlock task claim <id>`). Work only on what its *Do* says and touch only
+  the files it lists.
+- **Keep your lease alive:** during long work, renew it with `task_heartbeat`
+  (`airlock task heartbeat <id>`); an expired lease lets another session take the task.
+- **Finish only when *Verify* passes:** complete with `task_complete`
+  (`airlock task done <id> --notes "…"`) and say in the notes what you changed
+  and how you verified it. If you cannot finish, release the task
+  (`task_release` / `airlock task release <id>`) and explain why in a question.
+- **Ask instead of guessing:** if a specification is unclear or incomplete, ask
+  with `question_ask` (`airlock question ask "…" --topic <spec>`). Answers to your
+  questions appear in the next briefing.
+- **Do not change the setup:** never run `airlock use`, `airlock init`, or
+  `airlock import`, and never edit `.airlock` or `airlock.toml`.
+- **Generated files are read-only:** `docs/PLAN.md`, `docs/spec/QUESTIONS.md`, and
+  `docs/.airlock-state.json` are written by `airlock sync`; never edit them by hand.
+```
+
+The section is the same for every role; what differs per role comes from the briefing.
 
 ---
 
