@@ -52,7 +52,7 @@ The hub is local. v0.x supports any number of sessions and worktrees **on one ma
 The hub database is the single source of truth for live state. Exported files are regenerable artifacts committed for human review, audit, and handover.
 
 ### 3.1 Export Artifacts
-One `airlock sync` run writes, relative to the invoking project root (paths configurable in `ExportConfig`):
+One `airlock sync` run writes, relative to the invoking project root (paths configurable in `ExportConfig`; they must be relative, must not leave the root, and must be distinct — compared case-insensitively — so no view can overwrite the snapshot):
 
 | Artifact | Default path | Role |
 |---|---|---|
@@ -98,12 +98,12 @@ Re-running `airlock sync` on unchanged state must produce a zero diff:
 
 `tests/snapshot.rs` pins the exact bytes with a golden file; any change to it is a format change and requires bumping `format_version`.
 
-The Markdown views follow the same rules (sorted, no timestamps of the export run itself).
+The Markdown views (`src/views.rs`) are rendered from the snapshot itself, not from live state, so they follow the same rules: sorted, no timestamps, and unchanged by claims (a claimed task appears as ready). Files whose content is unchanged are not rewritten; changed files are written atomically (temp file, `fsync`, rename). Single-line fields (ids, titles, roles, topics, session ids) have their whitespace collapsed in headings and table cells, so input with newlines cannot break the document structure.
 
 ### 3.4 Import (`airlock import`)
 - The JSON snapshot is the only import source. Markdown files are views and are never parsed to reconstruct state.
 - Before writing, import checks: `format_version` is supported, `project_id` matches the resolved project, roles referenced by tasks exist, and the dependency graph is valid (unique ids, known prerequisites, no cycles).
-- Import replaces tasks, questions, and the roles in `project.json` in one operation and requires confirmation (`--yes` or interactive prompt). The question id sequence continues after the highest imported id.
+- Import replaces tasks and questions and records the snapshot's hash as known in one transaction, then writes the roles to `project.json`. If that last write fails, the data is already imported; re-running the import completes it. Import requires confirmation (`--yes` or interactive prompt). Question ids are kept; new questions continue after the highest id this hub ever used or imported, so ids are never reused.
 - Since snapshots contain no claims, all imported tasks are unclaimed.
 
 ### 3.5 Foreign-Change Guard

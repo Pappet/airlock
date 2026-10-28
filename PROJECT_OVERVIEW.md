@@ -13,7 +13,7 @@
 - **Language:** Rust (edition 2024, MSRV 1.85)
 - **Interfaces:** CLI (`clap`); planned: MCP over stdio, local web server (`axum`)
 - **Persistence:** one SQLite database (WAL) per project in the hub directory (`~/.local/state/airlock/projects/<uuid>/` on Linux, override with `AIRLOCK_HOME`), referenced from the repository by a `.airlock` marker file
-- **Status:** Phase 1 (hub store and CLI) complete — see [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md)
+- **Status:** Phase 1 (hub store and CLI) complete, Phase 2 (sync and import) in progress — see [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md)
 - **License:** MIT
 
 ---
@@ -97,14 +97,17 @@ graph TD
 - [`src/store.rs`](src/store.rs): SQLite store — schema, WAL setup, immediate write transactions, lazy lease expiry, task and question transitions.
 - [`src/core.rs`](src/core.rs): Domain model — `Task`, `TaskState`, derived `TaskStatus`, leases, `Question`, dependency graph validation.
 - [`src/config.rs`](src/config.rs): Hub-side project configuration (`ProjectConfig`, `RoleConfig`, `ExportConfig`).
-- [`src/snapshot.rs`](src/snapshot.rs): Canonical JSON snapshot model, serializer, and import validation.
+- [`src/snapshot.rs`](src/snapshot.rs): Canonical JSON snapshot model, serializer, and graph validation.
+- [`src/sync.rs`](src/sync.rs): `sync` (exports, foreign-change guard, atomic writes) and `import` (checks, replace-all, role update).
+- [`src/views.rs`](src/views.rs): `PLAN.md` and `QUESTIONS.md` rendered from a snapshot.
 
 ### `tests/`
 - [`tests/model.rs`](tests/model.rs): Derived status, leases, dependents, graph validation, config defaults.
 - [`tests/snapshot.rs`](tests/snapshot.rs): Golden-file test pinning the exact snapshot bytes; session state exclusion; round trip.
 - [`tests/cli.rs`](tests/cli.rs): Documented invocations parse; clap definition consistency.
 - [`tests/store.rs`](tests/store.rs): Store transitions, lease expiry, validation, persistence, concurrent claims across connections.
-- [`tests/e2e.rs`](tests/e2e.rs): The binary against a temporary hub — init and marker adoption, project resolution across worktrees, JSON output, concurrent claims across processes.
+- [`tests/e2e.rs`](tests/e2e.rs): The binary against a temporary hub — init and marker adoption, project resolution across worktrees, JSON output, concurrent claims across processes, sync stability and guard, handover between two hubs, import validation.
+- [`tests/views.rs`](tests/views.rs): Exact layout of the generated views.
 - [`tests/common/mod.rs`](tests/common/mod.rs): Shared fixtures.
 
 ### `docs/`
@@ -128,6 +131,7 @@ All dependencies are locked in [`Cargo.lock`](Cargo.lock).
 | `rusqlite` (0.40, `bundled`) | Hub store; bundled SQLite avoids a system library dependency |
 | `dirs` (7.0) | Platform state directory for the hub |
 | `uuid` (1.26, `v4`) | Project ids |
+| `sha2` (0.11) | SHA-256 of snapshots for the foreign-change guard |
 | `tempfile` (3, dev) | Temporary hubs and databases in tests |
 
 Planned: `axum` and `rust-embed` (Phase 4).

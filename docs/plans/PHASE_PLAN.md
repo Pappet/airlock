@@ -20,10 +20,10 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 
 ---
 
-## Phase 2: Sync & Import (Next)
+## Phase 2: Sync & Import (Current)
 - [x] Canonical snapshot model and serializer with golden-file test (`src/snapshot.rs`).
-- [ ] `airlock sync`: snapshot plus `PLAN.md` / `QUESTIONS.md` views, foreign-change guard (Spec 05 §3.5).
-- [ ] `airlock import` with validation and confirmation.
+- [x] `airlock sync`: snapshot plus `PLAN.md` / `QUESTIONS.md` views, foreign-change guard (Spec 05 §3.5).
+- [x] `airlock import` with validation and confirmation.
 - [ ] Legacy `PLAN.md` migration (`airlock import-plan`; one-time, not a round-trip path).
 
 ---

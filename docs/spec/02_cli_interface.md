@@ -107,4 +107,4 @@ Serves the dashboard and REST/SSE API on `127.0.0.1:<port>` (default 3000; Spec 
 Writes the canonical snapshot and Markdown views into the project root (Spec 05 §3). Refuses to overwrite a snapshot changed outside this hub unless `--force` is given (Spec 05 §3.5).
 
 #### `airlock import [--from <path>] [--yes]`
-Replaces the project's tasks, questions, and roles with a snapshot (default: the configured `state_file` in the project root). Validates before writing; asks for confirmation unless `--yes`. Markdown files are never parsed for reconstruction.
+Replaces the project's tasks, questions, and roles with a snapshot (default: the configured `state_file` in the project root). Validates before writing (Spec 05 §3.4). Asks for confirmation on a terminal unless `--yes` is given; without a terminal, `--yes` is required. Markdown files are never parsed for reconstruction.

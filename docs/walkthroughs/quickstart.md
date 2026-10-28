@@ -1,6 +1,6 @@
 # Quickstart Guide: Airlock
 
-> **Status:** Sections 1–5 work today. `airlock sync` and `airlock import` (section 6 and the multi-machine note in section 2) arrive in Phase 2 of the [phase plan](../plans/PHASE_PLAN.md).
+This walkthrough sets up Airlock in a project and runs through the daily workflow.
 
 ---
 
