@@ -460,3 +460,21 @@ fn sync_needs_a_root_and_safe_export_paths() {
     assert!(env.fail(&project, &["sync"]).contains("must be relative"));
     assert!(!env.work.join("escaped.json").exists());
 }
+
+#[test]
+fn sync_refuses_colliding_export_paths() {
+    let env = Env::new();
+    let project = project_with_tasks(&env);
+    let id = env.json(&project, &["init"])["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let config_path = env.hub.join("projects").join(&id).join("project.json");
+    let config = read(&config_path).replace("\"docs/PLAN.md\"", "\"docs/./.AIRLOCK-STATE.json\"");
+    std::fs::write(&config_path, config).unwrap();
+    assert!(
+        env.fail(&project, &["sync"])
+            .contains("more than one artifact")
+    );
+    assert!(!project.join("docs").exists(), "nothing written");
+}

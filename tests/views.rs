@@ -99,3 +99,23 @@ fn empty_views() {
     assert!(views::plan(&empty).ends_with("# Plan\n\n_No tasks._\n"));
     assert!(views::questions(&empty).ends_with("_No questions._\n"));
 }
+
+#[test]
+fn single_line_fields_cannot_break_the_structure() {
+    let mut t = task("E-1", TaskState::Open, &[]);
+    t.title = "Two\nlines  and\ttabs".into();
+    t.role = "a|b\nc".into();
+    let mut q = question(1);
+    q.topic = "melee\n# injected".into();
+    q.asked_by = "engine\n- fake".into();
+    let snapshot = Snapshot::new("p", &ProjectConfig::default(), &[t], &[q]);
+
+    let plan = views::plan(&snapshot);
+    assert!(plan.contains("\n### E-1 — Two lines and tabs\n"));
+    assert!(plan.contains("\n| a\\|b c | 0 | 1 | 0 | 0 |\n"));
+    assert!(plan.contains("\n## a|b c\n"));
+
+    let questions = views::questions(&snapshot);
+    assert!(questions.contains("\n## melee # injected\n"));
+    assert!(questions.contains("- **Asked by:** engine - fake\n"));
+}

@@ -445,11 +445,16 @@ impl Store {
         Ok(())
     }
 
-    /// Replaces all tasks and questions with the snapshot's content in one
-    /// transaction. The caller validates the snapshot first. Question ids are
-    /// kept; new questions continue after the highest id this store ever used.
-    pub fn replace_all(&mut self, snapshot: &Snapshot, now: i64) -> Result<()> {
+    /// Replaces all tasks and questions with the snapshot's content and records
+    /// the snapshot's hash (`sha256`) as known, in one transaction. The caller
+    /// validates the snapshot first. Question ids are kept; new questions
+    /// continue after the highest id this store ever used.
+    pub fn replace_all(&mut self, snapshot: &Snapshot, sha256: &str, now: i64) -> Result<()> {
         let tx = self.write(now)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO exports (sha256, recorded_at) VALUES (?1, ?2)",
+            params![sha256, now],
+        )?;
         tx.execute_batch("DELETE FROM task_deps; DELETE FROM tasks; DELETE FROM questions;")?;
         for t in &snapshot.tasks {
             let state = match t.state {

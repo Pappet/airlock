@@ -266,7 +266,8 @@ fn replace_all_swaps_state_and_never_reuses_question_ids() {
         &source.questions().unwrap(),
     );
 
-    store.replace_all(&snapshot, 10).unwrap();
+    store.replace_all(&snapshot, "imported-hash", 10).unwrap();
+    assert!(store.is_known_export("imported-hash").unwrap());
     let tasks = store.tasks(10).unwrap();
     assert_eq!(
         tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),

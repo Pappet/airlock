@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Outcome of one `sync` run, as paths relative to the project root.
@@ -39,6 +39,7 @@ pub fn sync(
     );
     let json = snapshot.to_canonical_json()?;
     let export = &project.config.export;
+    check_distinct(export)?;
     let state_path = export_path(root, &export.state_file)?;
 
     match fs::read(&state_path) {
@@ -132,11 +133,12 @@ pub fn import(
     now: i64,
 ) -> Result<()> {
     check_import(&loaded.snapshot, &project.id)?;
-    store.replace_all(&loaded.snapshot, now)?;
+    store.replace_all(&loaded.snapshot, &loaded.sha256, now)?;
+    // project.json is a separate file; if this write fails, the data is
+    // already imported and re-running the import completes the roles.
     let mut config = project.config.clone();
     config.roles = loaded.snapshot.roles.clone();
-    hub.save_config(&project.id, &config)?;
-    store.record_export(&loaded.sha256, now)
+    hub.save_config(&project.id, &config)
 }
 
 /// The configured export path of the snapshot, inside `root`.
@@ -153,6 +155,27 @@ fn artifacts(snapshot: &Snapshot, export: &ExportConfig, json: String) -> Vec<(S
         files.push((questions.clone(), views::questions(snapshot)));
     }
     files
+}
+
+/// Refuses export configurations in which two artifacts share a path, which
+/// would let a view overwrite the snapshot. Compared case-insensitively, as
+/// on macOS and Windows file systems.
+fn check_distinct(export: &ExportConfig) -> Result<()> {
+    let paths = std::iter::once(&export.state_file)
+        .chain(export.plan_file.as_ref())
+        .chain(export.questions_file.as_ref());
+    let mut seen = HashSet::new();
+    for rel in paths {
+        let key: PathBuf = Path::new(&rel.to_lowercase())
+            .components()
+            .filter(|c| !matches!(c, Component::CurDir))
+            .collect();
+        ensure!(
+            seen.insert(key),
+            "export path `{rel}` is configured for more than one artifact"
+        );
+    }
+    Ok(())
 }
 
 /// Joins a configured relative path onto `root`, refusing absolute paths and `..`.
@@ -179,7 +202,10 @@ fn write_atomic(path: &Path, content: &str) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".airlock-tmp");
     let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
+    let mut file = fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    file.write_all(content.as_bytes())
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
 }
 

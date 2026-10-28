@@ -40,7 +40,8 @@ pub fn plan(snapshot: &Snapshot) -> String {
         let count = |s: TaskStatus| tasks.iter().filter(|(_, status)| *status == s).count();
         let _ = writeln!(
             out,
-            "| {role} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} |",
+            inline(role).replace('|', "\\|"),
             count(TaskStatus::Blocked),
             count(TaskStatus::Ready),
             count(TaskStatus::InReview),
@@ -49,9 +50,14 @@ pub fn plan(snapshot: &Snapshot) -> String {
     }
 
     for (role, tasks) in &by_role {
-        let _ = write!(out, "\n## {role}\n");
+        let _ = write!(out, "\n## {}\n", inline(role));
         for (task, status) in tasks {
-            let _ = write!(out, "\n### {} — {}\n\n", task.id, task.title);
+            let _ = write!(
+                out,
+                "\n### {} — {}\n\n",
+                inline(&task.id),
+                inline(&task.title)
+            );
             let _ = writeln!(
                 out,
                 "- **Status:** {} · **Priority:** {}",
@@ -93,13 +99,13 @@ pub fn questions(snapshot: &Snapshot) -> String {
     }
 
     for (topic, questions) in &by_topic {
-        let _ = write!(out, "\n## {topic}\n");
+        let _ = write!(out, "\n## {}\n", inline(topic));
         for q in questions {
             let _ = write!(out, "\n### #{} · {}\n\n", q.id, q.status.as_str());
-            let _ = writeln!(out, "- **Asked by:** {}", q.asked_by);
+            let _ = writeln!(out, "- **Asked by:** {}", inline(&q.asked_by));
             let _ = writeln!(out, "- **Question:** {}", item_text(&q.question));
             if let Some(answer) = &q.answer {
-                let by = q.answered_by.as_deref().unwrap_or("unknown");
+                let by = inline(q.answered_by.as_deref().unwrap_or("unknown"));
                 let _ = writeln!(out, "- **Answer** ({by}): {}", item_text(answer));
             }
             if let Some(spec) = &q.spec_file {
@@ -122,6 +128,12 @@ fn status(task: &TaskRecord, done: &HashSet<&str>) -> TaskStatus {
         TaskState::InReview => TaskStatus::InReview,
         TaskState::Done => TaskStatus::Done,
     }
+}
+
+/// Text that must stay on one line (headings, table cells, names): all
+/// whitespace runs, including newlines, collapse to a single space.
+fn inline(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Text inside a list item: continuation lines are indented to stay in the item.
