@@ -126,3 +126,29 @@ fn config_fills_defaults_for_missing_fields() {
     assert!(cfg.roles.is_empty());
     assert_eq!(cfg.export, ProjectConfig::default().export);
 }
+
+#[test]
+fn lease_minutes_left_rounds_up() {
+    let mut t = task("E-1", TaskState::InProgress, &[]);
+    assert_eq!(t.lease_minutes_left(0), None);
+    t.lease_expires_at = Some(600);
+    assert_eq!(t.lease_minutes_left(0), Some(10));
+    assert_eq!(t.lease_minutes_left(1), Some(10));
+    assert_eq!(t.lease_minutes_left(541), Some(1));
+    assert_eq!(t.lease_minutes_left(700), Some(0));
+}
+
+#[test]
+fn project_ids_must_be_canonical_uuids() {
+    use airlock::hub::is_project_id;
+    assert!(is_project_id("11111111-2222-4333-8444-555555555555"));
+    for bad in [
+        "../../escaped",
+        "",
+        "11111111222243338444555555555555",
+        "11111111-2222-4333-8444-55555555555A",
+        "{11111111-2222-4333-8444-555555555555}",
+    ] {
+        assert!(!is_project_id(bad), "{bad} accepted");
+    }
+}

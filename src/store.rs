@@ -510,13 +510,8 @@ fn ensure_holder(task: &Task, session: &str, now: i64) -> Result<()> {
 }
 
 fn lease_holder(task: &Task, now: i64) -> String {
-    match (&task.claimed_by, task.lease_expires_at) {
-        (Some(session), Some(until)) => {
-            format!(
-                "{session} (lease expires in {} min)",
-                ((until - now).max(0) + 59) / 60
-            )
-        }
+    match (&task.claimed_by, task.lease_minutes_left(now)) {
+        (Some(session), Some(minutes)) => format!("{session} (lease expires in {minutes} min)"),
         (Some(session), None) => session.clone(),
         _ => "nobody".to_string(),
     }

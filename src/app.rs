@@ -93,7 +93,7 @@ fn init(hub: &Hub, cwd: &Path, name: Option<String>, template: &str, out: &Outpu
         ..ProjectConfig::default()
     };
     hub.save_config(&id, &config)?;
-    Store::open(&hub.database_path(&id))?;
+    Store::open(&hub.database_path(&id)?)?;
     if !adopted {
         Marker {
             project_id: id.clone(),
@@ -306,7 +306,7 @@ fn print_lease(out: &Output, task: &Task, verb: &str, now: i64) -> Result<()> {
     out.print(
         &json!({ "task_id": task.id, "lease_expires_at": until }),
         || {
-            let minutes = (until - now).max(0) / 60;
+            let minutes = task.lease_minutes_left(now).unwrap_or(0);
             format!(
                 "{verb} {} for {} (lease: {minutes} min)",
                 task.id,

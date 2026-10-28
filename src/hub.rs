@@ -1,7 +1,7 @@
 //! Hub directory, project registry, and `.airlock` marker resolution (Spec 01 §3.1, Spec 02 §2.2).
 
 use crate::config::ProjectConfig;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,11 @@ pub const MARKER_FILE: &str = ".airlock";
 const PROJECTS_DIR: &str = "projects";
 const CONFIG_FILE: &str = "project.json";
 const DATABASE_FILE: &str = "airlock.db";
+
+/// Whether `id` is a project id: a UUID in canonical lowercase hyphenated form.
+pub fn is_project_id(id: &str) -> bool {
+    uuid::Uuid::try_parse(id).is_ok_and(|uuid| uuid.hyphenated().to_string() == id)
+}
 
 /// Contents of the `.airlock` marker file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,8 +33,16 @@ impl Marker {
         }
         let text =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        let marker =
+        let marker: Self =
             serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        // The marker comes from the repository, so its id is untrusted input
+        // that ends up in hub paths.
+        ensure!(
+            is_project_id(&marker.project_id),
+            "invalid project id `{}` in {}: expected a lowercase hyphenated UUID",
+            marker.project_id,
+            path.display()
+        );
         Ok(Some(marker))
     }
 
@@ -89,20 +102,26 @@ impl Hub {
         &self.root
     }
 
-    fn project_dir(&self, id: &str) -> PathBuf {
-        self.root.join(PROJECTS_DIR).join(id)
+    /// The project's directory; rejects anything but a canonical UUID so ids can never escape the hub.
+    fn project_dir(&self, id: &str) -> Result<PathBuf> {
+        ensure!(
+            is_project_id(id),
+            "invalid project id `{id}`: expected a lowercase hyphenated UUID"
+        );
+        Ok(self.root.join(PROJECTS_DIR).join(id))
     }
 
-    pub fn database_path(&self, id: &str) -> PathBuf {
-        self.project_dir(id).join(DATABASE_FILE)
+    pub fn database_path(&self, id: &str) -> Result<PathBuf> {
+        Ok(self.project_dir(id)?.join(DATABASE_FILE))
     }
 
     pub fn contains(&self, id: &str) -> bool {
-        self.project_dir(id).join(CONFIG_FILE).is_file()
+        self.project_dir(id)
+            .is_ok_and(|dir| dir.join(CONFIG_FILE).is_file())
     }
 
     pub fn load_config(&self, id: &str) -> Result<ProjectConfig> {
-        let path = self.project_dir(id).join(CONFIG_FILE);
+        let path = self.project_dir(id)?.join(CONFIG_FILE);
         let text =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
@@ -110,7 +129,7 @@ impl Hub {
 
     /// Writes `project.json` atomically (temp file + rename).
     pub fn save_config(&self, id: &str, config: &ProjectConfig) -> Result<()> {
-        let dir = self.project_dir(id);
+        let dir = self.project_dir(id)?;
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let mut json = serde_json::to_string_pretty(config)?;
         json.push('\n');
@@ -193,7 +212,7 @@ impl Hub {
         };
         Ok(Project {
             config: self.load_config(&id)?,
-            database: self.database_path(&id),
+            database: self.database_path(&id)?,
             id,
             root,
         })

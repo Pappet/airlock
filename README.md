@@ -78,7 +78,7 @@ cargo fmt --check
 1. Develop on a feature branch (`feat/...`, `fix/...`) and merge into `main` via pull request. No direct commits to `main`.
 2. Behavioral changes update the affected spec in `docs/spec/` in the same change; architectural changes also update `README.md` and `PROJECT_OVERVIEW.md`.
 3. Dependencies are locked in `Cargo.lock`.
-4. `cargo test`, `cargo clippy`, and `cargo fmt --check` pass before a PR.
+4. `cargo test`, `cargo clippy`, and `cargo fmt --check` pass before a PR; CI (`.github/workflows/ci.yml`) enforces this on Linux, macOS, Windows, and the MSRV.
 
 ---
 

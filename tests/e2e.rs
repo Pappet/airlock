@@ -238,3 +238,27 @@ fn concurrent_claims_from_separate_processes_have_one_winner() {
         );
     }
 }
+
+#[test]
+fn marker_ids_cannot_escape_the_hub() {
+    let env = Env::new();
+    let repo = env.dir("repo");
+    std::fs::write(repo.join(".airlock"), r#"{"project_id": "../../escaped"}"#).unwrap();
+
+    assert!(
+        env.fail(&repo, &["init", "--name", "x"])
+            .contains("invalid project id")
+    );
+    assert!(
+        env.fail(&repo, &["task", "list"])
+            .contains("invalid project id")
+    );
+    assert!(!env.work.parent().unwrap().join("escaped").exists());
+    assert!(!env.hub.exists(), "nothing written to the hub");
+
+    let outside = env.dir("outside");
+    assert!(
+        env.fail(&outside, &["--project", "../repo", "task", "list"])
+            .contains("no project")
+    );
+}

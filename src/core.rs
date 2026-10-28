@@ -108,6 +108,12 @@ impl Task {
         self.state == TaskState::InProgress && self.lease_expires_at.is_some_and(|t| t <= now)
     }
 
+    /// Whole minutes left on the lease at `now`, rounded up; `None` without a lease.
+    pub fn lease_minutes_left(&self, now: i64) -> Option<i64> {
+        self.lease_expires_at
+            .map(|until| ((until - now).max(0) + 59) / 60)
+    }
+
     /// Derives the effective status. `is_done` reports whether the task with
     /// the given id is `Done`; unknown ids must report `false`.
     pub fn status(&self, is_done: impl Fn(&str) -> bool) -> TaskStatus {
