@@ -206,6 +206,26 @@ fn protocol_errors_use_json_rpc_codes() {
 }
 
 #[test]
+fn malformed_requests_are_answered_but_client_responses_are_not() {
+    let env = Env::new();
+    let s = env.session(
+        &[],
+        &[
+            json!({ "jsonrpc": "2.0", "id": 1 }).to_string(),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": 42 }).to_string(),
+            json!({ "jsonrpc": "2.0", "id": 3, "result": {} }).to_string(),
+            json!({ "jsonrpc": "2.0", "id": 4, "error": { "code": 1, "message": "x" } })
+                .to_string(),
+            request(5, "ping", json!({})),
+        ],
+    );
+    assert_eq!(s.get(1)["error"]["code"], -32600);
+    assert_eq!(s.get(2)["error"]["code"], -32600);
+    assert_eq!(s.count, 3, "responses 3 and 4 are not answered");
+    assert_eq!(s.get(5)["result"], json!({}));
+}
+
+#[test]
 fn unbound_session_runs_the_full_workflow() {
     let env = Env::new();
     let s = env.session(
@@ -301,8 +321,14 @@ fn clean_room_session_gets_a_restricted_tool_set() {
     );
     assert_eq!(s.ok(2)["task"]["id"], "E-1", "role filled from the binding");
     assert!(s.tool_error(3).contains("bound to role `engine`"));
-    assert!(s.tool_error(4).contains("belongs to role `spec`"));
-    assert!(s.tool_error(5).contains("belongs to role `spec`"));
+    for id in [4, 5] {
+        let error = s.tool_error(id);
+        assert!(error.contains("not available to role `engine`"), "{error}");
+        assert!(
+            !error.contains("spec"),
+            "foreign role not revealed: {error}"
+        );
+    }
     for id in [6, 7] {
         assert_eq!(
             s.get(id)["error"]["code"],

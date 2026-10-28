@@ -21,8 +21,9 @@ Example client configuration (Claude Code `.mcp.json`):
 
 - stdio transport: one JSON-RPC 2.0 message per line on stdin/stdout. stdout carries nothing but protocol messages; the startup line (project, session, role) and diagnostics go to stderr. The server exits when stdin closes.
 - Protocol revisions `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`. `initialize` echoes the client's requested revision if supported, otherwise offers the newest. The result carries `capabilities.tools`, `serverInfo`, and `instructions` describing the claim/heartbeat/complete workflow.
-- Methods: `initialize`, `ping`, `tools/list`, `tools/call`. Notifications (e.g. `notifications/initialized`) get no response. JSON-RPC batches are not supported.
-- Errors: unparsable input → `-32700`; a non-object message → `-32600`; unknown method → `-32601`; unknown or hidden tool, or non-object `arguments` → `-32602`.
+- Methods: `initialize`, `ping`, `tools/list`, `tools/call`. Notifications (e.g. `notifications/initialized`) get no response, and neither do responses sent by the client (the server issues no requests). JSON-RPC batches are not supported.
+- The server does not track the lifecycle: calls before `initialize` are served as well. Clients are expected to initialize first; the leniency only keeps local tooling simple.
+- Errors: unparsable input → `-32700`; a non-object message, or a message with an `id` but without a string `method` that is not a response → `-32600`; unknown method → `-32601`; unknown or hidden tool, or non-object `arguments` → `-32602`.
 
 ---
 
@@ -41,7 +42,7 @@ If the bound role has `clean_room: true` in the project config, the server expos
 
 `task_next`, `task_get`, `task_claim`, `task_heartbeat`, `task_release`, `task_complete`, `question_ask`, `question_list`
 
-restricted to the bound role's tasks (including `task_get`) and the session's own questions (`question_list`). `task_create`, `question_answer`, `question_resolve`, and `doc_sync` are not listed at all. This keeps an agent from accidentally answering its own questions or browsing other roles' work; it is a guardrail, not a security boundary (Spec 05 §4).
+restricted to the bound role's tasks (including `task_get`) and the session's own questions (`question_list`). `task_create`, `question_answer`, `question_resolve`, and `doc_sync` are not listed at all. This keeps an agent from accidentally answering its own questions or browsing other roles' work; it is a guardrail, not a security boundary (Spec 05 §4). Task ids and role names are coordination metadata, not material from the analysis side, so naming them would be harmless; clean-room errors nevertheless name only the session's own role ("task `L-1` is not available to role `engine`"), keeping the session's view limited to its own work.
 
 Without `--role`, all tools are exposed and `role` parameters are required where listed.
 

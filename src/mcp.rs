@@ -89,10 +89,17 @@ impl Server {
                 "expected a single JSON-RPC object",
             ));
         };
-        // Messages without a method are responses; this server sends no requests.
-        let method = message.get("method")?.as_str()?;
-        // Requests carry an id; notifications (e.g. `notifications/initialized`) get no response.
-        let id = message.get("id")?.clone();
+        let id = message.get("id").cloned();
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            // Responses (result or error) answer requests; this server sends none, so they are
+            // ignored. Anything else with an id is a malformed request and must be answered.
+            let is_response = message.contains_key("result") || message.contains_key("error");
+            return id
+                .filter(|_| !is_response)
+                .map(|id| error_response(id, INVALID_REQUEST, "missing or non-string `method`"));
+        };
+        // Notifications (e.g. `notifications/initialized`) carry no id and get no response.
+        let id = id?;
         let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
 
         let result = match method {
@@ -346,17 +353,20 @@ impl Server {
         }
     }
 
-    /// Bound sessions work only on tasks of their own role.
+    /// Bound sessions work only on tasks of their own role. Clean-room
+    /// sessions are not told which role a foreign task belongs to.
     fn ensure_own_role(&self, task: &Task) -> Result<()> {
-        if let Some(role) = &self.role {
-            ensure!(
-                task.role == *role,
+        match &self.role {
+            Some(role) if task.role != *role && self.clean_room() => {
+                bail!("task `{}` is not available to role `{role}`", task.id)
+            }
+            Some(role) if task.role != *role => bail!(
                 "task `{}` belongs to role `{}`; this server is bound to `{role}`",
                 task.id,
                 task.role
-            );
+            ),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
