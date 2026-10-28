@@ -1,13 +1,13 @@
 # Airlock Specifications
 
-This directory contains the behavioral and architectural specifications for **Airlock**, the universal multi-agent workflow coordinator and task management hub.
+Behavioral and architectural specifications for **Airlock**. Where a spec and the code disagree, the spec describes the intended behavior and the code is the bug — unless the spec is updated in the same change.
 
 ## Specification Index
 
 | Document | Topic | Description |
 |---|---|---|
-| [01_architecture_and_data_model.md](file:///home/peter/Projects/airlock/docs/spec/01_architecture_and_data_model.md) | Architecture & Data Model | State store, atomic task records, question airlock schema, and lifecycle states |
-| [02_cli_interface.md](file:///home/peter/Projects/airlock/docs/spec/02_cli_interface.md) | CLI Commands | Terminal commands for humans, shell automations, and CI |
-| [03_mcp_protocol.md](file:///home/peter/Projects/airlock/docs/spec/03_mcp_protocol.md) | MCP Integration | Model Context Protocol tools and schemas for AI agent sessions |
-| [04_web_dashboard_and_api.md](file:///home/peter/Projects/airlock/docs/spec/04_web_dashboard_and_api.md) | Web UI & REST/SSE API | Local Kanban board, live session tracking, question inbox, and human tasks |
-| [05_git_sync_and_airlock.md](file:///home/peter/Projects/airlock/docs/spec/05_git_sync_and_airlock.md) | Git Harmony & Airlock Boundary | Zero-conflict multi-worktree coordination, airlock isolation rules, and markdown export |
+| [01_architecture_and_data_model.md](01_architecture_and_data_model.md) | Architecture & Data Model | Entities, derived status, lifecycles, leases, hub store, concurrency rules |
+| [02_cli_interface.md](02_cli_interface.md) | CLI | Project and session resolution, commands, output and exit codes |
+| [03_mcp_protocol.md](03_mcp_protocol.md) | MCP | Server binding, clean-room tool set, tool schemas |
+| [04_web_dashboard_and_api.md](04_web_dashboard_and_api.md) | Web UI & REST/SSE API | Local-only security model, Kanban board, review queue, endpoints |
+| [05_git_sync_and_airlock.md](05_git_sync_and_airlock.md) | Git Sync & Airlock Boundary | Worktree model, bootstrap, snapshot format, import, merge rule, boundary guarantees and limits |

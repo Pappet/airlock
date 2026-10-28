@@ -1,89 +1,93 @@
 # Quickstart Guide: Airlock
 
-This walkthrough guides you through setting up Airlock in any existing or new project.
+> **Status:** Airlock is a scaffold. The commands below describe the specified behavior ([`docs/spec/`](../spec/)); until Phase 1 of the [phase plan](../plans/PHASE_PLAN.md) is done, they parse but exit with "not implemented yet".
 
 ---
 
 ## 1. Installation
 
-Build and install Airlock from source:
-
 ```bash
-git clone https://github.com/Pappet/airlock.git # or local path
+git clone https://github.com/Pappet/airlock.git
 cd airlock
 cargo install --path .
 ```
 
 ---
 
-## 2. Initializing in a Project
-
-Navigate to your target project repository:
+## 2. Initializing a Project
 
 ```bash
 cd ~/Projects/my-project
 airlock init
+git add .airlock && git commit -m "chore: register project with airlock"
 ```
 
-This registers the project in the central Airlock hub store (`~/.local/state/airlock/`) and writes a merge-trivial `.airlock` marker file (project id only) into the project directory. The database never lives inside the repository — every worktree and clone of the project resolves the same state.
+This creates the project in the Airlock hub (`~/.local/state/airlock/` on Linux) and writes the marker file `.airlock` containing only the project id. The database never lives inside the repository, so every worktree of the project shares the same state.
+
+On another machine, run `airlock init` in the fresh clone (it adopts the marker's id) and then `airlock import` to load the committed snapshot.
 
 ---
 
 ## 3. Creating Work Packages
 
-Create tasks assigned to specific roles:
-
 ```bash
-airlock task add E-1 "Initial setup" \
-  --role engine \
-  --read "docs/spec/setup.md" \
-  --touch "src/main.rs" \
+airlock task add L-1 "Write setup spec" --role spec \
+  --touch docs/spec/setup.md \
+  --do "Describe window size, title, and event loop behavior" \
+  --verify "Spec reviewed by lead"
+
+airlock task add E-1 "Initial setup" --role engine \
+  --read docs/spec/setup.md \
+  --touch src/main.rs \
   --do "Initialize game window and event loop" \
-  --verify "cargo test setup"
+  --verify "cargo test setup" \
+  --blocked-by L-1
 ```
+
+Prerequisites must exist before a task can reference them. `E-1` stays `blocked` until `L-1` is `done`.
 
 ---
 
 ## 4. Working as an Agent
 
-When starting an agent session (or in terminal):
-
 ```bash
-# Fetch the next ready work package:
-airlock task next --role engine
+export AIRLOCK_SESSION=engine-agent-1
 
-# Claim the package:
-airlock task claim E-1 --session "engine-agent-1"
-
-# Complete the package when tests pass:
-airlock task done E-1 --notes "Window and event loop implemented and verified."
+airlock task next --role engine     # show the next ready work package
+airlock task claim E-1              # take it (60-minute lease by default)
+airlock task heartbeat E-1          # extend the lease during long work
+airlock task done E-1 --notes "Window and event loop implemented; cargo test setup passes."
 ```
+
+Use `airlock task done E-1 --review` to hand the task to a human for approval (`airlock task approve` / `airlock task reject --notes ...`). If a session crashes, its lease expires and the task becomes claimable again.
 
 ---
 
 ## 5. Asking Questions Across the Airlock
 
-When an implementation agent hits an ambiguous specification:
+When an implementation session hits an ambiguous spec:
 
 ```bash
-airlock question ask "Is the front arc angle rounded up or truncated?" --topic "melee.md"
+airlock question ask "Is the front arc angle rounded up or truncated?" --topic melee.md
 ```
 
-The lead session or human user can view and answer:
+The lead session or a human answers, then resolves the question once the spec is updated:
 
 ```bash
-airlock question list
-airlock question answer 1 "Truncated towards zero as per formula in section 3.2."
+airlock question list --status open
+airlock question answer 1 "Truncated towards zero, as in section 3.2."
+airlock question resolve 1 --spec docs/spec/melee.md
 ```
 
 ---
 
-## 6. Exporting to Documentation
+## 6. Exporting to Git
 
-Before a merge (or at any milestone), export the project state for git commits:
+Before a merge or at a milestone:
 
 ```bash
 airlock sync
+git add docs/.airlock-state.json docs/PLAN.md docs/spec/QUESTIONS.md
 ```
 
-This writes the canonical JSON snapshot (`docs/.airlock-state.json`, the lossless backup and the only `airlock import` source) plus the human-readable Markdown views `PLAN.md` and `QUESTIONS.md`. If a merge conflicts in a generated file, simply re-run `airlock sync` afterwards instead of resolving by hand.
+This writes the canonical snapshot and the Markdown views into the current worktree. If a merge conflicts in a generated file, take either side and re-run `airlock sync` — never resolve generated files by hand.

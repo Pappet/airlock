@@ -21,8 +21,8 @@ secrets/
 .DS_Store
 Thumbs.db
 
-# Airlock runtime data (local database and lockfiles)
-.airlock/
+# Stray local databases (the Airlock hub store lives outside the repository;
+# the `.airlock` marker file is committed)
 *.db
 *.db-shm
 *.db-wal

@@ -2,93 +2,168 @@
 
 ## 1. Overview & Purpose
 
-Airlock is a local-first coordination daemon and CLI/MCP tool that manages tasks, questions, and session leases across concurrent human and AI agent workflows.
+Airlock is a local-first CLI/MCP tool that manages tasks, questions, and session leases across concurrent human and AI agent sessions working on one project — typically spread over several git worktrees on one machine. It runs without a daemon: every invocation opens the shared store, does its work in a transaction, and exits.
 
-In complex software projects with multiple development streams (e.g. Lead specification sessions, reverse engineering sessions, and clean-room engine implementation sessions), coordinating work through a single monolithic markdown file (like `PLAN.md`) causes severe friction:
-1. **Merge Conflicts**: Concurrent branches editing the same plan document conflict upon merging.
-2. **Context Blowup**: Agent sessions waste thousands of context tokens parsing an entire project roadmap just to pick up a single work package.
-3. **Information Leaks across Clean-Room Boundaries**: Agents in clean-room environments risk seeing unauthorized implementation details or pseudocode unless strictly isolated.
+Coordinating such work through a single hand-edited markdown file (like `PLAN.md`) causes friction:
+1. **Merge conflicts**: concurrent branches editing the same plan document conflict on merge.
+2. **Context blowup**: agent sessions parse an entire roadmap just to pick up one work package.
+3. **Clean-room leaks**: implementation sessions can see material they must not see unless the material they receive is curated.
 
-Airlock solves this by decoupling live task state into an atomic store while keeping human-readable markdown documents as deterministically generated export artifacts.
+Airlock keeps live state in a store outside every repository and treats markdown documents as generated, regenerable exports (Spec 05).
 
 ---
 
 ## 2. Core Entities
 
+The authoritative definitions are in `src/core.rs`; the shapes below mirror them.
+
 ### 2.1 Task (Work Package)
 
-A `Task` represents an atomic, self-contained unit of work designed to be executable in a single agent session:
+An atomic, self-contained unit of work, sized for a single agent session:
 
 ```rust
 pub struct Task {
-    pub id: String,                 // e.g. "E-6d", "L-12", "FEAT-42"
-    pub title: String,              // Human-readable title
-    pub role: String,               // Assigned role (e.g. "engine", "lead", "spec")
-    pub status: TaskStatus,         // Blocked, Ready, InProgress, InReview, Done
-    pub blocked_by: Vec<String>,    // IDs of tasks that must be Done
-    pub unblocks: Vec<String>,      // IDs of tasks unblocked by this task
-    pub read: Vec<String>,          // Documentation / spec files to consult
-    pub touch: Vec<String>,         // Code / asset files allowed to be modified
-    pub r#do: String,               // Concrete behavioral requirements
-    pub verify: String,             // Exact test or command to prove completion
-    pub notes: Option<String>,      // Completion notes or status summary
-    pub claimed_by: Option<String>, // Session ID currently holding lease
-    pub lease_expires_at: Option<i64>, // Unix timestamp for auto-release
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub id: String,                    // e.g. "E-6d", "L-12", "FEAT-42"; unique per project
+    pub title: String,
+    pub role: String,                  // must name a role from the project config
+    pub state: TaskState,              // persisted: Open, InProgress, InReview, Done
+    pub priority: i32,                 // higher first; default 0
+    pub blocked_by: Vec<String>,       // prerequisite task ids
+    pub read: Vec<String>,             // documentation / spec files to consult
+    pub touch: Vec<String>,            // files the task may create or modify
+    pub r#do: String,                  // concrete behavioral instructions
+    pub verify: String,                // test command or scenario; never executed by Airlock
+    pub notes: Option<String>,         // completion / review notes
+    pub claimed_by: Option<String>,    // session holding the lease (InProgress only)
+    pub lease_expires_at: Option<i64>, // unix seconds (InProgress only)
+    pub created_at: i64,               // unix seconds
+    pub updated_at: i64,               // unix seconds
 }
 ```
 
-#### Task Status Lifecycle
+`touch` is advisory: it tells the agent where to work and is shown to reviewers. Airlock does not enforce it.
+
+#### Persisted State vs. Effective Status
+
+Only `TaskState` is stored. Whether an open task is blocked is **derived on every read** from its prerequisites, so it can never go stale:
+
+| `TaskState` | Condition | Effective `TaskStatus` |
+|---|---|---|
+| `open` | some `blocked_by` task is not `done` | `blocked` |
+| `open` | all `blocked_by` tasks are `done` (or none) | `ready` |
+| `in_progress` | — | `in_progress` |
+| `in_review` | — | `in_review` |
+| `done` | — | `done` |
+
+The inverse relation ("which tasks does this one unblock?") is likewise derived from other tasks' `blocked_by`, never stored.
+
+#### Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Blocked: Dependencies incomplete
-    [*] --> Ready: No dependencies
-    Blocked --> Ready: All blocked_by tasks marked Done
-    Ready --> InProgress: Session claims task (task_claim)
-    InProgress --> Ready: Lease expires or session releases
-    InProgress --> InReview: Work completed, awaiting review
-    InProgress --> Done: Verified and completed (task_complete)
-    InReview --> Done: Reviewer approves
-    InReview --> InProgress: Feedback requested
+    [*] --> Open: task add
+    Open --> InProgress: claim (only when ready)
+    InProgress --> Open: release / lease expired
+    InProgress --> Done: done
+    InProgress --> InReview: done --review
+    InReview --> Done: approve
+    InReview --> Open: reject (notes required)
     Done --> [*]
 ```
 
+| Transition | CLI | MCP | Who |
+|---|---|---|---|
+| create | `task add` | `task_create` | any non-clean-room session |
+| claim | `task claim` | `task_claim` | any session; task must be `ready`, or `in_progress` with an expired lease |
+| renew lease | `task heartbeat` | `task_heartbeat` | lease holder |
+| release | `task release` | `task_release` | lease holder; others with `--force` |
+| finish | `task done [--review]` | `task_complete` | lease holder; others with `--force` |
+| approve | `task approve` | — | human / lead (CLI, dashboard) |
+| reject | `task reject --notes` | — | human / lead (CLI, dashboard) |
+
+Leaving `in_progress` always clears `claimed_by` and `lease_expires_at`. `done` is terminal; there is no reopen in v0.x — create a follow-up task instead.
+
+#### Dependency Rules
+
+- Every `blocked_by` id must name an existing task when the task is created. Tasks are therefore added in dependency order, which makes cycles impossible on `add`.
+- Any operation that changes `blocked_by` on existing tasks (a future `task edit`, `airlock import`) must validate the whole graph: unique ids, known prerequisites, no cycles (`core::check_dependencies`).
+- Completing a task needs no extra bookkeeping: dependents become `ready` by derivation. `task done` reports which dependents became ready as a result.
+
+#### Selection Order for `task next`
+
+Among tasks of the requested role with effective status `ready`: highest `priority` first, then oldest `created_at`, then `id` (byte order). The order is deterministic.
+
 ### 2.2 Question (Airlock Communication)
 
-A `Question` represents a structured behavioral inquiry across session boundaries (e.g. Engine session asking Lead session for specification clarification):
+A structured behavioral inquiry across a session boundary, e.g. an engine session asking for clarification of a spec:
 
 ```rust
 pub struct Question {
-    pub id: u64,
-    pub topic: String,              // Spec file or subsystem (e.g. "missiles.md")
-    pub asked_by: String,           // Session ID or role of asker
-    pub question: String,           // Detailed question text
+    pub id: u64,                    // assigned by the hub store, monotonically increasing
+    pub topic: String,              // spec file or subsystem (e.g. "missiles.md")
+    pub asked_by: String,           // session id of the asker
+    pub question: String,
     pub status: QuestionStatus,     // Open, Answered, Resolved
-    pub answer: Option<String>,     // Answer text
-    pub answered_by: Option<String>,// Session ID or human answering
+    pub answer: Option<String>,     // behavioral prose only
+    pub answered_by: Option<String>,
+    pub spec_file: Option<String>,  // spec in which the answer was codified
     pub created_at: i64,
     pub answered_at: Option<i64>,
 }
 ```
 
-### 2.3 Session Lease & Heartbeat
+| Transition | CLI | MCP | Effect |
+|---|---|---|---|
+| ask | `question ask` | `question_ask` | new question, `open` |
+| answer | `question answer [--spec]` | `question_answer` | `open`/`answered` → `answered`; revising an answer overwrites it and updates `answered_at` |
+| resolve | `question resolve [--spec]` | `question_resolve` | `answered` → `resolved`; asker or any non-clean-room session |
 
-To prevent duplicate work when multiple agent sessions run concurrently:
-- When a session claims a task via CLI or MCP, a lease is granted with an expiry duration (default: 60 minutes).
-- Active sessions can renew their lease via heartbeat.
-- If a session terminates or crashes, the lease expires and the task automatically returns to `Ready`.
+### 2.3 Sessions
+
+A session id is a free-form string naming one agent or human working context (e.g. `engine-1`, `human:peter`). Resolution order: `--session` flag, `AIRLOCK_SESSION` environment variable, then `human:$USER` for the CLI. The MCP server takes its session id from `--session`/`AIRLOCK_SESSION` or generates `mcp-<random>` at startup.
+
+Session ids are **self-declared and not authenticated**. They identify cooperating sessions; they are not a security boundary (see Spec 05 §4).
+
+### 2.4 Leases
+
+- A claim grants a lease of `--lease` minutes (default: `lease_minutes` from the project config, 60).
+- `task heartbeat` extends the lease from *now* by the same duration.
+- There is no daemon. Expiry is evaluated lazily: reads treat a task whose `lease_expires_at <= now` as expired, and every write transaction first resets expired leases to `open` (clearing `claimed_by`). A claim on an expired task therefore succeeds.
 
 ---
 
 ## 3. Storage Architecture
 
-Airlock uses a central hub store, independent of any repository:
-1. **Hub Store (SQLite per project, `~/.local/state/airlock/projects/<uuid>/airlock.db`)**:
-   - Uses Write-Ahead Logging (WAL) mode.
-   - Provides concurrent, multi-process read/write access across separate git worktrees and clones without requiring a continuously running daemon.
-   - Zero network overhead. Git worktrees each own a working-tree copy, so the store is never placed inside a repository.
-   - Projects reference their store via a merge-trivial `.airlock` marker file (project id only); project configuration lives hub-side in `project.json`.
-2. **Git-Synchronized Export Layer**:
-   - `airlock sync` exports the SQLite state into a canonical JSON snapshot (`docs/.airlock-state.json`, lossless backup and the only `airlock import` source) plus deterministic Markdown views (`docs/PLAN.md`, `docs/spec/QUESTIONS.md`). See Spec 05.
+### 3.1 Hub Store
+
+All live state lives in a per-project SQLite database outside every repository:
+
+```
+<hub>/projects/<project-uuid>/airlock.db     # tasks, questions (WAL mode)
+<hub>/projects/<project-uuid>/project.json   # ProjectConfig (src/config.rs)
+```
+
+`<hub>` is `$AIRLOCK_HOME` if set, otherwise the platform state directory:
+
+| Platform | Default `<hub>` |
+|---|---|
+| Linux | `$XDG_STATE_HOME/airlock` (`~/.local/state/airlock`) |
+| macOS | `~/Library/Application Support/airlock` |
+| Windows | `%LOCALAPPDATA%\airlock` |
+
+The hub must be on a local filesystem: SQLite WAL does not work over network filesystems.
+
+Projects reference their store through a committed marker file `.airlock` in the project root containing only `{"project_id": "<uuid>"}`. Because every worktree and clone carries the same marker, they all resolve the same store (Spec 05 §2).
+
+### 3.2 Concurrency Rules
+
+WAL mode allows many readers and one writer at a time. Correctness under concurrent sessions additionally requires:
+
+- `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`, and a busy timeout (5 s) on every connection.
+- Every mutation runs in a `BEGIN IMMEDIATE` transaction, so the write lock is taken before any read the decision depends on.
+- State transitions are conditional updates that check the expected prior state, e.g. a claim is `UPDATE … SET state='in_progress', claimed_by=?, lease_expires_at=? WHERE id=? AND (state='open' AND <ready> OR state='in_progress' AND lease_expires_at <= ?)`; zero affected rows means the claim lost a race and is reported as an error, never retried silently.
+- Timestamps are unix seconds from the system clock, taken once per transaction.
+
+### 3.3 Export Layer
+
+`airlock sync` exports the store into a canonical JSON snapshot plus generated Markdown views inside the invoking project root. See Spec 05 §3.

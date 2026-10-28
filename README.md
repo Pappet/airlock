@@ -1,85 +1,87 @@
 # Airlock
 
-A universal, local-first multi-agent workflow coordinator and task management hub.
+A local-first coordinator for multi-agent and human development sessions: tasks, questions, and leases in one store shared by every worktree of a project.
+
+> **Status: scaffold.** The domain model, snapshot format, and CLI surface are implemented and tested; the hub store, sync, MCP server, and dashboard are specified in [`docs/spec/`](docs/spec/) but not built yet. Commands currently exit with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
 
 ---
 
-## High Level Project Overview
+## Why
 
-Airlock coordinates multi-agent AI and human developer workflows with:
-- **Zero git merge conflicts**: Replaces fragile monolithic markdown roadmaps with atomic task stores and lock-free concurrency.
-- **Clean-room airlock isolation**: Provides a verified communication channel for asking questions and delivering specifications between isolated development sessions (e.g. reverse engineering vs. clean-room implementations).
-- **Dual MCP & CLI interface**: First-class support for both AI agents (via the Model Context Protocol over stdio) and human engineers (via an intuitive command-line interface).
-- **Token-efficient work packages**: Delivers sub-200-token self-contained instructions (*Read, Touch, Do, Verify*) directly to coding agents, saving up to 90% of session context tokens.
-- **Embedded Web Dashboard**: Embedded zero-dependency Kanban board and session observer.
+Several AI agent sessions and humans working on one project — often in separate git worktrees — usually coordinate through a hand-edited `PLAN.md`. That file conflicts on every merge, forces agents to read the whole plan to find one task, and gives clean-room sessions no structured way to ask questions.
+
+Airlock replaces it with:
+- **One shared store per project**, outside the repository, so all worktrees and sessions on a machine see the same state. Plan files in git become generated exports.
+- **Compact work packages** (*Read, Touch, Do, Verify*) handed to an agent one at a time instead of the whole plan.
+- **Leases**: a claimed task belongs to one session; crashed sessions' leases expire.
+- **Derived readiness**: tasks become ready when their prerequisites are done — no manual bookkeeping.
+- **A question channel** between implementation and specification sessions, with an audit trail in git.
+- **CLI for humans, MCP for agents**, plus a local web dashboard.
+
+## Features (specified)
+
+- **Hub store:** SQLite (WAL) per project under the platform state directory, referenced from the repository by a one-line `.airlock` marker. Safe concurrent use from many processes via immediate transactions and conditional state transitions.
+- **Task lifecycle:** `open → in_progress → (in_review →) done`, with claim, heartbeat, release, approve, and reject; `blocked`/`ready` derived from `blocked_by`.
+- **Questions:** `open → answered → resolved`, optionally linked to the spec file that codifies the answer.
+- **Deterministic export:** `airlock sync` writes a byte-stable JSON snapshot (`docs/.airlock-state.json`, the only import source) plus `docs/PLAN.md` and `docs/spec/QUESTIONS.md` views. Merge conflicts in generated files are cleared by re-running `airlock sync`; a guard refuses to overwrite snapshots written by another machine.
+- **MCP tools:** `task_next`, `task_claim`, `task_heartbeat`, `task_complete`, `question_ask`, … with role binding and a restricted tool set for clean-room roles.
+- **Dashboard:** loopback-only, token-protected Kanban board, review queue, and questions inbox.
+
+Scope of v0.x: one machine per project state. The clean-room features structure and record the exchange between sessions; actual isolation of a clean-room session must come from its environment (separate user, container, or sandbox) — see [Spec 05 §4](docs/spec/05_git_sync_and_airlock.md#4-the-airlock-boundary).
 
 ---
 
-## Features
-
-*Status: scaffold — the data models are implemented; the hub store, sync layer, MCP server, and web dashboard are specified (see `docs/spec/`) but not yet implemented. Progress is tracked in [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).*
-
-- **Concurrent Multi-Worktree Coordination**: Uses local SQLite in Write-Ahead Logging (WAL) mode to permit concurrent read/write operations across distinct git branches and worktrees with zero race conditions.
-- **Role-Based Work Routing**: Assign tasks to designated roles (e.g. `lead`, `spec`, `engine`, `frontend`, `qa`).
-- **Airlock Question & Answer Queue**: Engine sessions submit questions; lead sessions and human developers answer them without leaking non-compliant code.
-- **Session Leases & Auto-Release**: Prevents duplicate work by leasing tasks to active sessions with automatic timeout recovery.
-- **Deterministic Documentation Sync**: Exports live database state into a canonical JSON snapshot (`docs/.airlock-state.json`, the lossless backup and import source) plus clean, version-controlled markdown views (`docs/PLAN.md` and `docs/spec/QUESTIONS.md`). Merge conflicts in generated files are resolved by re-running `airlock sync` — never by hand.
-- **Native MCP Tools**: Exposes `task_next`, `task_claim`, `task_complete`, `question_ask`, and `question_answer` directly to AI agent platforms (Antigravity, Claude Code, Cursor).
-
----
-
-## Quickstart Guide
+## Quickstart
 
 ### Prerequisites
-- Rust 1.85+ (Edition 2024 compatible)
+- Rust 1.85+ (edition 2024)
 
-### Installation
+### Build
 ```bash
 git clone https://github.com/Pappet/airlock.git
 cd airlock
 cargo build --release
 ```
 
-### Basic Workflow
+### Intended Workflow
 ```bash
-# 1. Initialize Airlock in your project repository
-airlock init
+airlock init                                  # register the project, writes .airlock
 
-# 2. Add a structured work package
-airlock task add E-6d "Missiles implementation" \
-  --role engine \
-  --read "docs/spec/missiles.md" \
-  --touch "src/missiles.rs" \
+airlock task add E-6d "Missiles implementation" --role engine \
+  --read docs/spec/missiles.md --touch src/missiles.rs \
   --do "Implement shot clock and volley firing cycle" \
   --verify "cargo test missiles"
 
-# 3. In an agent session: fetch next task
-airlock task next --role engine
-
-# 4. Claim task
-airlock task claim E-6d --session "engine-agent-01"
-
-# 5. Mark task complete
+export AIRLOCK_SESSION=engine-agent-01
+airlock task next --role engine               # show next ready work package
+airlock task claim E-6d                       # take it under a lease
 airlock task done E-6d --notes "All unit tests passing."
 
-# 6. Ask a question across the airlock boundary
-airlock question ask "How does blast radius degrade?" --topic "missiles.md"
+airlock question ask "How does blast radius degrade?" --topic missiles.md
+airlock sync                                  # export snapshot and views for git
 ```
 
-For more details, see the [Quickstart Walkthrough](file:///home/peter/Projects/airlock/docs/walkthroughs/quickstart.md).
+More: [Quickstart walkthrough](docs/walkthroughs/quickstart.md).
 
 ---
 
+## Development
+
+```bash
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
 ## Contribution
 
-Contributions are welcome! Please follow these project rules:
-1. All changes must be developed on a dedicated feature branch (`feat/...`, `fix/...`) and merged via Pull Request into `main`. Direct commits to `main` are strictly prohibited.
-2. All architectural and behavioral changes must update `README.md` and `PROJECT_OVERVIEW.md` in the exact same commit.
-3. Dependencies must be explicitly version-locked in `Cargo.lock`.
-4. Run `cargo test` and `cargo clippy` before submitting a PR.
+1. Develop on a feature branch (`feat/...`, `fix/...`) and merge into `main` via pull request. No direct commits to `main`.
+2. Behavioral changes update the affected spec in `docs/spec/` in the same change; architectural changes also update `README.md` and `PROJECT_OVERVIEW.md`.
+3. Dependencies are locked in `Cargo.lock`.
+4. `cargo test`, `cargo clippy`, and `cargo fmt --check` pass before a PR.
 
 ---
 
 ## License
 
-This project is licensed under the [MIT License](file:///home/peter/Projects/airlock/LICENSE).
+[MIT](LICENSE)

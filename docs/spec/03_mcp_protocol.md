@@ -2,79 +2,90 @@
 
 ## 1. Overview
 
-The Model Context Protocol (MCP) server allows AI assistants (Claude, Antigravity, Cursor, etc.) to interact directly with Airlock using typed tool calls rather than parsing command-line text.
+`airlock mcp` runs a Model Context Protocol server over stdio, so AI assistants (Claude Code, Antigravity, Cursor, …) interact with Airlock through typed tool calls instead of parsing CLI output. Tools map one-to-one onto the operations in Spec 01 and share their transition rules.
 
-When configured in an assistant's settings (e.g. `.claude/settings.json` or Antigravity MCP config), the assistant gains a specialized set of tools for workflow coordination.
+Example client configuration (Claude Code `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "airlock": {
+      "command": "airlock",
+      "args": ["mcp", "--role", "engine", "--session", "engine-1"]
+    }
+  }
+}
+```
 
 ---
 
-## 2. MCP Tools Specification
+## 2. Server Binding
 
-### 2.1 `task_next`
-Returns the next actionable task for the agent's assigned role.
+- **Project:** resolved once at startup from `--project`/`AIRLOCK_PROJECT` or the `.airlock` marker above the server's working directory (Spec 02 §2.2). Startup fails if no project resolves.
+- **Session:** `--session`/`AIRLOCK_SESSION`, otherwise `mcp-<random>` generated at startup. Every mutating tool acts as this session; tools take no session parameter.
+- **Role (optional):** `--role <role>` binds the server to one role. Bound servers fill `role` parameters automatically and reject calls for other roles.
 
-- **Parameters**:
-  - `role` (string, required): Role of the requesting session (e.g. `"engine"`, `"lead"`).
-- **Returns**:
-  Structured object containing `id`, `title`, `read`, `touch`, `do`, `verify`, and `blocked_by`.
-- **Token Efficiency**:
-  Outputs under 200 tokens of focused instructions, bypassing the need to ingest large project plan documents.
+### 2.1 Clean-Room Tool Set
 
-### 2.2 `task_claim`
-Claims a work package and starts a session lease.
+If the bound role has `clean_room: true` in the project config, the server exposes only:
 
-- **Parameters**:
-  - `task_id` (string, required): The ID of the task to claim (e.g. `"E-6d"`).
-  - `session_id` (string, optional): Unique name/ID for the agent session.
-  - `lease_minutes` (integer, optional, default: 60): Lease duration.
-- **Returns**:
-  Confirmation of claim or an error if the task is already claimed by another active session.
+`task_next`, `task_get`, `task_claim`, `task_heartbeat`, `task_release`, `task_complete`, `question_ask`, `question_list`
 
-### 2.3 `task_complete`
-Completes a task, recording verification details and unblocking dependent tasks.
+restricted to the bound role's tasks and the session's own questions. `task_create`, `question_answer`, `question_resolve`, and `doc_sync` are not listed at all. This keeps an agent from accidentally answering its own questions or browsing other roles' work; it is a guardrail, not a security boundary (Spec 05 §4).
 
-- **Parameters**:
-  - `task_id` (string, required): The ID of the task.
-  - `notes` (string, optional): Summary of changes, tests executed, or status notes.
-- **Returns**:
-  List of newly unblocked task IDs.
+Without `--role`, all tools are exposed and `role` parameters are required where listed.
 
-### 2.4 `task_create`
-Allows lead or architectural sessions to add or break down work packages.
+---
 
-- **Parameters**:
-  - `id` (string, required)
-  - `title` (string, required)
-  - `role` (string, required)
-  - `read` (array of strings, optional)
-  - `touch` (array of strings, optional)
-  - `do` (string, required)
-  - `verify` (string, required)
-  - `blocked_by` (array of strings, optional)
-- **Returns**:
-  Created task summary.
+## 3. Tools
 
-### 2.5 `question_ask`
-Submits a question to the airlock when an engine session encounters an ambiguous or incomplete specification.
+Errors are returned as MCP tool errors with a one-line message (e.g. `task E-6d is claimed by engine-2 until 14:05`).
 
-- **Parameters**:
-  - `topic` (string, required): Name of the spec or component (e.g. `"melee.md"`).
-  - `question` (string, required): Concrete description of the question.
-- **Returns**:
-  Question ID and acknowledgement.
+### 3.1 `task_next`
+Returns the next ready task for a role (Spec 01 §2.1 selection order) without claiming it.
+- **Parameters:** `role` (string; required unless bound)
+- **Returns:** `{ id, title, blocked_by, read, touch, do, verify }`, or `null` if none is ready. Kept compact — the work package is meant to replace reading the whole plan.
 
-### 2.6 `question_answer`
-Allows lead sessions to provide authoritative answers to pending questions.
+### 3.2 `task_get`
+- **Parameters:** `task_id` (string)
+- **Returns:** the full task including effective `status`, dependents, and lease info.
 
-- **Parameters**:
-  - `question_id` (integer, required): ID of the question.
-  - `answer` (string, required): Prose explanation or specification resolution.
-  - `spec_file` (string, optional): The specification file where the resolution was codified.
-- **Returns**:
-  Updated question state.
+### 3.3 `task_claim`
+- **Parameters:** `task_id` (string), `lease_minutes` (integer, optional; default from project config)
+- **Returns:** `{ task_id, lease_expires_at }`
 
-### 2.7 `doc_sync`
-Triggers generation of project markdown documents from the live database.
+### 3.4 `task_heartbeat`
+- **Parameters:** `task_id` (string), `lease_minutes` (integer, optional)
+- **Returns:** `{ task_id, lease_expires_at }`
 
-- **Returns**:
-  Status and list of updated files.
+### 3.5 `task_release`
+- **Parameters:** `task_id` (string)
+- **Returns:** `{ task_id }`. Only the lease holder can release via MCP.
+
+### 3.6 `task_complete`
+- **Parameters:** `task_id` (string), `notes` (string, optional), `review` (boolean, optional; default `false`)
+- **Returns:** `{ task_id, state, now_ready: [task ids] }`. Only the lease holder can complete via MCP.
+
+### 3.7 `task_create`
+- **Parameters:** `id`, `title`, `role`, `do`, `verify` (strings, required); `read`, `touch`, `blocked_by` (string arrays, optional); `priority` (integer, optional)
+- **Returns:** the created task.
+
+### 3.8 `question_ask`
+- **Parameters:** `topic` (string), `question` (string)
+- **Returns:** `{ question_id }`
+
+### 3.9 `question_list`
+- **Parameters:** `topic` (string, optional), `status` (`open | answered | resolved`, optional)
+- **Returns:** matching questions including answers. Clean-room sessions see only their own questions.
+
+### 3.10 `question_answer`
+- **Parameters:** `question_id` (integer), `answer` (string), `spec_file` (string, optional)
+- **Returns:** the updated question.
+
+### 3.11 `question_resolve`
+- **Parameters:** `question_id` (integer), `spec_file` (string, optional)
+- **Returns:** the updated question.
+
+### 3.12 `doc_sync`
+Equivalent to `airlock sync` without `--force`, writing into the project root the server resolved at startup.
+- **Returns:** `{ written: [paths] }`, or an error if the snapshot was changed outside this hub.

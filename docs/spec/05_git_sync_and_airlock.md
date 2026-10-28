@@ -2,120 +2,144 @@
 
 ## 1. Overview & Clean-Room Principles
 
-In reverse engineering and clean-room reimplementation projects (such as OpenSHR), legal and architectural boundaries dictate that implementation code must not be tainted by direct inspection of disassembled or decompiled artifacts.
-
-Knowledge crosses only through behavioral specifications.
+In clean-room reimplementation projects, implementation code must not be derived from direct inspection of disassembled or decompiled artifacts. Knowledge crosses from the analysis side to the implementation side only as behavioral specifications and prose answers.
 
 ```mermaid
 flowchart LR
-    subgraph SpecZone ["Analysis / Specification Zone (main)"]
+    subgraph SpecZone ["Analysis / Specification Zone"]
         Decomp[Decompiled Code / Ghidra] -->|Prose & Tables Only| SpecCommit[docs/spec/*.md]
         Lead[Lead Session] -->|Answers| AirlockInbox[Airlock Questions]
     end
 
-    subgraph AirlockHub ["Airlock Coordination Hub"]
+    subgraph AirlockHub ["Airlock Hub Store"]
         AirlockInbox <--> TasksDB[(Tasks & Questions)]
     end
 
-    subgraph CleanRoom ["Clean-Room Engine Zone (engine)"]
+    subgraph CleanRoom ["Clean-Room Implementation Zone"]
         TasksDB -->|Work Package: Read/Touch/Do/Verify| Engine[Engine Session]
         Engine -->|Question without code| AirlockInbox
-        Engine --> CleanCode[crates/shr-engine]
+        Engine --> CleanCode[Implementation sources]
     end
 ```
+
+Airlock structures this exchange and records it (§4). It does not by itself prevent a session from reading files it has access to — see §4.2.
 
 ---
 
 ## 2. Zero-Conflict Git Integration
 
 ### 2.1 The Multi-Worktree Problem
-When work is divided across multiple worktrees (e.g. `~/Projects/openshr` on `main` and `~/Projects/openshr-engine` on `engine`):
-- Modifying a central markdown file (`PLAN.md` or `QUESTIONS.md`) on both branches causes continuous git merge conflicts.
-- Coordinating via git commits requires unnecessary intermediate commits just to communicate questions or task handoffs.
-- A database file placed in the repository's working root is **not** shared either: each git worktree owns an independent copy of the working tree, so a repo-local `airlock.db` would silently fork the task store per worktree.
+When work is split across worktrees (e.g. `~/Projects/game` on `main` and `~/Projects/game-engine` on `engine`):
+- Editing a central markdown file (`PLAN.md`, `QUESTIONS.md`) on both branches causes recurring merge conflicts.
+- Communicating questions or handoffs through commits requires throwaway commits.
+- A database inside the repository is **not** shared: each worktree owns its own working-tree copy, so a repo-local database would silently fork the task store per worktree.
 
-### 2.2 The Airlock Hub Solution
-1. **Central Hub Store (single source of truth)**:
-   All task and question state lives in an Airlock-owned SQLite database, independent of any repository:
-   `~/.local/state/airlock/projects/<uuid>/airlock.db` (SQLite, WAL mode), alongside a hub-side `project.json` holding project configuration and the single registered project path. WAL permits concurrent readers and writers from every session on the same machine; the store is never placed inside a repository (see 2.1).
-2. **Project Marker File**:
-   `airlock init` writes a merge-trivial marker file `.airlock` containing only the project id (`{"project_id": "<uuid>"}`) into the project directory. Commands resolve their project by precedence: `--project <id-or-name>` flag, `AIRLOCK_PROJECT` environment variable, then the nearest `.airlock` marker found by searching upward from the current working directory. Commands outside a registered project fail with a clear error; Airlock never inspects git internals to locate state.
-3. **Deterministic Export (`airlock sync`)**:
-   When milestone or release commits are prepared, `airlock sync` compiles the current task and question state into all export artifacts (see Section 3). This preserves git history and human readability without subjecting day-to-day parallel work to merge conflicts.
+### 2.2 Hub Store and Marker
+1. **Hub store (single source of truth):** all task and question state lives in the per-project SQLite database in the hub, outside every repository (Spec 01 §3.1). Every session on the machine reads and writes the same database.
+2. **Marker:** `airlock init` writes `.airlock` (`{"project_id": "<uuid>"}`) into the project root. It is committed, so every worktree and clone carries it, and it never changes after creation — it cannot conflict.
+3. **No registered path:** the hub does not record where the project lives. Each invocation's project root is the directory of the marker it found (Spec 02 §2.2), so `airlock sync` in a worktree writes into *that* worktree.
+
+### 2.3 Bootstrap on Another Machine
+Cloning a repository brings the marker but not the hub state. `airlock init` in the clone creates a hub project with the marker's id; `airlock import` then loads the committed snapshot. From then on the two machines have **independent** hubs (§2.4).
+
+### 2.4 Scope: One Machine per Project State
+The hub is local. v0.x supports any number of sessions and worktrees **on one machine**. Several machines working on the same project each have their own hub; Airlock does not merge their states. Committed snapshots carry state between machines only as a deliberate handover (`sync` on one machine, `import` on the other). Multi-machine synchronization is a separate future design (ROADMAP milestone 4). §3.5 makes sure that one machine's `sync` cannot silently overwrite state committed by another.
 
 ---
 
 ## 3. Export & Import Layer
 
-The hub database is the **single source of truth** for live state. Exported files are regenerable artifacts committed to the repository for human review, audit, and disaster recovery.
+The hub database is the single source of truth for live state. Exported files are regenerable artifacts committed for human review, audit, and handover.
 
 ### 3.1 Export Artifacts
-One `airlock sync` run writes all artifacts into the project's registered path:
+One `airlock sync` run writes, relative to the invoking project root (paths configurable in `ExportConfig`):
 
-| Artifact | Role |
-|---|---|
-| `docs/.airlock-state.json` | **Canonical** state snapshot: lossless backup and the only source for `airlock import`. |
-| `docs/PLAN.md` | Generated human-readable plan view. |
-| `docs/spec/QUESTIONS.md` | Generated question/answer log (clean-room audit trail). |
-
-Paths are configurable via the project configuration (`ExportConfig`, including a `state_file` for the snapshot path).
+| Artifact | Default path | Role |
+|---|---|---|
+| State snapshot | `docs/.airlock-state.json` | **Canonical**: lossless semantic state; the only `airlock import` source |
+| Plan view | `docs/PLAN.md` | Generated human-readable plan (optional) |
+| Question log | `docs/spec/QUESTIONS.md` | Generated question/answer log — the clean-room audit trail (optional) |
 
 ### 3.2 Snapshot Content
-The snapshot captures the semantic project state. **Ephemeral runtime fields are excluded**: lease expiry and session claims describe runtime sessions, not project state, and are meaningless once a session ends. On `airlock import`, `claimed_by` is restored as `None`; tasks left `InProgress` become orphaned leases recoverable via `task release`.
+The snapshot (`src/snapshot.rs`) contains semantic project state only. **Session state is excluded**, so claiming, renewing, or releasing a task never changes the file:
 
-**Task:**
+```json
+{
+  "format_version": 1,
+  "project_id": "<uuid>",
+  "roles": { "<name>": { "description": "...", "clean_room": false } },
+  "tasks": [ … ],
+  "questions": [ … ]
+}
+```
 
-| Field | Type | Exported |
+**Task records:**
+
+| Field | Type | Notes |
 |---|---|---|
-| `id` | string | yes |
-| `title` | string | yes |
-| `role` | string | yes |
-| `status` | `blocked \| ready \| in_progress \| in_review \| done` | yes |
-| `blocked_by` | string[] | yes |
-| `unblocks` | — | no: derived from other tasks' `blocked_by` |
-| `read` | string[] | yes |
-| `touch` | string[] | yes |
-| `do` | string | yes |
-| `verify` | string | yes |
-| `notes` | string \| null | yes |
-| `claimed_by`, `lease_expires_at` | — | no: ephemeral session state |
+| `id`, `title`, `role` | string | |
+| `state` | `open \| in_review \| done` | `in_progress` exports as `open` — a claim is session state |
+| `priority` | integer | |
+| `blocked_by` | string[] | sorted, deduplicated |
+| `read`, `touch` | string[] | order preserved (authored order is meaningful) |
+| `do`, `verify` | string | |
+| `notes` | string \| null | |
+| `created_at` | integer | unix seconds |
+| `claimed_by`, `lease_expires_at`, `updated_at` | — | not exported: session state / write noise |
 
-**Question** (all fields exported):
-
-| Field | Type |
-|---|---|
-| `id` | number |
-| `topic` | string |
-| `asked_by` | string |
-| `question` | string |
-| `status` | `open \| answered \| resolved` |
-| `answer` | string \| null |
-| `answered_by` | string \| null |
+**Questions** are exported with all fields (Spec 01 §2.2).
 
 ### 3.3 Deterministic Serialization
-Byte-stable output is mandatory: re-running `airlock sync` on unchanged state must produce a zero diff.
-- Object fields serialize in fixed declaration order (serde struct order); maps are sorted by key (`BTreeMap`, not `HashMap`).
-- Arrays are sorted by `id` (tasks and questions).
-- Enums serialize snake_case (matching the domain model's `#[serde(rename_all = "snake_case")]`).
+Re-running `airlock sync` on unchanged state must produce a zero diff:
+- Object fields in fixed declaration order; maps sorted by key (`BTreeMap`).
+- `tasks` sorted by `id` (byte order), `questions` by `id`.
+- Enums in `snake_case`.
 - UTF-8, LF line endings, 2-space indent, exactly one trailing newline.
 
+`tests/snapshot.rs` pins the exact bytes with a golden file; any change to it is a format change and requires bumping `format_version`.
+
+The Markdown views follow the same rules (sorted, no timestamps of the export run itself).
+
 ### 3.4 Import (`airlock import`)
-- The JSON snapshot is the **only** canonical import source. Markdown files are views and are never parsed to reconstruct state.
-- Import replaces the project's task and question state with the snapshot content and requires explicit confirmation (`--yes` or interactive prompt).
-- Leases are not restored (see 3.2).
+- The JSON snapshot is the only import source. Markdown files are views and are never parsed to reconstruct state.
+- Before writing, import checks: `format_version` is supported, `project_id` matches the resolved project, roles referenced by tasks exist, and the dependency graph is valid (unique ids, known prerequisites, no cycles).
+- Import replaces tasks, questions, and the roles in `project.json` in one operation and requires confirmation (`--yes` or interactive prompt). The question id sequence continues after the highest imported id.
+- Since snapshots contain no claims, all imported tasks are unclaimed.
 
-### 3.5 Merge Strategy: Regenerate, Don't Resolve
-If concurrent branches both run `airlock sync`, the generated files (`PLAN.md`, `QUESTIONS.md`, `.airlock-state.json`) may conflict textually on merge. Resolution rule:
-1. Complete the git merge, taking either side for generated files.
-2. Run `airlock sync` again.
+### 3.5 Foreign-Change Guard
+The hub stores the SHA-256 of every snapshot it has written or imported. Before overwriting an existing snapshot file, `sync` checks it:
 
-Because the hub database is outside git, it always holds the authoritative state — regenerated artifacts are correct by construction. **Never hand-edit or hand-resolve generated files.**
+| Existing file | Action |
+|---|---|
+| absent, or identical to the new output | write (no-op if identical) |
+| hash known to this hub | overwrite — the content came from this hub's own history |
+| hash unknown | **refuse**: the file came from elsewhere (another machine, hand edit). Inspect it, then either `airlock import` to adopt it or `airlock sync --force` to replace it |
+
+A file containing git conflict markers is never a known hash and is handled by the merge rule below.
+
+### 3.6 Merge Rule: Regenerate, Don't Resolve
+If two branches both ran `airlock sync`, the generated files may conflict on merge. On one machine:
+1. Complete the merge, taking either side of each generated file.
+2. Run `airlock sync`.
+
+Either side was written by this hub, so §3.5 lets `sync` overwrite it with the current state. If `sync` refuses, the file came from another machine's hub — decide explicitly with `import` or `sync --force` (§2.4). **Never hand-edit generated files.**
 
 ---
 
-## 4. Role of the Markdown Views
-- `PLAN.md` and `QUESTIONS.md` are generated views for human review (GitHub rendering, PR discussions), agent orientation, and the clean-room audit trail: `QUESTIONS.md` documents which behavioral prose crossed the airlock boundary (topic, asker, question, answer) — a compliance-relevant record.
-- They are regenerable at any time and must never be treated as a state source.
+## 4. The Airlock Boundary
+
+### 4.1 What Airlock Provides
+- **Curated work packages:** clean-room sessions receive *Read/Touch/Do/Verify* packages that point only at committed behavioral specs.
+- **A structured question channel:** questions and prose answers, with asker, answerer, timestamps, and the spec file that codified the answer.
+- **An audit trail:** `QUESTIONS.md` records what crossed the boundary, in git history.
+- **Role-bound tool sets:** MCP servers bound to a clean-room role expose a restricted tool set (Spec 03 §2.1).
+
+### 4.2 What Airlock Does Not Provide
+Session ids and roles are self-declared, and every process running as the same OS user can read the hub database and run any CLI command. Airlock's restrictions prevent **accidents** by cooperating agents; they do not stop a session that deliberately bypasses them. Real isolation of a clean-room session — no access to decompiled sources, analysis worktrees, or the unrestricted CLI — must come from the environment: a separate OS user, container, or sandbox that sees only the implementation worktree and an Airlock MCP server bound to the clean-room role.
+
+Answers are prose written by people or lead sessions; Airlock does not inspect them for code. Keeping answers free of implementation details is the answering party's responsibility, made reviewable by the audit trail.
+
+---
 
 ## 5. Legacy Migration
-Importing pre-existing monolithic `PLAN.md` files (e.g. OpenSHR `L-...` / `E-...` packages) is a one-time migration tool (`airlock import-plan`), not part of the canonical round-trip. Lossless Markdown parsing is explicitly **not** a goal; the canonical exchange format is the JSON snapshot only.
+Importing a pre-existing hand-written `PLAN.md` (e.g. `L-…` / `E-…` work packages) is a one-time migration tool (`airlock import-plan`), not part of the canonical round-trip. Lossless Markdown parsing is explicitly not a goal.

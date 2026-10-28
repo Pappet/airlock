@@ -2,97 +2,109 @@
 
 ## 1. Overview
 
-The CLI provides human developers, terminal scripts, and CI runners with direct command-line access to all task coordination features.
+The CLI gives human developers, shell scripts, and CI runners direct access to all coordination features. The argument definitions live in `src/cli.rs`; this document describes their behavior.
 
 ---
 
-## 2. Command Reference
+## 2. Global Behavior
 
-### 2.1 Initialization
+### 2.1 Global Options
 
-```bash
-airlock init [--template <name>]
-```
-- Registers the project in the central hub store (`~/.local/state/airlock/`) and creates its SQLite database (WAL mode) if not present.
-- Writes the merge-trivial marker file `.airlock` (project id only) into the project directory; project configuration lives hub-side in `project.json`.
+| Option | Env | Meaning |
+|---|---|---|
+| `--project <id-or-name>` | `AIRLOCK_PROJECT` | Select the project explicitly (see 2.2) |
+| `--session <id>` | `AIRLOCK_SESSION` | Session id for claims, questions, and answers; default `human:$USER` |
+| `--json` | — | Print machine-readable JSON instead of human-readable text |
 
-### 2.2 Task Operations
+Global options may appear before or after the subcommand.
 
-#### `airlock task list`
-```bash
-airlock task list [--role <role>] [--status <status>] [--json]
-```
-Displays tasks in a formatted table or as raw JSON.
+### 2.2 Project Resolution
 
-#### `airlock task next`
-```bash
-airlock task next --role <role> [--json]
-```
-Fetches the highest-priority `Ready` task for the specified role. Returns the task in concise, context-optimized Markdown or JSON, showing:
-- Task ID & Title
-- Prerequisites & Dependents
-- **Read**: files to consult
-- **Touch**: files to edit
-- **Do**: implementation instructions
-- **Verify**: verification command
+Every command except `init` operates on one project, resolved in this order:
+1. `--project` / `AIRLOCK_PROJECT`: a project uuid, or a project name that is unique in the hub.
+2. The nearest `.airlock` marker found by walking up from the current directory.
 
-#### `airlock task claim`
-```bash
-airlock task claim <task-id> [--session <session-id>] [--duration <minutes>]
-```
-Claims a task, setting its status to `InProgress` and recording the session ID and lease timestamp.
+The directory containing the marker is the **project root** for this invocation; `sync` and `import` resolve relative paths against it. With `--project` and no marker in the current directory tree, commands that need a project root (`sync`, `import`) fail. A marker whose id is unknown to the hub fails with a hint to run `airlock init` (see Spec 05 §2.3). Airlock never inspects git internals to locate state.
 
-#### `airlock task done`
-```bash
-airlock task done <task-id> [--notes <summary>]
-```
-Marks a task as `Done`. Automatically checks dependent tasks: any task whose `blocked_by` dependencies are now fully satisfied transitions from `Blocked` to `Ready`.
+### 2.3 Output and Exit Codes
 
-#### `airlock task add`
-```bash
-airlock task add <id> "<title>" --role <role> \
-  --read "docs/spec/foo.md" \
-  --touch "src/foo.rs" \
-  --do "Implement foo" \
-  --verify "cargo test foo" \
-  [--blocked-by "L-1,L-2"]
-```
-Creates a new work package.
+- Human output goes to stdout; diagnostics go to stderr.
+- With `--json`, stdout carries exactly one JSON document. Effective task status is included as `status` next to the stored `state`.
+- Exit codes: `0` success, `1` operational error (unknown task, lost claim race, invalid transition, unknown project), `2` usage error (clap).
 
 ---
 
-### 2.3 Airlock Question Operations
+## 3. Command Reference
 
-#### `airlock question ask`
+### 3.1 `airlock init [--name <name>] [--template <name>]`
+
+- **No marker in the current directory:** creates a project with a new uuid in the hub (`project.json` from the template, empty database) and writes `.airlock` into the current directory. `--name` defaults to the directory name.
+- **Marker present, project known to the hub:** no-op; prints the project id and name.
+- **Marker present, project unknown to the hub** (fresh clone on a new machine): creates the hub project *with the marker's id*. If the configured snapshot file exists, prints a hint to run `airlock import`.
+
+Commit `.airlock` to the repository.
+
+### 3.2 Task Operations
+
+#### `airlock task list [--role <role>] [--status <status>]`
+Lists tasks as a table (id, status, role, priority, claimed by, title). `<status>` is one of `blocked`, `ready`, `in_progress`, `in_review`, `done` (effective status, Spec 01 §2.1).
+
+#### `airlock task next --role <role>`
+Shows the next ready task for the role (selection order: Spec 01 §2.1) as a compact work package: id, title, prerequisites, **Read**, **Touch**, **Do**, **Verify**. Does not claim it. Exits `1` with a clear message if no task is ready.
+
+#### `airlock task show <id>`
+Shows one task in full, including dependents and lease information.
+
+#### `airlock task add <id> "<title>" --role <role> --do "<instructions>" --verify "<command>" [options]`
 ```bash
-airlock question ask "<question>" --topic <spec-or-subsystem> [--session <id>]
+airlock task add E-6d "Missiles implementation" --role engine \
+  --read docs/spec/missiles.md --read docs/spec/combat.md \
+  --touch src/missiles.rs \
+  --do "Implement shot clock and volley firing cycle" \
+  --verify "cargo test missiles" \
+  --blocked-by L-1,L-2 --priority 10
 ```
-Submits a question across the airlock.
+`--read` and `--touch` are repeatable; `--blocked-by` takes a comma-separated list of **existing** task ids. Fails on a duplicate id, an unknown role, or an unknown prerequisite.
 
-#### `airlock question list`
-```bash
-airlock question list [--topic <topic>] [--status <open|answered|resolved>]
-```
-Lists open or answered questions.
+#### `airlock task claim <id> [--lease <minutes>]`
+Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked.
 
-#### `airlock question answer`
-```bash
-airlock question answer <id> "<answer>" [--session <id>]
-```
-Answers an open question.
+#### `airlock task heartbeat <id> [--lease <minutes>]`
+Extends the current session's lease from now. Fails if the session does not hold the lease.
 
----
+#### `airlock task release <id> [--force]`
+Returns a claimed task to `open`. Without `--force`, only the lease holder may release.
 
-### 2.4 Server & Integration
+#### `airlock task done <id> [--notes <text>] [--review] [--force]`
+Finishes a claimed task: `done`, or `in_review` with `--review`. Without `--force`, only the lease holder may finish it. Prints the ids of tasks that became ready.
 
-#### `airlock mcp`
-Starts the stdio Model Context Protocol (MCP) server for direct LLM agent integration.
+#### `airlock task approve <id> [--notes <text>]` / `airlock task reject <id> --notes <text>`
+Resolves a task under review: `approve` → `done`; `reject` → `open` with the feedback stored in `notes`.
+
+### 3.3 Question Operations
+
+#### `airlock question ask "<question>" --topic <spec-or-subsystem>`
+Submits a question; prints its id.
+
+#### `airlock question list [--topic <topic>] [--status <open|answered|resolved>]`
+Lists questions, newest first.
+
+#### `airlock question answer <id> "<answer>" [--spec <file>]`
+Answers or revises the answer to a question that is not resolved.
+
+#### `airlock question resolve <id> [--spec <file>]`
+Closes an answered question, optionally recording the spec file that now codifies the answer.
+
+### 3.4 Servers and Export
+
+#### `airlock mcp [--role <role>]`
+Runs the MCP server over stdio (Spec 03). `--role` binds the server to one role.
 
 #### `airlock serve [--port <port>]`
-Starts the local HTTP server hosting the REST API, Server-Sent Events (SSE), and embedded web dashboard.
+Serves the dashboard and REST/SSE API on `127.0.0.1:<port>` (default 3000; Spec 04).
 
-#### `airlock sync`
-Deterministically exports the current database state into all configured artifacts: the canonical JSON snapshot (`docs/.airlock-state.json`, the only `airlock import` source) and the Markdown views (`docs/PLAN.md`, `docs/spec/QUESTIONS.md`). See Spec 05.
+#### `airlock sync [--force]`
+Writes the canonical snapshot and Markdown views into the project root (Spec 05 §3). Refuses to overwrite a snapshot changed outside this hub unless `--force` is given (Spec 05 §3.5).
 
-#### `airlock import [--yes]`
-Reconstructs project state from the JSON snapshot (replace-all, with confirmation). Markdown files are never parsed for reconstruction.
+#### `airlock import [--from <path>] [--yes]`
+Replaces the project's tasks, questions, and roles with a snapshot (default: the configured `state_file` in the project root). Validates before writing; asks for confirmation unless `--yes`. Markdown files are never parsed for reconstruction.

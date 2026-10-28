@@ -2,46 +2,48 @@
 
 ---
 
-## What it is?
+## What It Is
 
-**Airlock** is a universal, local-first multi-agent workflow coordinator and task management hub written in Rust. It eliminates merge conflicts, token waste, and coordination overhead in projects where multiple AI agent sessions and human developers work concurrently across distinct roles or git worktrees.
-
-It replaces fragile, monolithic markdown roadmaps with an atomic, concurrent task and question store while providing dual interfaces: native Model Context Protocol (MCP) tools for AI agents and a command-line interface (CLI) with an embedded web dashboard for developers.
+**Airlock** is a local-first coordinator for projects in which several AI agent sessions and human developers work concurrently, often across git worktrees. It keeps tasks, questions, and session leases in one store outside the repository and exposes them through a CLI, an MCP server for agents, and a local web dashboard. Hand-edited plan files are replaced by generated, conflict-tolerant exports.
 
 ---
 
 ## Project Stats
 
-- **Language:** Rust (Edition 2024, Rust 1.98+)
-- **Primary Interfaces:** CLI (`clap`), MCP (stdio JSON-RPC), Web Server (`axum` embedded)
-- **Persistence:** Central hub store — one SQLite database (WAL mode) per project under `~/.local/state/airlock/projects/<uuid>/`, referenced from project directories via a merge-trivial `.airlock` marker file
+- **Language:** Rust (edition 2024, MSRV 1.85)
+- **Interfaces:** CLI (`clap`); planned: MCP over stdio, local web server (`axum`)
+- **Persistence (planned):** one SQLite database (WAL) per project in the hub directory (`~/.local/state/airlock/projects/<uuid>/` on Linux), referenced from the repository by a `.airlock` marker file
+- **Status:** scaffold — see [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md)
 - **License:** MIT
-- **Repository Location:** `/home/peter/Projects/airlock`
-- **Current Branch:** `feat/initial-scaffold-and-specs`
 
 ---
 
 ## Architectural Decisions
 
-### 1. Standalone Single Binary Architecture
-- **Decision:** Airlock is built as an independent, zero-runtime-dependency binary in Rust.
-- **Rationale:** A single binary can be installed globally (`cargo install`) and used across any software project regardless of the target project's tech stack (Rust, Python, TypeScript, C++, etc.).
+### 1. Single Binary, Dual Interface
+- **Decision:** One Rust binary contains the CLI, the MCP stdio server (`airlock mcp`), and the dashboard server (`airlock serve`).
+- **Rationale:** Installable once (`cargo install`) and usable with any project's tech stack; agents and humans use the same tool and the same rules.
 
-### 2. Dual Interface (CLI + MCP) in One Executable
-- **Decision:** Both the CLI subcommands and the MCP server stdio loop reside in the same binary.
-- **Rationale:** AI agents can be launched pointing directly to `airlock mcp` via their configuration, while humans and CI scripts invoke `airlock task ...` without needing two different tools.
+### 2. Hub Store Outside the Repository
+- **Decision:** Live state lives in SQLite (WAL mode) in a per-user hub directory, not in the repository. Projects reference it through a committed, immutable `.airlock` marker containing only the project id.
+- **Rationale:** Each git worktree has its own working tree, so a repo-local database would fork per worktree. A hub store is shared by all worktrees and sessions on the machine. No daemon: each invocation opens the database, runs one immediate transaction with conditional state transitions, and exits.
+- **Scope:** one machine per project state in v0.x; multi-machine sync is a separate future design.
 
-### 3. SQLite with Write-Ahead Logging (WAL)
-- **Decision:** Use an embedded SQLite database as the primary source of truth for live task status, locks, and questions.
-- **Rationale:** Unlike JSON or Markdown files that lock the entire file during writes, SQLite WAL allows concurrent readers and writers across different git worktrees and shell sessions without file corruption or race conditions. The hub store lives **outside** every repository (git worktrees each own a working-tree copy, so a repo-local database would fork per worktree), so all worktrees and clones of a project resolve the same state.
+### 3. Derived Readiness
+- **Decision:** Only `open / in_progress / in_review / done` is stored. `blocked` vs. `ready` and the "unblocks" relation are derived from `blocked_by` on every read.
+- **Rationale:** Redundant stored state drifts; derived state cannot.
 
-### 4. Deterministic Markdown Export Layer
-- **Decision:** Decouple live state from Git by exporting on demand (`airlock sync`) into a canonical JSON snapshot (`docs/.airlock-state.json`, the lossless backup and import source) plus generated Markdown views (`docs/PLAN.md`, `docs/spec/QUESTIONS.md`). Generated files are never hand-resolved: merge conflicts are cleared by re-running `airlock sync`.
-- **Rationale:** Developers retain human-readable progress documents in git history without suffering day-to-day merge conflicts from concurrent sessions modifying the same line numbers.
+### 4. Canonical Snapshot, Generated Views
+- **Decision:** `airlock sync` writes a byte-stable JSON snapshot (the only import source) and Markdown views into the invoking worktree. Session state (claims, leases) is not exported. Generated files are never hand-resolved; a hash-based guard refuses to overwrite snapshots this hub did not produce.
+- **Rationale:** Git keeps a reviewable, restorable history of the plan without day-to-day merge conflicts, and a snapshot from another machine cannot be silently clobbered.
 
-### 5. Clean-Room Boundary Protocol (The "Airlock")
-- **Decision:** Structured question-and-answer entity (`Question`) separated from implementation code.
-- **Rationale:** Clean-room implementation sessions (e.g. Engine) must never directly access decompiled or proprietary sources; their questions are answered purely in behavioral prose and committed specs.
+### 5. Airlock Boundary as Structure, Not Enforcement
+- **Decision:** Questions and prose answers form a recorded channel between sessions; MCP servers bound to clean-room roles expose a restricted tool set.
+- **Rationale:** This prevents accidental leaks by cooperating agents and leaves an audit trail. Session ids are self-declared, so hard isolation is delegated to the environment (separate OS user, container, sandbox).
+
+### 6. Local-Only Web Server
+- **Decision:** The dashboard binds to loopback only and requires a per-start token; Host and Origin headers are checked. Airlock never executes a task's `verify` command.
+- **Rationale:** A state-mutating local HTTP API is otherwise reachable from any website via CSRF or DNS rebinding.
 
 ---
 
@@ -49,78 +51,80 @@ It replaces fragile, monolithic markdown roadmaps with an atomic, concurrent tas
 
 ```mermaid
 graph TD
-    subgraph Storage ["Persistence Layer"]
-        DB["Hub Store: ~/.local/state/airlock/projects/<uuid>/airlock.db (SQLite WAL)"]
-        Config["project.json (Hub-side Config) + .airlock Marker (project id)"]
+    subgraph Storage ["Hub (per user, outside repositories)"]
+        DB["projects/{uuid}/airlock.db (SQLite WAL)"]
+        Config["projects/{uuid}/project.json"]
     end
 
     subgraph CoreEngine ["Airlock Core"]
-        TaskEngine["Task & Dependency Engine"]
-        QuestionEngine["Airlock Question Queue"]
-        SyncEngine["Markdown Generator & Sync"]
+        TaskEngine["Tasks, Leases & Dependencies"]
+        QuestionEngine["Question Channel"]
+        SyncEngine["Snapshot & Markdown Export"]
     end
 
-    subgraph Interfaces ["Access Interfaces"]
-        CLIHandler["CLI Engine (clap)"]
-        MCPHandler["MCP Protocol Engine (stdio)"]
-        WebHandler["Web & REST Server (axum)"]
+    subgraph Interfaces ["Interfaces"]
+        CLIHandler["CLI (clap)"]
+        MCPHandler["MCP Server (stdio)"]
+        WebHandler["Web & REST/SSE (axum, loopback)"]
     end
 
     subgraph Consumers ["Consumers"]
-        AgentSession["AI Agent Sessions (Claude / Antigravity)"]
-        TerminalUser["Human Developer (CLI)"]
-        WebBrowser["Human Developer (Browser Dashboard)"]
+        AgentSession["AI Agent Sessions"]
+        TerminalUser["Developer (terminal)"]
+        WebBrowser["Developer (browser)"]
     end
 
     Interfaces <--> CoreEngine
     CoreEngine <--> Storage
-    SyncEngine -.->|Exports| GitFiles["docs/PLAN.md & docs/spec/QUESTIONS.md"]
+    SyncEngine -.->|writes into invoking worktree| GitFiles["docs/.airlock-state.json, docs/PLAN.md, docs/spec/QUESTIONS.md"]
+    Marker[".airlock marker (project id)"] -.->|resolves| DB
 
-    AgentSession <-->|MCP Stdio / Tools| MCPHandler
-    TerminalUser <-->|CLI Commands| CLIHandler
-    WebBrowser <-->|HTTP / REST / SSE| WebHandler
+    AgentSession <-->|MCP tools| MCPHandler
+    TerminalUser <-->|commands| CLIHandler
+    WebBrowser <-->|HTTP + token| WebHandler
 ```
 
 ---
 
-## Source Files Description
+## Source Files
 
-### Source Directory (`src/`)
-- [`src/lib.rs`](file:///home/peter/Projects/airlock/src/lib.rs): Library root, module definitions, and version export.
-- [`src/main.rs`](file:///home/peter/Projects/airlock/src/main.rs): Application entry point, CLI argument parsing (`clap`), and command dispatch.
-- [`src/config.rs`](file:///home/peter/Projects/airlock/src/config.rs): Project configuration model (`ProjectConfig`, `RoleConfig`, `ExportConfig`).
-- [`src/core.rs`](file:///home/peter/Projects/airlock/src/core.rs): Domain entities (`Task`, `Question`, `TaskStatus`, `QuestionStatus`).
+### `src/`
+- [`src/main.rs`](src/main.rs): Entry point; parses the CLI. Commands currently exit with "not implemented yet".
+- [`src/lib.rs`](src/lib.rs): Library root and module declarations.
+- [`src/cli.rs`](src/cli.rs): Complete CLI definition (Spec 02) with global `--project`, `--session`, `--json`.
+- [`src/core.rs`](src/core.rs): Domain model — `Task`, `TaskState`, derived `TaskStatus`, leases, `Question`, dependency graph validation.
+- [`src/config.rs`](src/config.rs): Hub-side project configuration (`ProjectConfig`, `RoleConfig`, `ExportConfig`).
+- [`src/snapshot.rs`](src/snapshot.rs): Canonical JSON snapshot model, serializer, and import validation.
 
-### Tests (`tests/`)
-- [`tests/smoke_test.rs`](file:///home/peter/Projects/airlock/tests/smoke_test.rs): Smoke test suite verifying serialization, deserialization, and default configurations.
+### `tests/`
+- [`tests/model.rs`](tests/model.rs): Derived status, leases, dependents, graph validation, config defaults.
+- [`tests/snapshot.rs`](tests/snapshot.rs): Golden-file test pinning the exact snapshot bytes; session state exclusion; round trip.
+- [`tests/cli.rs`](tests/cli.rs): Documented invocations parse; clap definition consistency.
+- [`tests/common/mod.rs`](tests/common/mod.rs): Shared fixtures.
 
-### Documentation (`docs/`)
-- [`docs/spec/README.md`](file:///home/peter/Projects/airlock/docs/spec/README.md): Index of technical specifications.
-- [`docs/spec/01_architecture_and_data_model.md`](file:///home/peter/Projects/airlock/docs/spec/01_architecture_and_data_model.md): Detailed data structures and lifecycle states.
-- [`docs/spec/02_cli_interface.md`](file:///home/peter/Projects/airlock/docs/spec/02_cli_interface.md): Specification of command-line syntax and behavior.
-- [`docs/spec/03_mcp_protocol.md`](file:///home/peter/Projects/airlock/docs/spec/03_mcp_protocol.md): Model Context Protocol tools and schemas.
-- [`docs/spec/04_web_dashboard_and_api.md`](file:///home/peter/Projects/airlock/docs/spec/04_web_dashboard_and_api.md): Specification of the REST API, SSE, and embedded Kanban UI.
-- [`docs/spec/05_git_sync_and_airlock.md`](file:///home/peter/Projects/airlock/docs/spec/05_git_sync_and_airlock.md): Clean-room boundary enforcement and git synchronization strategy.
-- [`docs/plans/PHASE_PLAN.md`](file:///home/peter/Projects/airlock/docs/plans/PHASE_PLAN.md): Step-by-step development phases.
-- [`docs/plans/ROADMAP.md`](file:///home/peter/Projects/airlock/docs/plans/ROADMAP.md): High-level feature roadmap and releases.
-- [`docs/walkthroughs/quickstart.md`](file:///home/peter/Projects/airlock/docs/walkthroughs/quickstart.md): Step-by-step user onboarding guide.
+### `docs/`
+- [`docs/spec/`](docs/spec/README.md): Specifications 01–05.
+- [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md): Implementation phases.
+- [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md): Milestones.
+- [`docs/walkthroughs/quickstart.md`](docs/walkthroughs/quickstart.md): User walkthrough.
 
 ---
 
-## Dependencies and Their Purpose
+## Dependencies
 
-All dependencies are locked to exact versions in [`Cargo.lock`](file:///home/peter/Projects/airlock/Cargo.lock).
+All dependencies are locked in [`Cargo.lock`](Cargo.lock).
 
 | Dependency | Purpose |
 |---|---|
-| `clap` (4.6.7) | High-performance command-line argument parser with derive macro support. |
-| `serde` (1.0.229) | Generic serialization and deserialization framework. |
-| `serde_json` (1.0.154) | JSON data format serializer and parser for MCP protocol and configuration. |
-| `anyhow` (1.0.104) | Ergonomic error handling and context propagation across CLI commands. |
+| `clap` (4.6, `derive`, `env`) | CLI parsing; environment fallbacks for `AIRLOCK_PROJECT` / `AIRLOCK_SESSION` |
+| `serde` (1.0) | Serialization framework |
+| `serde_json` (1.0) | Snapshot, config, MCP, and `--json` output |
+| `anyhow` (1.0) | Error propagation in the binary |
+
+Planned: `rusqlite` (Phase 1), `axum` and `rust-embed` (Phase 4).
 
 ---
 
-## Additional References
+## References
 
-- Model Context Protocol (MCP) Specification: https://modelcontextprotocol.io
-- OpenSHR Project Reference: Clean-room separation workflow defined in `/home/peter/Projects/openshr/docs/PROCESS.md`.
+- Model Context Protocol specification: https://modelcontextprotocol.io
