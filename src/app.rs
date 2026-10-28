@@ -5,7 +5,7 @@ use crate::config::ProjectConfig;
 use crate::core::{Question, Task, TaskState, TaskStatus, dependents};
 use crate::hub::{Hub, MARKER_FILE, Marker, Project};
 use crate::store::{Completion, NewTask, Store};
-use crate::sync;
+use crate::{mcp, sync};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::json;
@@ -27,6 +27,22 @@ pub fn run(cli: Cli) -> Result<()> {
     };
 
     let project = hub.resolve(cli.project.as_deref(), &cwd)?;
+    if let Command::Mcp { role } = command {
+        // Agents rarely set a session id; give each server its own.
+        let session = cli
+            .session
+            .unwrap_or_else(|| format!("mcp-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        eprintln!(
+            "airlock mcp: project {} ({}), session {session}{}",
+            project.config.name,
+            project.id,
+            role.as_deref()
+                .map(|r| format!(", role {r}"))
+                .unwrap_or_default()
+        );
+        let mut server = mcp::Server::new(hub, project, session, role)?;
+        return server.run(std::io::stdin().lock(), std::io::stdout().lock());
+    }
     let session = cli.session.unwrap_or_else(default_session);
     let mut store = Store::open(&project.database)?;
 
@@ -192,19 +208,7 @@ fn task(
         TaskCommand::Next { role } => {
             ensure_role(project, &role)?;
             let tasks = store.tasks(now)?;
-            let done = done_ids(&tasks);
-            let next = tasks
-                .iter()
-                .map(|t| TaskView::new(t, &done))
-                .filter(|v| v.task.role == role && v.status == TaskStatus::Ready)
-                .min_by(|a, b| {
-                    // Highest priority first, then oldest, then by id.
-                    b.task
-                        .priority
-                        .cmp(&a.task.priority)
-                        .then(a.task.created_at.cmp(&b.task.created_at))
-                        .then(a.task.id.cmp(&b.task.id))
-                })
+            let next = next_ready(&tasks, &role)
                 .with_context(|| format!("no ready task for role `{role}`"))?;
             out.print(&next, || work_package(&next))
         }
@@ -304,16 +308,16 @@ fn question(
 
 /// A task together with its effective status, as printed by `--json`.
 #[derive(Debug, Serialize)]
-struct TaskView<'a> {
+pub(crate) struct TaskView<'a> {
     #[serde(flatten)]
-    task: &'a Task,
-    status: TaskStatus,
+    pub task: &'a Task,
+    pub status: TaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    dependents: Option<Vec<String>>,
+    pub dependents: Option<Vec<String>>,
 }
 
 impl<'a> TaskView<'a> {
-    fn new(task: &'a Task, done: &HashSet<&str>) -> Self {
+    pub fn new(task: &'a Task, done: &HashSet<&str>) -> Self {
         Self {
             task,
             status: task.status(|id| done.contains(id)),
@@ -386,7 +390,23 @@ fn new_task(spec: TaskSpec) -> NewTask {
     }
 }
 
-fn ensure_role(project: &Project, role: &str) -> Result<()> {
+/// The next ready task of `role`: highest priority first, then oldest, then by id (Spec 01 §2.1).
+pub(crate) fn next_ready<'a>(tasks: &'a [Task], role: &str) -> Option<TaskView<'a>> {
+    let done = done_ids(tasks);
+    tasks
+        .iter()
+        .map(|t| TaskView::new(t, &done))
+        .filter(|v| v.task.role == role && v.status == TaskStatus::Ready)
+        .min_by(|a, b| {
+            b.task
+                .priority
+                .cmp(&a.task.priority)
+                .then(a.task.created_at.cmp(&b.task.created_at))
+                .then(a.task.id.cmp(&b.task.id))
+        })
+}
+
+pub(crate) fn ensure_role(project: &Project, role: &str) -> Result<()> {
     ensure!(
         project.config.roles.contains_key(role),
         "unknown role `{role}`; defined roles: {}",
@@ -401,7 +421,7 @@ fn ensure_role(project: &Project, role: &str) -> Result<()> {
     Ok(())
 }
 
-fn done_ids(tasks: &[Task]) -> HashSet<&str> {
+pub(crate) fn done_ids(tasks: &[Task]) -> HashSet<&str> {
     tasks
         .iter()
         .filter(|t| t.state == TaskState::Done)
@@ -514,7 +534,7 @@ fn question_list(questions: &[Question]) -> String {
 }
 
 /// The directory of the marker that selected the project; required for file exports.
-fn project_root<'a>(project: &'a Project, command: &str) -> Result<&'a Path> {
+pub(crate) fn project_root<'a>(project: &'a Project, command: &str) -> Result<&'a Path> {
     project.root.as_deref().with_context(|| {
         format!("`airlock {command}` needs a project root: run it inside a directory with the project's {MARKER_FILE} marker")
     })
@@ -539,7 +559,7 @@ fn default_session() -> String {
     format!("human:{user}")
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
