@@ -11,9 +11,9 @@
 ## Project Stats
 
 - **Language:** Rust (edition 2024, MSRV 1.85)
-- **Interfaces:** CLI (`clap`); planned: MCP over stdio, local web server (`axum`)
+- **Interfaces:** CLI (`clap`), MCP server over stdio; planned: local web server (`axum`)
 - **Persistence:** one SQLite database (WAL) per project in the hub directory (`~/.local/state/airlock/projects/<uuid>/` on Linux, override with `AIRLOCK_HOME`), referenced from the repository by a `.airlock` marker file
-- **Status:** Phase 1 (hub store and CLI) complete, Phase 2 (sync and import) in progress — see [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md)
+- **Status:** Phase 1 (hub store and CLI) complete, Phase 2 (sync and import) mostly complete, Phase 3 (MCP server) in progress — see [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md)
 - **License:** MIT
 
 ---
@@ -99,6 +99,7 @@ graph TD
 - [`src/config.rs`](src/config.rs): Hub-side project configuration (`ProjectConfig`, `RoleConfig`, `ExportConfig`).
 - [`src/snapshot.rs`](src/snapshot.rs): Canonical JSON snapshot model, serializer, and graph validation.
 - [`src/sync.rs`](src/sync.rs): `sync` (exports, foreign-change guard, atomic writes) and `import` (checks, replace-all, role update).
+- [`src/mcp.rs`](src/mcp.rs): MCP server — JSON-RPC over stdio, project/session/role binding, tool definitions, clean-room tool set.
 - [`src/views.rs`](src/views.rs): `PLAN.md` and `QUESTIONS.md` rendered from a snapshot.
 
 ### `tests/`
@@ -107,6 +108,7 @@ graph TD
 - [`tests/cli.rs`](tests/cli.rs): Documented invocations parse; clap definition consistency.
 - [`tests/store.rs`](tests/store.rs): Store transitions, lease expiry, validation, persistence, concurrent claims across connections.
 - [`tests/e2e.rs`](tests/e2e.rs): The binary against a temporary hub — init and marker adoption, project resolution across worktrees, JSON output, concurrent claims across processes, sync stability and guard, handover between two hubs, import validation.
+- [`tests/mcp.rs`](tests/mcp.rs): The MCP server through the binary — handshake, protocol errors, full workflow, clean-room and role-bound sessions.
 - [`tests/views.rs`](tests/views.rs): Exact layout of the generated views.
 - [`tests/common/mod.rs`](tests/common/mod.rs): Shared fixtures.
 

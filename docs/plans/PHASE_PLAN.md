@@ -20,7 +20,7 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 
 ---
 
-## Phase 2: Sync & Import (Current)
+## Phase 2: Sync & Import
 - [x] Canonical snapshot model and serializer with golden-file test (`src/snapshot.rs`).
 - [x] `airlock sync`: snapshot plus `PLAN.md` / `QUESTIONS.md` views, foreign-change guard (Spec 05 §3.5).
 - [x] `airlock import` with validation and confirmation.
@@ -28,9 +28,9 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 
 ---
 
-## Phase 3: MCP Server
-- [ ] Stdio MCP server with project/session/role binding.
-- [ ] Tools per Spec 03, including the restricted clean-room tool set.
+## Phase 3: MCP Server (Current)
+- [x] Stdio MCP server with project/session/role binding.
+- [x] Tools per Spec 03, including the restricted clean-room tool set.
 - [ ] Agent testing with Claude Code and Antigravity.
 
 ---

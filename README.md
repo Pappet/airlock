@@ -2,7 +2,7 @@
 
 A local-first coordinator for multi-agent and human development sessions: tasks, questions, and leases in one store shared by every worktree of a project.
 
-> **Status: Phase 2.** The hub store, the task and question CLI, and `sync`/`import` work. The MCP server and the dashboard are specified in [`docs/spec/`](docs/spec/) but not built yet; `airlock mcp` and `airlock serve` exit with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
+> **Status: Phase 3.** The hub store, the task and question CLI, `sync`/`import`, and the MCP server work. The dashboard is specified in [`docs/spec/`](docs/spec/) but not built yet; `airlock serve` exits with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
 
 ---
 

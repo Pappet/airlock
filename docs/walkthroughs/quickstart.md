@@ -61,6 +61,23 @@ airlock task done E-1 --notes "Window and event loop implemented; cargo test set
 
 Use `airlock task done E-1 --review` to hand the task to a human for approval (`airlock task approve` / `airlock task reject --notes ...`). If a session crashes, its lease expires and the task becomes claimable again.
 
+### Connecting an AI agent over MCP
+
+Instead of running CLI commands, an agent can use Airlock's MCP tools directly. For Claude Code, add a `.mcp.json` next to the `.airlock` marker of the worktree the agent works in:
+
+```json
+{
+  "mcpServers": {
+    "airlock": {
+      "command": "airlock",
+      "args": ["mcp", "--role", "engine", "--session", "engine-agent-1"]
+    }
+  }
+}
+```
+
+The server is bound to the project, the session, and the role. For a clean-room role (`engine` in the default template) the agent only sees the tools it needs — `task_next`, `task_claim`, `task_heartbeat`, `task_complete`, `question_ask`, and a few more — and only its own role's tasks and its own questions. See [Spec 03](../spec/03_mcp_protocol.md).
+
 ---
 
 ## 5. Asking Questions Across the Airlock
