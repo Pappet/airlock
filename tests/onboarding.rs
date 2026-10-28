@@ -498,3 +498,79 @@ fn setup_prints_harness_configurations() {
             .contains("no role")
     );
 }
+
+#[test]
+fn concurrent_use_calls_keep_every_binding() {
+    let env = Env::new();
+    let marker = std::fs::read(env.main.join(".airlock")).unwrap();
+    let dirs: Vec<PathBuf> = (0..8)
+        .map(|i| {
+            let dir = env.tmp.path().join(format!("wt{i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(".airlock"), &marker).unwrap();
+            dir
+        })
+        .collect();
+    let children: Vec<_> = dirs
+        .iter()
+        .map(|dir| {
+            env.cmd(dir, &["use", "lead"])
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+    for (i, dir) in dirs.iter().enumerate() {
+        assert_eq!(
+            env.json(dir, &["use"])["session"],
+            format!("lead@wt{i}"),
+            "binding of wt{i} lost"
+        );
+    }
+}
+
+#[test]
+fn use_and_role_flags_are_consistent() {
+    let env = Env::new();
+    let out = env.run(&env.main, &["use", "--lock"]);
+    assert_eq!(out.status.code(), Some(2), "--lock needs a role");
+    assert_eq!(env.json(&env.main, &["use", "--clear"])["removed"], false);
+
+    env.ok(&env.main, &["role", "set", "lead", "--read", "CLAUDE.md"]);
+    let cleared = env.json(&env.main, &["role", "set", "lead", "--clear-read"]);
+    assert!(
+        cleared.get("read").is_none(),
+        "empty list is omitted: {cleared}"
+    );
+    assert_eq!(
+        env.run(
+            &env.main,
+            &["role", "set", "lead", "--read", "x", "--clear-read"]
+        )
+        .status
+        .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn doctor_understands_flags_with_equals_sign() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine", "--lock"]);
+    std::fs::write(
+        env.engine.join(".mcp.json"),
+        json!({ "mcpServers": { "airlock": { "command": "airlock", "args": ["mcp", "--role=lead"] } } }).to_string(),
+    )
+    .unwrap();
+    let findings = env.json(&env.main, &["doctor"]);
+    assert!(
+        findings.as_array().unwrap().iter().any(|f| f["message"]
+            .as_str()
+            .unwrap()
+            .contains("--role lead contradicts the locked binding")),
+        "{findings}"
+    );
+}

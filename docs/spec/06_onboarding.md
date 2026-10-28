@@ -17,17 +17,14 @@ Like every Airlock restriction, bindings are guardrails for cooperating agents, 
 ## 2. Worktree Bindings
 
 ### 2.1 Storage
-Bindings are machine-local and live in the hub, next to the project's database:
+Bindings are machine-local and live in the project's hub database (table `bindings`, schema version 3), never in the snapshot:
 
-```
-<hub>/projects/<uuid>/bindings.json
-{
-  "/home/peter/Projects/openshr-engine": { "role": "engine", "session": "engine@openshr-engine", "locked": true },
-  "/home/peter/Projects/openshr":        { "role": "lead",   "session": "lead@openshr",          "locked": false }
-}
-```
+| root | role | session | locked |
+|---|---|---|---|
+| `/home/peter/Projects/openshr-engine` | `engine` | `engine@openshr-engine` | yes |
+| `/home/peter/Projects/openshr` | `lead` | `lead@openshr` | no |
 
-Keys are canonical absolute paths of project roots (the directory holding the `.airlock` marker). Keeping bindings out of the repository means nothing to ignore or commit, nothing for `git clean` to delete, and nothing an agent edits by writing a file in its worktree. Moving a worktree loses its binding; `airlock doctor` reports bindings whose directory is gone.
+Roots are canonical absolute paths of project roots (the directory holding the `.airlock` marker). Binding and unbinding run in an immediate transaction that checks the lock and writes together, so concurrent `airlock use` calls in different worktrees cannot lose each other's bindings. Keeping bindings out of the repository means nothing to ignore or commit, nothing for `git clean` to delete, and nothing an agent edits by writing a file in its worktree. Moving a worktree loses its binding; `airlock doctor` reports bindings whose directory is gone.
 
 ### 2.2 `airlock use`
 ```bash
@@ -37,7 +34,7 @@ airlock use --clear              # remove the binding
 ```
 - The role must exist in the project configuration.
 - The session id is `--session`/`AIRLOCK_SESSION` if given, otherwise `<role>@<directory name>` (e.g. `engine@openshr-engine`). It stays fixed across restarts, so a restarted agent remains the holder of its leases.
-- `--lock` marks the binding as locked: `use` refuses to change or clear it unless `--force` is given, and `airlock mcp --role` refuses a different role. Intended for clean-room worktrees.
+- `--lock` requires a role. It marks the binding as locked: `use` refuses to change or clear it unless `--force` is given, and `airlock mcp --role` refuses a different role. Intended for clean-room worktrees.
 - `use` works only inside a project root found through a marker (Spec 02 §2.2), not with `--project` alone.
 
 ### 2.3 Effect on Commands
@@ -93,7 +90,7 @@ airlock role list
 airlock role set <name> [--description <text>] [--clean-room <true|false>] [--instructions <text>] [--read <file>]...
 airlock role remove <name>
 ```
-`role set` creates the role if missing; given `--read` options replace the list. `role remove` refuses while tasks or bindings use the role.
+`role set` creates the role if missing; given `--read` options replace the list, `--clear-read` empties it, and `--instructions ""` removes the instructions. `role remove` refuses while tasks or bindings use the role.
 
 ---
 
@@ -106,7 +103,7 @@ Checks an installation and prints one line per finding (`ok`, `warn`, `error`; `
 3. **Marker in git:** whether `.airlock` is tracked (needs `git`; skipped otherwise).
 4. **Worktrees:** for every `git worktree`: marker present and of this project, binding (role, session, lock).
 5. **Bindings:** roles that no longer exist (error), directories that are gone (warn), the same session id bound to several worktrees (warn).
-6. **Harness configurations** mentioning `airlock`: Claude Code (`.mcp.json` in each worktree, local-scope entries in `~/.claude.json`) and Antigravity (`~/.gemini/antigravity/mcp_config.json`). Reports commands that do not exist, global entries without `-C`/`--project` (they only work if the client starts them inside a project), `--role` values contradicting a locked binding, and session ids used by several entries. DSH profiles are YAML patches and are only listed, not parsed; `dsh --profile <name> --dump-config` shows the composed result.
+6. **Harness configurations** mentioning `airlock`: Claude Code (`.mcp.json` in each worktree, local-scope entries in `~/.claude.json`) and Antigravity (`~/.gemini/antigravity/mcp_config.json`). Flags are recognized in both forms (`--role lead`, `--role=lead`). Reports commands that do not exist, global entries without `-C`/`--project` (they only work if the client starts them inside a project), `--role` values contradicting a locked binding, and session ids used by several entries. DSH profiles are YAML patches and are only listed, not parsed; `dsh --profile <name> --dump-config` shows the composed result.
 
 Airlock calls `git` here only to inspect the setup; it still never uses git to locate state (Spec 05 §2.2).
 

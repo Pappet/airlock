@@ -1,6 +1,7 @@
 //! Hub directory, project registry, and `.airlock` marker resolution (Spec 01 §3.1, Spec 02 §2.2).
 
 use crate::config::ProjectConfig;
+use crate::store::Store;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13,7 +14,6 @@ pub const MARKER_FILE: &str = ".airlock";
 const PROJECTS_DIR: &str = "projects";
 const CONFIG_FILE: &str = "project.json";
 const DATABASE_FILE: &str = "airlock.db";
-const BINDINGS_FILE: &str = "bindings.json";
 
 /// A worktree's role and session (Spec 06 §2), keyed by canonical project root.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,42 +227,22 @@ impl Hub {
                 (marker.project_id, Some(dir))
             }
         };
+        let database = self.database_path(&id)?;
         let binding = match &root {
-            Some(root) => self.bindings(&id)?.remove(&binding_key(root)?),
+            Some(root) => Store::open(&database)?.binding(&binding_key(root)?)?,
             None => None,
         };
         Ok(Project {
             config: self.load_config(&id)?,
-            database: self.database_path(&id)?,
+            database,
             id,
             root,
             binding,
         })
     }
-
-    pub fn bindings(&self, id: &str) -> Result<Bindings> {
-        let path = self.project_dir(id)?.join(BINDINGS_FILE);
-        match fs::read_to_string(&path) {
-            Ok(text) => {
-                serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Bindings::new()),
-            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-        }
-    }
-
-    /// Writes `bindings.json` atomically.
-    pub fn save_bindings(&self, id: &str, bindings: &Bindings) -> Result<()> {
-        let dir = self.project_dir(id)?;
-        let mut json = serde_json::to_string_pretty(bindings)?;
-        json.push('\n');
-        let tmp = dir.join(format!("{BINDINGS_FILE}.tmp"));
-        fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
-        fs::rename(&tmp, dir.join(BINDINGS_FILE)).context("replacing bindings.json")
-    }
 }
 
-/// The key of a project root in `bindings.json`: its canonical absolute path.
+/// The key of a project root in the bindings table: its canonical absolute path.
 pub fn binding_key(root: &Path) -> Result<String> {
     let path = fs::canonicalize(root).with_context(|| format!("resolving {}", root.display()))?;
     path.into_os_string()

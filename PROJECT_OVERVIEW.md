@@ -96,8 +96,8 @@ graph TD
 - [`src/briefing.rs`](src/briefing.rs): Session briefing (structured and Markdown) for `airlock start` and MCP `session_start` / prompt `start`.
 - [`src/doctor.rs`](src/doctor.rs): `airlock doctor` — binary, project, marker, worktrees, bindings, harness configurations.
 - [`src/setup.rs`](src/setup.rs): `airlock setup` — MCP configuration snippets for Claude Code, Antigravity, and DSH.
-- [`src/hub.rs`](src/hub.rs): Hub directory, project registry (`project.json`), worktree bindings (`bindings.json`), `.airlock` marker discovery and project resolution.
-- [`src/store.rs`](src/store.rs): SQLite store — schema, WAL setup, immediate write transactions, lazy lease expiry, task and question transitions.
+- [`src/hub.rs`](src/hub.rs): Hub directory, project registry (`project.json`), `.airlock` marker discovery and project resolution.
+- [`src/store.rs`](src/store.rs): SQLite store — schema and migrations, WAL setup, worktree bindings, immediate write transactions, lazy lease expiry, task and question transitions.
 - [`src/core.rs`](src/core.rs): Domain model — `Task`, `TaskState`, derived `TaskStatus`, leases, `Question`, dependency graph validation.
 - [`src/config.rs`](src/config.rs): Hub-side project configuration (`ProjectConfig`, `RoleConfig`, `ExportConfig`).
 - [`src/snapshot.rs`](src/snapshot.rs): Canonical JSON snapshot model, serializer, and graph validation.

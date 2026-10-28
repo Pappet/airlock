@@ -51,7 +51,7 @@ pub enum Command {
         /// Role to bind; omit to show the current binding
         role: Option<String>,
         /// Refuse later role changes without --force (for clean-room worktrees)
-        #[arg(long)]
+        #[arg(long, requires = "role")]
         lock: bool,
         /// Override a locked binding
         #[arg(long)]
@@ -226,6 +226,9 @@ pub enum RoleCommand {
         /// File every session of this role reads first (repeatable; replaces the list)
         #[arg(long)]
         read: Vec<String>,
+        /// Empty the reading list
+        #[arg(long, conflicts_with = "read")]
+        clear_read: bool,
     },
     /// Remove a role no task or binding uses
     Remove { name: String },

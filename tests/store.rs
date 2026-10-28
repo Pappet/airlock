@@ -233,7 +233,7 @@ fn version_1_databases_are_migrated() {
     Store::open(&path).unwrap();
     // Roll back to the version 1 layout.
     let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("DROP TABLE exports; PRAGMA user_version = 1;")
+    conn.execute_batch("DROP TABLE exports; DROP TABLE bindings; PRAGMA user_version = 1;")
         .unwrap();
     drop(conn);
 

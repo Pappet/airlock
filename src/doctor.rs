@@ -44,7 +44,7 @@ pub(crate) fn run(hub: &Hub, cwd: &Path, selector: Option<&str>, out: &Output) -
     check_binary(&mut report);
     report.add(Level::Ok, "hub", format!("hub at {}", hub.root().display()));
     match hub.resolve(selector, cwd) {
-        Ok(project) => check_project(&mut report, hub, &project)?,
+        Ok(project) => check_project(&mut report, &project)?,
         Err(e) => report.add(Level::Warn, "project", format!("no project here: {e:#}")),
     }
 
@@ -125,13 +125,13 @@ fn check_binary(report: &mut Report) {
     }
 }
 
-fn check_project(report: &mut Report, hub: &Hub, project: &Project) -> Result<()> {
+fn check_project(report: &mut Report, project: &Project) -> Result<()> {
     report.add(
         Level::Ok,
         "project",
         format!("{} ({})", project.config.name, project.id),
     );
-    let bindings = hub.bindings(&project.id)?;
+    let bindings = crate::store::Store::open(&project.database)?.bindings()?;
 
     let Some(root) = &project.root else {
         report.add(
@@ -309,12 +309,21 @@ fn check_harnesses(
 
     let mut sessions: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for entry in &entries {
+        // Accept both `--role lead` and `--role=lead`.
+        let args: Vec<String> = entry
+            .args
+            .iter()
+            .flat_map(
+                |a| match a.split_once('=').filter(|(k, _)| k.starts_with("--")) {
+                    Some((k, v)) => vec![k.to_string(), v.to_string()],
+                    None => vec![a.clone()],
+                },
+            )
+            .collect();
         let flag = |name: &str| {
-            entry
-                .args
-                .iter()
+            args.iter()
                 .position(|a| a == name)
-                .and_then(|i| entry.args.get(i + 1))
+                .and_then(|i| args.get(i + 1))
         };
         let mut problems = Vec::new();
 

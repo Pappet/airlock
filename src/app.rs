@@ -70,7 +70,7 @@ pub fn run(cli: Cli) -> Result<()> {
             force,
             clear,
         } => {
-            return use_binding(&hub, &project, role, lock, force, clear, cli.session, &out);
+            return use_binding(&project, role, lock, force, clear, cli.session, &out);
         }
         Command::Setup { harness, role } => return setup::run(&project, harness, role, &out),
         _ => {}
@@ -140,9 +140,7 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn use_binding(
-    hub: &Hub,
     project: &Project,
     role: Option<String>,
     lock: bool,
@@ -153,37 +151,36 @@ fn use_binding(
 ) -> Result<()> {
     let root = project_root(project, "use")?;
     let key = binding_key(root)?;
-    let mut bindings = hub.bindings(&project.id)?;
-    let current = bindings.get(&key).cloned();
+    let mut store = Store::open(&project.database)?;
+    let now = unix_now();
 
-    if role.is_none() && !clear {
+    if clear {
+        let removed = store.unbind(&key, force, now)?;
+        return out.print(&json!({ "cleared": key, "removed": removed }), || {
+            if removed {
+                format!("Removed the binding of {key}")
+            } else {
+                format!("{key} had no binding")
+            }
+        });
+    }
+
+    let Some(role) = role else {
+        if session.is_some() {
+            eprintln!("note: --session / AIRLOCK_SESSION is ignored when showing a binding");
+        }
+        let current = store.binding(&key)?;
         return out.print(&current, || match &current {
             Some(b) => format!(
-                "{} is bound to role {} as session {}{}",
-                key,
+                "{key} is bound to role {} as session {}{}",
                 b.role,
                 b.session,
                 if b.locked { " (locked)" } else { "" }
             ),
-            None => format!("{} has no binding; bind it with `airlock use <role>`", key),
+            None => format!("{key} has no binding; bind it with `airlock use <role>`"),
         });
-    }
-    if let Some(b) = current.as_ref().filter(|b| b.locked && !force) {
-        bail!(
-            "this worktree is locked to role `{}`; pass --force to change it",
-            b.role
-        );
-    }
+    };
 
-    if clear {
-        bindings.remove(&key);
-        hub.save_bindings(&project.id, &bindings)?;
-        return out.print(&json!({ "cleared": key }), || {
-            format!("Removed the binding of {}", key)
-        });
-    }
-
-    let role = role.expect("checked above");
     ensure_role(project, &role)?;
     let session = session.unwrap_or_else(|| {
         let dir = root
@@ -197,12 +194,10 @@ fn use_binding(
         session,
         locked: lock,
     };
-    bindings.insert(key.clone(), binding.clone());
-    hub.save_bindings(&project.id, &bindings)?;
+    store.bind(&key, &binding, force, now)?;
     out.print(&binding, || {
         format!(
-            "Bound {} to role {} as session {}{}",
-            key,
+            "Bound {key} to role {} as session {}{}",
             binding.role,
             binding.session,
             if binding.locked { " (locked)" } else { "" }
@@ -250,6 +245,7 @@ fn role(
             clean_room,
             instructions,
             read,
+            clear_read,
         } => {
             ensure!(
                 !name.is_empty()
@@ -268,7 +264,9 @@ fn role(
             if let Some(instructions) = instructions {
                 role.instructions = Some(instructions).filter(|i| !i.trim().is_empty());
             }
-            if !read.is_empty() {
+            if clear_read {
+                role.read.clear();
+            } else if !read.is_empty() {
                 role.read = read;
             }
             let role = role.clone();
@@ -279,8 +277,8 @@ fn role(
             ensure!(config.roles.contains_key(&name), "no role `{name}`");
             let tasks = store.tasks(now)?.iter().filter(|t| t.role == name).count();
             ensure!(tasks == 0, "role `{name}` is used by {tasks} task(s)");
-            let bound: Vec<String> = hub
-                .bindings(&project.id)?
+            let bound: Vec<String> = store
+                .bindings()?
                 .into_iter()
                 .filter(|(_, b)| b.role == name)
                 .map(|(path, _)| path)
