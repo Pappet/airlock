@@ -4,6 +4,7 @@
 use crate::app::Output;
 use crate::git;
 use crate::hub::{Binding, Hub, MARKER_FILE, Marker, Project, binding_key};
+use crate::layout::{LAYOUT_FILE, Layout};
 use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::Value;
@@ -158,7 +159,23 @@ fn check_project(report: &mut Report, project: &Project) -> Result<()> {
         check_worktree(report, project, &bindings, worktree);
     }
     check_bindings(report, project, &bindings);
-    check_harnesses(report, project, &bindings, &worktrees);
+    check_layout(report, worktrees.first().unwrap_or(root), &bindings)?;
+    let main = worktrees.first().unwrap_or(root);
+    let layout_roles: BTreeMap<String, Vec<String>> = Layout::read(main)?
+        .map(|layout| {
+            layout
+                .worktrees
+                .iter()
+                .filter_map(|spec| {
+                    Some((
+                        binding_key(&Layout::resolve(main, spec)).ok()?,
+                        spec.roles.clone(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    check_harnesses(report, project, &bindings, &layout_roles, &worktrees);
     Ok(())
 }
 
@@ -238,11 +255,49 @@ fn check_bindings(report: &mut Report, project: &Project, bindings: &BTreeMap<St
     }
 }
 
+/// Compares bindings with the committed layout of the main checkout.
+fn check_layout(
+    report: &mut Report,
+    main: &Path,
+    bindings: &BTreeMap<String, Binding>,
+) -> Result<()> {
+    let Some(layout) = Layout::read(main)? else {
+        return Ok(());
+    };
+    for spec in &layout.worktrees {
+        let path = Layout::resolve(main, spec);
+        let Some(binding) = binding_key(&path).ok().and_then(|k| bindings.get(&k)) else {
+            continue;
+        };
+        if !spec.roles.contains(&binding.role) {
+            report.add(
+                Level::Warn,
+                "layout",
+                format!(
+                    "{}: bound to role {}, but {LAYOUT_FILE} lists {}",
+                    path.display(),
+                    binding.role,
+                    spec.roles.join(", ")
+                ),
+            );
+        } else if spec.lock && !binding.locked {
+            report.add(
+                Level::Warn,
+                "layout",
+                format!("{}: {LAYOUT_FILE} requires a lock, but the binding is not locked; run `airlock init`", path.display()),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// One airlock MCP server entry found in a harness configuration.
 struct Entry {
     label: String,
-    /// The worktree a per-directory configuration belongs to; `None` for global ones
+    /// The worktree a configuration applies to (its directory or the client's `cwd`)
     worktree: Option<PathBuf>,
+    /// Whether the configuration file itself belongs to one worktree (e.g. `.mcp.json`)
+    per_directory: bool,
     command: String,
     args: Vec<String>,
 }
@@ -251,6 +306,7 @@ fn check_harnesses(
     report: &mut Report,
     project: &Project,
     bindings: &BTreeMap<String, Binding>,
+    layout_roles: &BTreeMap<String, Vec<String>>,
     worktrees: &[PathBuf],
 ) {
     let home = dirs::home_dir();
@@ -321,13 +377,21 @@ fn check_harnesses(
         let mut problems = Vec::new();
 
         let command = Path::new(&entry.command);
-        let found = if command.is_absolute() {
-            command.is_file()
+        if command.is_absolute() {
+            if !command.is_file() {
+                problems.push(format!("command {} not found", entry.command));
+            }
         } else {
-            find_in_path(&entry.command).is_some()
-        };
-        if !found {
-            problems.push(format!("command {} not found", entry.command));
+            // Clients started from the desktop often have a different PATH than the shell.
+            let suggestion = find_in_path(&entry.command)
+                .or_else(|| std::env::current_exe().ok())
+                .and_then(|p| std::fs::canonicalize(p).ok())
+                .map(|p| format!("; use the absolute path {}", p.display()))
+                .unwrap_or_default();
+            problems.push(format!(
+                "command `{}` is looked up in the client's PATH, which can differ from your shell's{suggestion}",
+                entry.command
+            ));
         }
         let target = flag("-C")
             .map(PathBuf::from)
@@ -346,6 +410,31 @@ fn check_harnesses(
             if b.locked && *role != b.role {
                 problems.push(format!(
                     "--role {role} contradicts the locked binding to {}",
+                    b.role
+                ));
+            }
+        }
+        // A per-directory configuration that overrides the binding splits CLI and MCP identities,
+        // unless it runs another role the layout places in this shared worktree (e.g. lead next to spec).
+        let key = target.as_deref().and_then(|t| binding_key(t).ok());
+        let second_role = flag("--role").is_some_and(|r| {
+            binding.is_some_and(|b| *r != b.role)
+                && key
+                    .as_ref()
+                    .and_then(|k| layout_roles.get(k))
+                    .is_some_and(|roles| roles.contains(r))
+        });
+        if let (true, Some(b), false) = (entry.per_directory, binding, second_role) {
+            if let Some(session) = flag("--session").filter(|s| **s != b.session) {
+                problems.push(format!(
+                    "--session {session} differs from the worktree's bound session {}; CLI and MCP would act as \
+                     different sessions — drop --session and --role to use the binding",
+                    b.session
+                ));
+            }
+            if let Some(role) = flag("--role").filter(|r| **r != b.role && !b.locked) {
+                problems.push(format!(
+                    "--role {role} differs from the worktree's bound role {}; CLI and MCP would act as different roles",
                     b.role
                 ));
             }
@@ -439,6 +528,7 @@ fn collect(
             .or_else(|| worktree.map(Path::to_path_buf));
         entries.push(Entry {
             label: format!("{label} [{name}]"),
+            per_directory: worktree.is_some() && server.get("cwd").is_none(),
             worktree,
             command: command.to_string(),
             args,

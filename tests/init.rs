@@ -347,3 +347,91 @@ fn foreign_directories_are_not_bound() {
         Value::Array(vec![])
     );
 }
+
+#[test]
+fn init_adds_the_layout_lock_to_an_existing_binding() {
+    let env = Env::new();
+    let main = env.repo("lab");
+    env.ok(&main, &["init"]);
+    git(&main, &["add", ".airlock"]);
+    git(&main, &["commit", "-q", "-m", "marker"]);
+    let engine = env.path("lab-engine");
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "engine",
+            engine.to_str().unwrap(),
+        ],
+    );
+    env.ok(&engine, &["use", "engine", "--session", "engine-1"]);
+    env.ok(&main, &["use", "spec"]);
+
+    let report = env.json(&main, &["init", "--template", "clean-room", "--yes"]);
+    let done = actions(&report);
+    assert!(
+        done.iter()
+            .any(|a| a == "locked role engine, session engine-1 (airlock.toml requires a lock)"),
+        "{done:?}"
+    );
+    assert!(
+        done.iter()
+            .any(|a| a.starts_with("bound already: role spec")),
+        "{done:?}"
+    );
+    let binding = env.json(&engine, &["use"]);
+    assert_eq!(
+        (binding["session"].as_str(), binding["locked"].as_bool()),
+        (Some("engine-1"), Some(true))
+    );
+
+    // A binding outside the layout's roles is reported, not changed.
+    env.ok(
+        &engine,
+        &["use", "engine", "--session", "engine-1", "--force"],
+    );
+    let findings = env.json(&main, &["doctor"]);
+    assert!(
+        findings.as_array().unwrap().iter().any(|f| f["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires a lock, but the binding is not locked")),
+        "{findings}"
+    );
+}
+
+#[test]
+fn doctor_accepts_a_second_layout_role_in_a_shared_checkout() {
+    let env = Env::new();
+    let main = env.repo("lab");
+    env.ok(&main, &["init", "--template", "clean-room", "--yes"]);
+    let mcp = |role: &str| {
+        let config = format!(
+            r#"{{"mcpServers":{{"airlock":{{"command":"/bin/airlock","args":["mcp","--role","{role}","--session","{role}-1"]}}}}}}"#
+        );
+        std::fs::write(main.join(".mcp.json"), config).unwrap();
+        let findings = env.json(&main, &["doctor"]);
+        findings
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["message"].as_str().map(str::to_string))
+            .filter(|m| m.contains("differs from the worktree's bound"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        mcp("spec"),
+        "",
+        "spec shares the main checkout with lead per airlock.toml"
+    );
+    let engine = mcp("engine");
+    assert!(
+        engine.contains("--role engine differs from the worktree's bound role lead"),
+        "{engine}"
+    );
+    assert!(engine.contains("--session engine-1 differs"), "{engine}");
+}

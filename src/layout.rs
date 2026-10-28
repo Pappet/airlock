@@ -4,7 +4,7 @@ use crate::config::{ProjectConfig, RoleConfig};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// File name of the committed layout, next to the `.airlock` marker of the main checkout.
 pub const LAYOUT_FILE: &str = "airlock.toml";
@@ -72,6 +72,25 @@ impl Layout {
             );
         }
         Ok(())
+    }
+
+    /// The absolute path of a worktree entry, resolved against the main checkout.
+    pub fn resolve(main: &Path, spec: &WorktreeSpec) -> PathBuf {
+        if spec.path == "." {
+            return main.to_path_buf();
+        }
+        // Resolve `.` and `..` lexically; the worktree may not exist yet.
+        let mut out = PathBuf::new();
+        for component in main.join(&spec.path).components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    out.pop();
+                }
+                other => out.push(other),
+            }
+        }
+        out
     }
 
     /// Roles referenced by the layout.
