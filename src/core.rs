@@ -38,6 +38,31 @@ pub enum TaskStatus {
     Done,
 }
 
+impl TaskState {
+    /// The snake_case name used in JSON and the database.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::InProgress => "in_progress",
+            Self::InReview => "in_review",
+            Self::Done => "done",
+        }
+    }
+}
+
+impl TaskStatus {
+    /// The snake_case name used in JSON and CLI filters.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+            Self::InProgress => "in_progress",
+            Self::InReview => "in_review",
+            Self::Done => "done",
+        }
+    }
+}
+
 /// A structured work package.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
@@ -81,6 +106,12 @@ impl Task {
     /// Whether this task is `InProgress` with a lease that has run out at `now`.
     pub fn lease_expired(&self, now: i64) -> bool {
         self.state == TaskState::InProgress && self.lease_expires_at.is_some_and(|t| t <= now)
+    }
+
+    /// Whole minutes left on the lease at `now`, rounded up; `None` without a lease.
+    pub fn lease_minutes_left(&self, now: i64) -> Option<i64> {
+        self.lease_expires_at
+            .map(|until| ((until - now).max(0) + 59) / 60)
     }
 
     /// Derives the effective status. `is_done` reports whether the task with
@@ -197,6 +228,17 @@ pub enum QuestionStatus {
     Answered,
     /// Closed, optionally codified in a spec file
     Resolved,
+}
+
+impl QuestionStatus {
+    /// The snake_case name used in JSON, the database, and CLI filters.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Answered => "answered",
+            Self::Resolved => "resolved",
+        }
+    }
 }
 
 /// A behavioral question asked across the airlock.

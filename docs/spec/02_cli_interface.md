@@ -29,7 +29,7 @@ The directory containing the marker is the **project root** for this invocation;
 ### 2.3 Output and Exit Codes
 
 - Human output goes to stdout; diagnostics go to stderr.
-- With `--json`, stdout carries exactly one JSON document. Effective task status is included as `status` next to the stored `state`.
+- With `--json`, a successful command prints exactly one JSON document on stdout. Effective task status is included as `status` next to the stored `state`. On failure, stdout is empty and the message goes to stderr.
 - Exit codes: `0` success, `1` operational error (unknown task, lost claim race, invalid transition, unknown project), `2` usage error (clap).
 
 ---
@@ -38,7 +38,7 @@ The directory containing the marker is the **project root** for this invocation;
 
 ### 3.1 `airlock init [--name <name>] [--template <name>]`
 
-- **No marker in the current directory:** creates a project with a new uuid in the hub (`project.json` from the template, empty database) and writes `.airlock` into the current directory. `--name` defaults to the directory name.
+- **No marker in the current directory:** creates a project with a new uuid in the hub (`project.json` from the template, empty database) and writes `.airlock` into the current directory. `--name` defaults to the directory name and must be unique in the hub. Fails if a parent directory already holds a marker (no nested projects).
 - **Marker present, project known to the hub:** no-op; prints the project id and name.
 - **Marker present, project unknown to the hub** (fresh clone on a new machine): creates the hub project *with the marker's id*. If the configured snapshot file exists, prints a hint to run `airlock import`.
 
@@ -64,7 +64,7 @@ airlock task add E-6d "Missiles implementation" --role engine \
   --verify "cargo test missiles" \
   --blocked-by L-1,L-2 --priority 10
 ```
-`--read` and `--touch` are repeatable; `--blocked-by` takes a comma-separated list of **existing** task ids. Fails on a duplicate id, an unknown role, or an unknown prerequisite.
+`--read` and `--touch` are repeatable; `--blocked-by` takes a comma-separated list of **existing** task ids. Task ids consist of ASCII letters, digits, `-`, `_`, and `.`. Fails on an invalid or duplicate id, an unknown role, or an unknown prerequisite.
 
 #### `airlock task claim <id> [--lease <minutes>]`
 Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked.

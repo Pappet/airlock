@@ -1,6 +1,6 @@
 # Quickstart Guide: Airlock
 
-> **Status:** Airlock is a scaffold. The commands below describe the specified behavior ([`docs/spec/`](../spec/)); until Phase 1 of the [phase plan](../plans/PHASE_PLAN.md) is done, they parse but exit with "not implemented yet".
+> **Status:** Sections 1–5 work today. `airlock sync` and `airlock import` (section 6 and the multi-machine note in section 2) arrive in Phase 2 of the [phase plan](../plans/PHASE_PLAN.md).
 
 ---
 

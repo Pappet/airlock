@@ -127,7 +127,7 @@ Session ids are **self-declared and not authenticated**. They identify cooperati
 ### 2.4 Leases
 
 - A claim grants a lease of `--lease` minutes (default: `lease_minutes` from the project config, 60).
-- `task heartbeat` extends the lease from *now* by the same duration.
+- `task heartbeat` sets the lease to expire `--lease` minutes (default `lease_minutes`) from *now*.
 - There is no daemon. Expiry is evaluated lazily: reads treat a task whose `lease_expires_at <= now` as expired, and every write transaction first resets expired leases to `open` (clearing `claimed_by`). A claim on an expired task therefore succeeds.
 
 ---
@@ -161,7 +161,7 @@ WAL mode allows many readers and one writer at a time. Correctness under concurr
 
 - `PRAGMA journal_mode = WAL`, `PRAGMA foreign_keys = ON`, and a busy timeout (5 s) on every connection.
 - Every mutation runs in a `BEGIN IMMEDIATE` transaction, so the write lock is taken before any read the decision depends on.
-- State transitions are conditional updates that check the expected prior state, e.g. a claim is `UPDATE … SET state='in_progress', claimed_by=?, lease_expires_at=? WHERE id=? AND (state='open' AND <ready> OR state='in_progress' AND lease_expires_at <= ?)`; zero affected rows means the claim lost a race and is reported as an error, never retried silently.
+- Each write transaction first releases expired leases, then validates the transition against the current state (readiness, lease holder), then applies it as an update conditioned on the expected prior state (`… WHERE id = ? AND state = ?`). Zero affected rows is reported as an error, never retried silently. A losing concurrent claim sees the winner's lease and fails with `claimed by <session>`.
 - Timestamps are unix seconds from the system clock, taken once per transaction.
 
 ### 3.3 Export Layer

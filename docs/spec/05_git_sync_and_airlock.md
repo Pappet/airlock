@@ -36,7 +36,7 @@ When work is split across worktrees (e.g. `~/Projects/game` on `main` and `~/Pro
 
 ### 2.2 Hub Store and Marker
 1. **Hub store (single source of truth):** all task and question state lives in the per-project SQLite database in the hub, outside every repository (Spec 01 §3.1). Every session on the machine reads and writes the same database.
-2. **Marker:** `airlock init` writes `.airlock` (`{"project_id": "<uuid>"}`) into the project root. It is committed, so every worktree and clone carries it, and it never changes after creation — it cannot conflict.
+2. **Marker:** `airlock init` writes `.airlock` (`{"project_id": "<uuid>"}`) into the project root. It is committed, so every worktree and clone carries it, and it never changes after creation — it cannot conflict. Because the marker is repository content, its id is untrusted input: Airlock accepts only a canonical lowercase hyphenated UUID and rejects anything else before building hub paths from it.
 3. **No registered path:** the hub does not record where the project lives. Each invocation's project root is the directory of the marker it found (Spec 02 §2.2), so `airlock sync` in a worktree writes into *that* worktree.
 
 ### 2.3 Bootstrap on Another Machine
