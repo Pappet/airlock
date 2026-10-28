@@ -1,11 +1,10 @@
 //! Command execution: resolves project and session, runs the operation, prints the result.
 
 use crate::cli::{Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskSpec};
-use crate::config::ProjectConfig;
 use crate::core::{Question, Task, TaskState, TaskStatus, dependents};
-use crate::hub::{Binding, Hub, MARKER_FILE, Marker, Project, binding_key};
+use crate::hub::{Binding, Hub, MARKER_FILE, Project, binding_key};
 use crate::store::{Completion, NewTask, Store};
-use crate::{briefing, doctor, mcp, setup, sync};
+use crate::{briefing, doctor, init, mcp, setup, sync};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::json;
@@ -31,7 +30,24 @@ pub fn run(cli: Cli) -> Result<()> {
     let now = unix_now();
 
     let command = match cli.command {
-        Command::Init { name, template } => return init(&hub, &cwd, name, &template, &out),
+        Command::Init {
+            name,
+            template,
+            agents,
+            yes,
+        } => {
+            return init::run(
+                &hub,
+                &cwd,
+                init::Options {
+                    name,
+                    template,
+                    agents,
+                    yes,
+                },
+                &out,
+            );
+        }
         Command::Doctor => return doctor::run(&hub, &cwd, cli.project.as_deref(), &out),
         command => command,
     };
@@ -295,91 +311,6 @@ fn role(
             })
         }
     }
-}
-
-fn init(hub: &Hub, cwd: &Path, name: Option<String>, template: &str, out: &Output) -> Result<()> {
-    ensure!(
-        template == "default",
-        "unknown template `{template}`; available: default"
-    );
-
-    let existing = Marker::read(cwd)?;
-    if existing.is_none() {
-        if let Some((dir, _)) = Marker::find(cwd)? {
-            bail!(
-                "{} is already inside the Airlock project at {}",
-                cwd.display(),
-                dir.display()
-            );
-        }
-    }
-
-    if let Some(marker) = &existing {
-        if hub.contains(&marker.project_id) {
-            let config = hub.load_config(&marker.project_id)?;
-            return out.print(
-                &json!({ "project_id": marker.project_id, "name": config.name, "created": false }),
-                || {
-                    format!(
-                        "Already initialized: project {} ({})",
-                        config.name, marker.project_id
-                    )
-                },
-            );
-        }
-    }
-
-    let name = match name {
-        Some(name) => name,
-        None => cwd
-            .file_name()
-            .and_then(|n| n.to_str())
-            .context("cannot derive a project name from the directory; pass --name")?
-            .to_string(),
-    };
-    ensure!(
-        hub.projects()?
-            .iter()
-            .all(|(_, config)| config.name != name),
-        "a project named `{name}` already exists in the hub; choose another with --name"
-    );
-
-    let adopted = existing.is_some();
-    let id = existing.map_or_else(|| uuid::Uuid::new_v4().to_string(), |m| m.project_id);
-    let config = ProjectConfig {
-        name: name.clone(),
-        ..ProjectConfig::default()
-    };
-    hub.save_config(&id, &config)?;
-    Store::open(&hub.database_path(&id)?)?;
-    if !adopted {
-        Marker {
-            project_id: id.clone(),
-        }
-        .write(cwd)?;
-    }
-
-    let snapshot = cwd.join(&config.export.state_file);
-    out.print(
-        &json!({ "project_id": id, "name": name, "created": true, "adopted": adopted }),
-        || {
-            let mut text = if adopted {
-                format!(
-                    "Registered existing project {name} ({id}) in {}",
-                    hub.root().display()
-                )
-            } else {
-                format!("Initialized project {name} ({id}); commit {MARKER_FILE} to the repository")
-            };
-            if adopted && snapshot.is_file() {
-                text.push_str(&format!(
-                    "\nA snapshot exists at {}; run `airlock import` to load it",
-                    snapshot.display()
-                ));
-            }
-            text
-        },
-    )
 }
 
 fn task(
@@ -750,7 +681,7 @@ pub(crate) fn project_root<'a>(project: &'a Project, command: &str) -> Result<&'
 }
 
 /// Asks a yes/no question on the terminal; refuses without one.
-fn confirm(prompt: &str) -> Result<bool> {
+pub(crate) fn confirm(prompt: &str) -> Result<bool> {
     ensure!(
         std::io::stdin().is_terminal(),
         "{prompt}\nNo terminal to confirm on; pass --yes"

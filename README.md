@@ -26,7 +26,7 @@ Airlock replaces it with:
 - **Questions:** `open → answered → resolved`, optionally linked to the spec file that codifies the answer.
 - **Deterministic export:** `airlock sync` writes a byte-stable JSON snapshot (`docs/.airlock-state.json`, the only import source) plus `docs/PLAN.md` and `docs/spec/QUESTIONS.md` views. Merge conflicts in generated files are cleared by re-running `airlock sync`; a guard refuses to overwrite snapshots written by another machine.
 - **MCP tools:** `task_next`, `task_claim`, `task_heartbeat`, `task_complete`, `question_ask`, … with role binding and a restricted tool set for clean-room roles.
-- **Onboarding:** `airlock use <role>` binds a worktree to a role and a stable session; `airlock start` / MCP `session_start` brief an agent on its rules, claims, and next package; `airlock doctor` checks the setup; `airlock setup claude|antigravity|dsh` prints harness configurations.
+- **Onboarding:** `airlock init --template clean-room|parallel|single` registers the project, commits a layout (`airlock.toml`), creates the worktrees, and binds them; `airlock use <role>` binds a worktree to a role and a stable session; `airlock start` / MCP `session_start` brief an agent on its rules, claims, and next package; `airlock doctor` checks the setup; `airlock setup claude|antigravity|dsh` prints harness configurations.
 - **Dashboard:** loopback-only, token-protected Kanban board, review queue, and questions inbox.
 
 Scope of v0.x: one machine per project state. The clean-room features structure and record the exchange between sessions; actual isolation of a clean-room session must come from its environment (separate user, container, or sandbox) — see [Spec 05 §4](docs/spec/05_git_sync_and_airlock.md#4-the-airlock-boundary).
@@ -47,7 +47,7 @@ cargo build --release
 
 ### Workflow
 ```bash
-airlock init                                  # register the project, writes .airlock
+airlock init --template clean-room --yes      # register, commit layout, create ../<dir>-engine, bind roles
 
 airlock task add E-6d "Missiles implementation" --role engine \
   --read docs/spec/missiles.md --touch src/missiles.rs \

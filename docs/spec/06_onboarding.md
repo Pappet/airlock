@@ -8,7 +8,7 @@ Setting up a project used to mean hand-written MCP configurations per worktree a
 - **Session briefing** (§3): `airlock start` / MCP `session_start` tell an agent who it is, which rules apply, what it holds, and what to do next.
 - **Role management** (§4): roles, their rules, and their reading list are edited with `airlock role`, not by hand.
 - **Doctor and setup** (§5, §6): check an installation and print harness configurations.
-- **Guided init** (§7, planned): templates that create the roles, worktrees, and bindings of a project in one step.
+- **Guided init** (§7): templates that create the roles, worktrees, and bindings of a project in one step, recorded in a committed `airlock.toml`.
 
 Like every Airlock restriction, bindings are guardrails for cooperating agents, not a security boundary (Spec 05 §4).
 
@@ -121,12 +121,47 @@ Prints the configuration for the current worktree; it never edits harness files.
 
 ---
 
-## 7. Guided Init (planned)
+## 7. Guided Init
 
-`airlock init` gains templates that define roles and their places:
+### 7.1 Templates
+`airlock init --template <name>` defines roles and where they work:
 
-- **clean-room:** `lead` and `spec` in the main checkout, `engine` in a worktree `../<name>-engine` on branch `engine`, clean-room and locked.
-- **parallel:** `lead` in the main checkout, one worktree and branch per agent role.
-- **single:** one role, no worktrees.
+| Template | Roles | Layout |
+|---|---|---|
+| `default` | lead, spec, engine | none — no worktrees, no bindings (the behavior before templates) |
+| `single` | dev | this checkout, bound to `dev` |
+| `clean-room` | lead, spec, engine (clean-room, with default instructions) | this checkout: lead, spec · `../<dir>-engine` on branch `engine`: engine, locked |
+| `parallel` | lead, dev | this checkout: lead · `../<dir>-dev-<n>` on branch `dev-<n>` for n = 1…`--agents` (default 2): dev |
 
-The layout is committed as `airlock.toml` so `init` on another machine recreates worktrees and bindings. Order of operations: register project, commit marker and layout, create worktrees (they inherit the marker), write bindings, print `setup` output per harness. Existing worktrees (`git worktree list`) are offered for role assignment instead of being created. Details follow in a revision of this spec.
+`<dir>` is the name of the main checkout's directory. On a terminal without `--template` and `--yes`, init asks for the template (and the agent count for `parallel`) and shows the plan for confirmation.
+
+### 7.2 Layout File
+The layout is committed as `airlock.toml` in the main checkout. It says only which worktree hosts which roles; roles themselves are defined in the project configuration (§4):
+
+```toml
+[[worktree]]
+path = "."
+roles = ["lead", "spec"]
+
+[[worktree]]
+path = "../game-engine"
+branch = "engine"
+roles = ["engine"]
+lock = true
+```
+
+Paths are relative to the main checkout; `.` is required. The first role of a worktree is bound; `branch` defaults to the directory name; `lock` locks the binding.
+
+### 7.3 Behavior
+Init is idempotent and runs in the main checkout:
+
+1. **Register** a new project (template roles) or **adopt** an existing marker on a machine whose hub does not know it (default roles plus placeholders for roles the layout names; `airlock import` brings their definitions). In a known project, a template only **adds missing roles**; existing roles are not changed.
+2. **Write and commit** a new layout. Only a new layout causes a commit: `.airlock` (if just created) and `airlock.toml`, committed by path so other staged changes stay untouched. Worktrees branch off after this commit and inherit both files. Plain `airlock init` without a layout never commits; it reminds the user to commit `.airlock`.
+3. **Apply** the layout (also on every later `init`): for each entry, create the worktree if its path does not exist — checking out an existing local branch or the single remote branch of that name (fresh clone), otherwise creating the branch from `HEAD` — and bind it if it has no binding yet. Existing bindings are never changed. A path that exists but is not a worktree of this repository, or a worktree without the marker (merge the main branch into it), is skipped with a message.
+
+Templates that create worktrees need a git repository with at least one commit. Without a terminal, a template that commits requires `--yes`. Applying a template to a project that already has `airlock.toml` is refused — edit the file and run `airlock init` instead.
+
+### 7.4 Typical Flows
+- **New project:** `git init && git commit --allow-empty -m init && airlock init` → choose template → done; then `airlock setup <harness>` per worktree.
+- **Existing project with worktrees** (e.g. OpenSHR): `airlock init --template clean-room --yes` in the main checkout writes the layout, finds `../<dir>-engine`, and binds both worktrees.
+- **Another machine:** clone, `airlock init` (adopts the id, recreates worktrees and bindings from `airlock.toml`), `airlock import --yes`.

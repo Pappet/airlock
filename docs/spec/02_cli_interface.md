@@ -37,13 +37,13 @@ The directory containing the marker is the **project root** for this invocation;
 
 ## 3. Command Reference
 
-### 3.1 `airlock init [--name <name>] [--template <name>]`
+### 3.1 `airlock init [--name <name>] [--template <default|single|clean-room|parallel>] [--agents <n>] [--yes]`
 
-- **No marker in the current directory:** creates a project with a new uuid in the hub (`project.json` from the template, empty database) and writes `.airlock` into the current directory. `--name` defaults to the directory name and must be unique in the hub. Fails if a parent directory already holds a marker (no nested projects).
-- **Marker present, project known to the hub:** no-op; prints the project id and name.
-- **Marker present, project unknown to the hub** (fresh clone on a new machine): creates the hub project *with the marker's id*. If the configured snapshot file exists, prints a hint to run `airlock import`.
+- **No marker in the current directory:** creates a project with a new uuid in the hub (`project.json` with the template's roles, empty database) and writes `.airlock` into the current directory. `--name` defaults to the directory name and must be unique in the hub. Fails if a parent directory already holds a marker (no nested projects).
+- **Marker present, project known to the hub:** applies `airlock.toml` if present (creates missing worktrees, binds unbound ones); otherwise a no-op that prints the project id and name.
+- **Marker present, project unknown to the hub** (fresh clone on a new machine): creates the hub project *with the marker's id* and applies `airlock.toml`. If the configured snapshot file exists, prints a hint to run `airlock import`.
 
-Commit `.airlock` to the repository.
+Templates, the layout file, commits, and worktree creation are specified in Spec 06 §7. Without a template, init never commits: commit `.airlock` to the repository yourself.
 
 ### 3.2 Task Operations
 

@@ -94,6 +94,9 @@ graph TD
 - [`src/cli.rs`](src/cli.rs): Complete CLI definition (Spec 02) with global `--project`, `--session`, `--json`.
 - [`src/app.rs`](src/app.rs): Command execution — `-C`, project/session/role resolution from bindings, `init`, `use`, `role`, text and JSON output.
 - [`src/briefing.rs`](src/briefing.rs): Session briefing (structured and Markdown) for `airlock start` and MCP `session_start` / prompt `start`.
+- [`src/init.rs`](src/init.rs): `airlock init` — register or adopt, templates, layout commit, worktree creation and binding (idempotent).
+- [`src/layout.rs`](src/layout.rs): `airlock.toml` layout model and the init templates.
+- [`src/git.rs`](src/git.rs): Thin `git` wrappers for setup and checks (never used to locate state).
 - [`src/doctor.rs`](src/doctor.rs): `airlock doctor` — binary, project, marker, worktrees, bindings, harness configurations.
 - [`src/setup.rs`](src/setup.rs): `airlock setup` — MCP configuration snippets for Claude Code, Antigravity, and DSH.
 - [`src/hub.rs`](src/hub.rs): Hub directory, project registry (`project.json`), `.airlock` marker discovery and project resolution.
@@ -112,6 +115,7 @@ graph TD
 - [`tests/store.rs`](tests/store.rs): Store transitions, lease expiry, validation, persistence, concurrent claims across connections.
 - [`tests/e2e.rs`](tests/e2e.rs): The binary against a temporary hub — init and marker adoption, project resolution across worktrees, JSON output, concurrent claims across processes, sync stability and guard, handover between two hubs, import validation.
 - [`tests/mcp.rs`](tests/mcp.rs): The MCP server through the binary — handshake, protocol errors, full workflow, clean-room and role-bound sessions.
+- [`tests/init.rs`](tests/init.rs): Templates, commit scope, worktree creation, adoption of existing projects, fresh-clone recreation, foreign directories.
 - [`tests/onboarding.rs`](tests/onboarding.rs): Bindings, `-C`, roles, briefing, MCP binding and prompt, doctor, setup — against real git worktrees.
 - [`tests/views.rs`](tests/views.rs): Exact layout of the generated views.
 - [`tests/common/mod.rs`](tests/common/mod.rs): Shared fixtures.
@@ -138,6 +142,7 @@ All dependencies are locked in [`Cargo.lock`](Cargo.lock).
 | `dirs` (7.0) | Platform state directory for the hub |
 | `uuid` (1.26, `v4`) | Project ids |
 | `sha2` (0.11) | SHA-256 of snapshots for the foreign-change guard |
+| `toml` (1.1) | `airlock.toml` layout file |
 | `tempfile` (3, dev) | Temporary hubs and databases in tests |
 
 Planned: `axum` and `rust-embed` (Phase 4).
