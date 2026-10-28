@@ -311,30 +311,66 @@ fn check_harnesses(
 ) {
     let home = dirs::home_dir();
     let mut entries = Vec::new();
+    let mut project_scope: BTreeMap<&Path, Vec<String>> = BTreeMap::new();
     for worktree in worktrees {
         let path = worktree.join(".mcp.json");
-        collect(
+        let names = collect(
+            report,
             &mut entries,
             &path,
             Some(worktree),
             &format!("Claude Code {}", path.display()),
             |v| v.get("mcpServers"),
         );
+        project_scope.insert(worktree, names);
     }
     if let Some(home) = &home {
+        // Claude Code keys its local scope by repository, so an entry made in one worktree
+        // applies to all of them: check it against every worktree.
         let claude = home.join(".claude.json");
-        for worktree in worktrees {
-            let key = worktree.to_string_lossy().into_owned();
-            collect(
-                &mut entries,
-                &claude,
-                Some(worktree),
-                &format!("Claude Code local {key}"),
-                |v| v.get("projects")?.get(&key)?.get("mcpServers"),
-            );
+        for key in claude_local_keys(&claude, worktrees) {
+            let mut local_names = Vec::new();
+            for worktree in worktrees {
+                let names = collect(
+                    report,
+                    &mut entries,
+                    &claude,
+                    Some(worktree),
+                    &format!("Claude Code local scope ({key}) in {}", worktree.display()),
+                    |v| v.get("projects")?.get(&key)?.get("mcpServers"),
+                );
+                for name in names.iter().filter(|n| {
+                    project_scope
+                        .get(worktree.as_path())
+                        .is_some_and(|p| p.contains(n))
+                }) {
+                    report.add(
+                        Level::Warn,
+                        "harness",
+                        format!(
+                            "{}: server `{name}` is defined in .mcp.json and in Claude Code's local scope; \
+                             Claude Code reports conflicting scopes — keep one",
+                            worktree.display()
+                        ),
+                    );
+                }
+                local_names = names;
+            }
+            if !local_names.is_empty() && worktrees.len() > 1 {
+                report.add(
+                    Level::Warn,
+                    "harness",
+                    format!(
+                        "Claude Code local scope ({key}) defines {} for every worktree of this repository; \
+                         use a .mcp.json per worktree instead (`airlock setup claude`)",
+                        local_names.join(", ")
+                    ),
+                );
+            }
         }
         let antigravity = home.join(".gemini/antigravity/mcp_config.json");
         collect(
+            report,
             &mut entries,
             &antigravity,
             None,
@@ -484,22 +520,42 @@ fn check_harnesses(
 }
 
 /// Adds the airlock servers from one JSON configuration file.
+/// Adds the airlock servers from one JSON configuration file; returns their names.
 fn collect(
+    report: &mut Report,
     entries: &mut Vec<Entry>,
     path: &Path,
     worktree: Option<&Path>,
     label: &str,
     servers: impl for<'a> Fn(&'a Value) -> Option<&'a Value>,
-) {
+) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(path) else {
-        return;
+        return Vec::new();
     };
-    let Ok(json) = serde_json::from_str::<Value>(&text) else {
-        return;
+    let json = match serde_json::from_str::<Value>(&text) {
+        Ok(json) => json,
+        Err(e) => {
+            if !report
+                .0
+                .iter()
+                .any(|f| f.message.starts_with(&path.display().to_string()))
+            {
+                report.add(
+                    Level::Warn,
+                    "harness",
+                    format!(
+                        "{}: not valid JSON ({e}); the client ignores or rejects it",
+                        path.display()
+                    ),
+                );
+            }
+            return Vec::new();
+        }
     };
     let Some(Value::Object(servers)) = servers(&json) else {
-        return;
+        return Vec::new();
     };
+    let mut names = Vec::new();
     for (name, server) in servers {
         let Some(command) = server.get("command").and_then(Value::as_str) else {
             continue;
@@ -526,6 +582,7 @@ fn collect(
             .and_then(Value::as_str)
             .map(PathBuf::from)
             .or_else(|| worktree.map(Path::to_path_buf));
+        names.push(name.clone());
         entries.push(Entry {
             label: format!("{label} [{name}]"),
             per_directory: worktree.is_some() && server.get("cwd").is_none(),
@@ -534,6 +591,29 @@ fn collect(
             args,
         });
     }
+    names
+}
+
+/// Keys of `projects` in Claude Code's `~/.claude.json` that denote one of the worktrees.
+fn claude_local_keys(claude: &Path, worktrees: &[PathBuf]) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(claude) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(Value::Object(projects)) = json.get("projects") else {
+        return Vec::new();
+    };
+    let canonical: Vec<PathBuf> = worktrees
+        .iter()
+        .filter_map(|w| std::fs::canonicalize(w).ok())
+        .collect();
+    projects
+        .keys()
+        .filter(|k| std::fs::canonicalize(k).is_ok_and(|p| canonical.contains(&p)))
+        .cloned()
+        .collect()
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {

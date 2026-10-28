@@ -21,14 +21,14 @@ Do not copy analysis material (decompiled output, `re/` content) into this file,
 
 | Scenario | Claude Code | Antigravity | DSH |
 |---|---|---|---|
-| A Connection | ⚠ run 1: MCP down, CLI fallback worked | ✅ starts in the workspace (no `-C`) | ✅ lead (3080) and spec (3081) via overlays |
+| A Connection | ⚠ runs 1–2: MCP down (PATH, then local scope across worktrees); fixed with per-worktree `.mcp.json` | ✅ starts in the workspace (no `-C`) | ✅ lead (3080) and spec (3081) via overlays |
 | B Work cycle | — | — | — |
 | C Questions | — | — | — |
 | D Restart | — | — | — |
 | E Parallel | — | ⚠ shared session with DSH spec (fixed in config) | ⚠ see Antigravity |
 | F Guardrails | — | — | — |
 | G Export | — | — | — |
-| H Behavior | ✅ run 1: asked before changing its own binding | — | — |
+| H Behavior | ✅ runs 1–2: asked before changing bindings; ⚠ run 2: wrong instruction for completing `ready` tasks | — | — |
 
 ## Runs
 
@@ -58,3 +58,23 @@ Do not copy analysis material (decompiled output, `re/` content) into this file,
 **Setup fix:** DSH lead via the start script with `--patch ~/.dsh/airlock/openshr-lead.yml`, spec manually on 3081; Antigravity with an explicit `--role` and its own `--session`.
 
 **Lesson:** where several harnesses work in one checkout, each needs its own `--session`; a binding provides only one default session per directory.
+
+### Run 2 — 2026-10-28, Claude Code, main checkout (lead) and engine worktree
+
+**Observed:** a lead session in the main checkout read the new `CLAUDE.md` section and started with the briefing — but through the CLI, which used the checkout's binding (spec, `spec-1`). It did not rebind (correct), asked whether `L-19`, held by `lead@openshr`, was orphaned, and told the engine to finish `E-6c3`/`E-6d` with a bare `airlock task done`.
+
+**Problems:**
+1. `airlock start` had no `--role`: in a shared checkout the CLI could only brief the bound role.
+2. The briefing did not show other sessions' claims of the same role; `lead@openshr` was the live DSH lead instance, which the agent could not tell from a stale lease.
+3. The suggested fix `claude mcp add --scope local … --role lead` (also what `airlock setup claude` recommended) broke the engine worktree: Claude Code keys its local scope by repository, so the lead entry applied in `openshr-engine` too; the locked engine binding refused it (`this worktree is locked to role 'engine'; '--role lead' is refused`) — the lock worked as intended, but the server did not start.
+4. `airlock setup claude` mixed explanatory text and JSON on stdout; redirected into `.mcp.json` (as intended for `setup dsh`), it produced invalid JSON. Claude Code then reported conflicting scopes (project and local).
+5. Not Airlock: the instruction for the engine was wrong — a `ready` task must be claimed before `task done`, and without `--review` it goes straight to done instead of to the lead.
+
+**Setup fix:** removed the Claude Code local-scope entry; `.mcp.json` per worktree — main checkout with `--role lead --session lead-1`, engine with `args: ["mcp"]` (locked binding `engine-1`).
+
+**Changes in Airlock (branch `fix/validation-run-2`):**
+- `airlock setup` writes only the file content to stdout (hints to stderr); `setup claude` produces a per-worktree `.mcp.json` and no longer suggests the local scope.
+- `doctor` checks Claude Code local-scope entries against every worktree of the repository, warns about them when there are several worktrees, reports a server defined in both `.mcp.json` and the local scope, and reports configuration files that are not valid JSON.
+- `airlock start --role` and `AIRLOCK_ROLE` (also for `task next`); a locked binding refuses a different role.
+- The briefing lists tasks of the same role held by other sessions, with session and remaining lease time.
+

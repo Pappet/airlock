@@ -44,9 +44,9 @@ When an invocation's project root has a binding:
 |---|---|
 | Session (CLI and MCP) | `--session` / `AIRLOCK_SESSION` → binding → default (`human:$USER` for the CLI, `mcp-<id>` for MCP) |
 | Role of `airlock mcp` | `--role` → binding → unbound |
-| `--role` of `airlock task next` | `--role` → binding → error |
+| Role of `airlock start` and `airlock task next` | `--role` / `AIRLOCK_ROLE` → binding → none (`start`) or error (`task next`) |
 
-A locked binding rejects `airlock mcp --role <other>`. CLI commands other than `mcp` are not restricted by the role.
+A locked binding rejects `airlock mcp --role <other>` and `airlock start --role <other>`. In a shared checkout (lead next to spec), a session working in the role that is *not* bound passes its role and session explicitly — in its MCP configuration, or with `AIRLOCK_ROLE` / `AIRLOCK_SESSION` for the CLI. CLI commands other than `mcp` are not restricted by the role.
 
 ### 2.4 `-C <dir>`
 The global option `-C <dir>` makes Airlock behave as if started in `<dir>` (like `git -C`): marker discovery, project root, and binding all use that directory, and relative paths such as `import --from` resolve against it. Harnesses whose MCP configuration is global and that cannot set a working directory use `airlock -C <worktree> mcp`.
@@ -62,13 +62,14 @@ A briefing is computed from the live store for one session and role:
 - the role's description, instructions, and reading list (§4);
 - the session's claimed tasks with their work packages and remaining lease time;
 - otherwise the next ready work package of the role (Spec 01 §2.1);
+- tasks of the same role held by *other* sessions, with session and remaining lease time, so a session can tell live work from a lease about to expire;
 - the session's own questions that have been answered but not resolved;
 - a fixed workflow reminder: claim before starting, heartbeat during long work, complete when *Verify* passes, ask instead of guessing.
 
 Without a role, the briefing omits the role parts and the next package and says how to bind one.
 
 ### 3.2 Delivery
-- **CLI:** `airlock start` prints the briefing as Markdown (`--json`: the structured form). Shell-only agents are told to run it first.
+- **CLI:** `airlock start [--role <role>]` prints the briefing as Markdown (`--json`: the structured form). Shell-only agents are told to run it first.
 - **MCP tool `session_start`** (no parameters): `structuredContent` holds the structured briefing; the text content holds the Markdown. Part of the clean-room tool set.
 - **MCP prompt `start`:** the server advertises the `prompts` capability with one prompt, `start`, whose single user message is the Markdown briefing followed by "Begin with the claimed or next work package." Clients that map MCP prompts to commands (Claude Code: `/mcp__airlock__start`) make the kickoff a single command.
 
@@ -103,11 +104,13 @@ Checks an installation and prints one line per finding (`ok`, `warn`, `error`; `
 3. **Marker in git:** whether `.airlock` is tracked (needs `git`; skipped otherwise).
 4. **Worktrees:** for every `git worktree`: marker present and of this project, binding (role, session, lock).
 5. **Bindings:** roles that no longer exist (error), directories that are gone (warn), the same session id bound to several worktrees (warn). With an `airlock.toml`: bindings whose role the layout does not list for that worktree, and worktrees the layout locks whose binding is not locked (warn; `airlock init` adds the lock).
-6. **Harness configurations** mentioning `airlock`: Claude Code (`.mcp.json` in each worktree, local-scope entries in `~/.claude.json`) and Antigravity (`~/.gemini/antigravity/mcp_config.json`). Flags are recognized in both forms (`--role lead`, `--role=lead`). Reports:
+6. **Harness configurations** mentioning `airlock`: Claude Code (`.mcp.json` in each worktree, local-scope entries in `~/.claude.json`) and Antigravity (`~/.gemini/antigravity/mcp_config.json`). Claude Code keys its local scope by repository, so a local entry applies to *every* worktree; doctor checks it against each one and recommends a `.mcp.json` per worktree instead. Flags are recognized in both forms (`--role lead`, `--role=lead`). Reports:
    - commands that do not exist, and bare command names (`airlock` instead of an absolute path) — clients started from the desktop often have a different `PATH` than the shell, so the absolute path is suggested;
    - global entries without `-C`/`--project` (they only work if the client starts them inside a project);
    - `--role` values contradicting a locked binding;
    - per-directory entries whose `--session` or `--role` differs from the worktree's binding, which makes CLI and MCP act as different sessions in the same worktree — except an entry for another role the layout places in the same worktree (e.g. `lead` in a checkout bound to `spec`), which is intended;
+   - configuration files that are not valid JSON;
+   - a server defined in both a worktree's `.mcp.json` and Claude Code's local scope (Claude Code reports conflicting scopes);
    - session ids used by several entries. DSH profiles are YAML patches and are only listed, not parsed; `dsh --profile <name> --dump-config` shows the composed result.
 
 Airlock calls `git` here only to inspect the setup; it still never uses git to locate state (Spec 05 §2.2).
@@ -116,9 +119,9 @@ Airlock calls `git` here only to inspect the setup; it still never uses git to l
 
 ## 6. `airlock setup <claude|antigravity|dsh>`
 
-Prints the configuration for the current worktree; it never edits harness files. The command path is the running binary's canonical path.
+Prints the configuration for the current worktree; it never edits harness files. Standard output carries only the file content (valid JSON or YAML), so redirecting it into the target file is always safe; where to save it goes to standard error. The command path is the running binary's canonical path.
 
-- **claude:** the `claude mcp add --scope local airlock -- <bin> mcp` command and the equivalent `.mcp.json` entry. Role and session come from the binding.
+- **claude:** a `.mcp.json` for this worktree. Role and session come from the binding (`args: ["mcp"]`) unless `--role` names another role. Claude Code's local scope (`claude mcp add --scope local`) is not used: it applies to every worktree of the repository and would carry one worktree's role into the others.
 - **antigravity:** an `mcpServers` entry `airlock-<role>` with `args: ["-C", "<root>", "mcp", "--role", "<role>", "--session", "<session>"]` — the configuration is global, so it carries the worktree explicitly.
 - **dsh:** a complete patch overlay file (YAML) with one `@deepseek-ai/dsh-mcp-client` row using `-C <root>`, plus the launch command as a comment: `dsh web --patch <file> --port 0`. One overlay per role keeps one role per DSH instance.
 

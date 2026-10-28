@@ -68,7 +68,11 @@ pub enum Command {
         clear: bool,
     },
     /// Print the session briefing: role, rules, claimed work, next package
-    Start,
+    Start {
+        /// Role to brief [default: the worktree binding's]; for a second role in a shared checkout
+        #[arg(long, env = "AIRLOCK_ROLE")]
+        role: Option<String>,
+    },
     /// Check the installation, worktrees, bindings, and harness configurations
     Doctor,
     /// Print the MCP configuration of this worktree for an agent harness
@@ -128,7 +132,7 @@ pub enum TaskCommand {
     /// Show the next ready task for a role
     Next {
         /// Role [default: the worktree binding's]
-        #[arg(long)]
+        #[arg(long, env = "AIRLOCK_ROLE")]
         role: Option<String>,
     },
     /// Show one task
@@ -278,7 +282,7 @@ impl Command {
         match self {
             Self::Init { .. } => "init",
             Self::Use { .. } => "use",
-            Self::Start => "start",
+            Self::Start { .. } => "start",
             Self::Doctor => "doctor",
             Self::Setup { .. } => "setup",
             Self::Role(sub) => match sub {
