@@ -2,7 +2,7 @@
 
 A local-first coordinator for multi-agent and human development sessions: tasks, questions, and leases in one store shared by every worktree of a project.
 
-> **Status: scaffold.** The domain model, snapshot format, and CLI surface are implemented and tested; the hub store, sync, MCP server, and dashboard are specified in [`docs/spec/`](docs/spec/) but not built yet. Commands currently exit with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
+> **Status: Phase 1.** The hub store and the task and question CLI work (`init`, `task …`, `question …`). Sync/import, the MCP server, and the dashboard are specified in [`docs/spec/`](docs/spec/) but not built yet; those commands exit with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
 
 ---
 
@@ -43,7 +43,7 @@ cd airlock
 cargo build --release
 ```
 
-### Intended Workflow
+### Workflow
 ```bash
 airlock init                                  # register the project, writes .airlock
 
@@ -58,7 +58,7 @@ airlock task claim E-6d                       # take it under a lease
 airlock task done E-6d --notes "All unit tests passing."
 
 airlock question ask "How does blast radius degrade?" --topic missiles.md
-airlock sync                                  # export snapshot and views for git
+airlock sync                                  # export snapshot and views for git (Phase 2)
 ```
 
 More: [Quickstart walkthrough](docs/walkthroughs/quickstart.md).

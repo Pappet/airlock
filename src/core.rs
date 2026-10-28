@@ -38,6 +38,31 @@ pub enum TaskStatus {
     Done,
 }
 
+impl TaskState {
+    /// The snake_case name used in JSON and the database.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::InProgress => "in_progress",
+            Self::InReview => "in_review",
+            Self::Done => "done",
+        }
+    }
+}
+
+impl TaskStatus {
+    /// The snake_case name used in JSON and CLI filters.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+            Self::InProgress => "in_progress",
+            Self::InReview => "in_review",
+            Self::Done => "done",
+        }
+    }
+}
+
 /// A structured work package.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
@@ -197,6 +222,17 @@ pub enum QuestionStatus {
     Answered,
     /// Closed, optionally codified in a spec file
     Resolved,
+}
+
+impl QuestionStatus {
+    /// The snake_case name used in JSON, the database, and CLI filters.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Answered => "answered",
+            Self::Resolved => "resolved",
+        }
+    }
 }
 
 /// A behavioral question asked across the airlock.
