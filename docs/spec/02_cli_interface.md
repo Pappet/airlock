@@ -13,8 +13,8 @@ The CLI provides human developers, terminal scripts, and CI runners with direct 
 ```bash
 airlock init [--template <name>]
 ```
-- Creates `.airlock/` directory and `.airlock.json` (or `.airlock.toml`) configuration if not present.
-- Initializes database schema in `.airlock/airlock.db`.
+- Registers the project in the central hub store (`~/.local/state/airlock/`) and creates its SQLite database (WAL mode) if not present.
+- Writes the merge-trivial marker file `.airlock` (project id only) into the project directory; project configuration lives hub-side in `project.json`.
 
 ### 2.2 Task Operations
 
@@ -92,4 +92,7 @@ Starts the stdio Model Context Protocol (MCP) server for direct LLM agent integr
 Starts the local HTTP server hosting the REST API, Server-Sent Events (SSE), and embedded web dashboard.
 
 #### `airlock sync`
-Deterministically exports the current database state into configured project files (e.g. `docs/PLAN.md` and `docs/spec/QUESTIONS.md`).
+Deterministically exports the current database state into all configured artifacts: the canonical JSON snapshot (`docs/.airlock-state.json`, the only `airlock import` source) and the Markdown views (`docs/PLAN.md`, `docs/spec/QUESTIONS.md`). See Spec 05.
+
+#### `airlock import [--yes]`
+Reconstructs project state from the JSON snapshot (replace-all, with confirmation). Markdown files are never parsed for reconstruction.

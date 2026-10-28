@@ -12,7 +12,7 @@ The web dashboard is delivered as a zero-dependency single-binary web service: a
 
 ### 2.1 Visual Kanban Board
 - **Columns**: `Backlog`, `Ready`, `In Progress`, `In Review`, `Done`.
-- **Role Filters**: Filter cards by `Lead`, `Spec`, `Engine`, or custom roles defined in `.airlock.json`.
+- **Role Filters**: Filter cards by `Lead`, `Spec`, `Engine`, or custom roles defined in the hub-side project configuration (`project.json`).
 - **Task Cards**: Displays Task ID, title, claimed session, and dependency badges. Clicking a card opens a modal with full *Read*, *Touch*, *Do*, and *Verify* instructions.
 
 ### 2.2 Airlock / Questions Inbox

@@ -27,3 +27,6 @@ Thumbs.db
 *.db-shm
 *.db-wal
 tasks.db
+
+# Local AI session memory (DSH memoir tooling state)
+PROJECT_MEMORY.md

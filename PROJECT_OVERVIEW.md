@@ -14,7 +14,7 @@ It replaces fragile, monolithic markdown roadmaps with an atomic, concurrent tas
 
 - **Language:** Rust (Edition 2024, Rust 1.98+)
 - **Primary Interfaces:** CLI (`clap`), MCP (stdio JSON-RPC), Web Server (`axum` embedded)
-- **Persistence:** Local SQLite with WAL mode (`.airlock/airlock.db`)
+- **Persistence:** Central hub store — one SQLite database (WAL mode) per project under `~/.local/state/airlock/projects/<uuid>/`, referenced from project directories via a merge-trivial `.airlock` marker file
 - **License:** MIT
 - **Repository Location:** `/home/peter/Projects/airlock`
 - **Current Branch:** `feat/initial-scaffold-and-specs`
@@ -33,10 +33,10 @@ It replaces fragile, monolithic markdown roadmaps with an atomic, concurrent tas
 
 ### 3. SQLite with Write-Ahead Logging (WAL)
 - **Decision:** Use an embedded SQLite database as the primary source of truth for live task status, locks, and questions.
-- **Rationale:** Unlike JSON or Markdown files that lock the entire file during writes, SQLite WAL allows concurrent readers and writers across different git worktrees and shell sessions without file corruption or race conditions.
+- **Rationale:** Unlike JSON or Markdown files that lock the entire file during writes, SQLite WAL allows concurrent readers and writers across different git worktrees and shell sessions without file corruption or race conditions. The hub store lives **outside** every repository (git worktrees each own a working-tree copy, so a repo-local database would fork per worktree), so all worktrees and clones of a project resolve the same state.
 
 ### 4. Deterministic Markdown Export Layer
-- **Decision:** Decouple live state from Git by exporting database state to Markdown (`docs/PLAN.md`, `docs/spec/QUESTIONS.md`) only upon demand (`airlock sync`) or commit hooks.
+- **Decision:** Decouple live state from Git by exporting on demand (`airlock sync`) into a canonical JSON snapshot (`docs/.airlock-state.json`, the lossless backup and import source) plus generated Markdown views (`docs/PLAN.md`, `docs/spec/QUESTIONS.md`). Generated files are never hand-resolved: merge conflicts are cleared by re-running `airlock sync`.
 - **Rationale:** Developers retain human-readable progress documents in git history without suffering day-to-day merge conflicts from concurrent sessions modifying the same line numbers.
 
 ### 5. Clean-Room Boundary Protocol (The "Airlock")
@@ -50,8 +50,8 @@ It replaces fragile, monolithic markdown roadmaps with an atomic, concurrent tas
 ```mermaid
 graph TD
     subgraph Storage ["Persistence Layer"]
-        DB[(".airlock/airlock.db (SQLite WAL)")]
-        Config[".airlock.json (Project Configuration)"]
+        DB["Hub Store: ~/.local/state/airlock/projects/<uuid>/airlock.db (SQLite WAL)"]
+        Config["project.json (Hub-side Config) + .airlock Marker (project id)"]
     end
 
     subgraph CoreEngine ["Airlock Core"]

@@ -17,11 +17,13 @@ Airlock coordinates multi-agent AI and human developer workflows with:
 
 ## Features
 
+*Status: scaffold — the data models are implemented; the hub store, sync layer, MCP server, and web dashboard are specified (see `docs/spec/`) but not yet implemented. Progress is tracked in [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).*
+
 - **Concurrent Multi-Worktree Coordination**: Uses local SQLite in Write-Ahead Logging (WAL) mode to permit concurrent read/write operations across distinct git branches and worktrees with zero race conditions.
 - **Role-Based Work Routing**: Assign tasks to designated roles (e.g. `lead`, `spec`, `engine`, `frontend`, `qa`).
 - **Airlock Question & Answer Queue**: Engine sessions submit questions; lead sessions and human developers answer them without leaking non-compliant code.
 - **Session Leases & Auto-Release**: Prevents duplicate work by leasing tasks to active sessions with automatic timeout recovery.
-- **Deterministic Documentation Sync**: Exports live database state into clean, version-controlled markdown files (`docs/PLAN.md` and `docs/spec/QUESTIONS.md`).
+- **Deterministic Documentation Sync**: Exports live database state into a canonical JSON snapshot (`docs/.airlock-state.json`, the lossless backup and import source) plus clean, version-controlled markdown views (`docs/PLAN.md` and `docs/spec/QUESTIONS.md`). Merge conflicts in generated files are resolved by re-running `airlock sync` — never by hand.
 - **Native MCP Tools**: Exposes `task_next`, `task_claim`, `task_complete`, `question_ask`, and `question_answer` directly to AI agent platforms (Antigravity, Claude Code, Cursor).
 
 ---
@@ -33,7 +35,7 @@ Airlock coordinates multi-agent AI and human developer workflows with:
 
 ### Installation
 ```bash
-git clone https://github.com/paprotny/airlock.git
+git clone https://github.com/Pappet/airlock.git
 cd airlock
 cargo build --release
 ```

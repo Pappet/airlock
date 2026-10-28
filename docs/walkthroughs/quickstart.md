@@ -9,7 +9,7 @@ This walkthrough guides you through setting up Airlock in any existing or new pr
 Build and install Airlock from source:
 
 ```bash
-git clone https://github.com/paprotny/airlock.git # or local path
+git clone https://github.com/Pappet/airlock.git # or local path
 cd airlock
 cargo install --path .
 ```
@@ -25,7 +25,7 @@ cd ~/Projects/my-project
 airlock init
 ```
 
-This creates the configuration file `.airlock.json` and the local coordination database `.airlock/airlock.db`.
+This registers the project in the central Airlock hub store (`~/.local/state/airlock/`) and writes a merge-trivial `.airlock` marker file (project id only) into the project directory. The database never lives inside the repository — every worktree and clone of the project resolves the same state.
 
 ---
 
@@ -80,8 +80,10 @@ airlock question answer 1 "Truncated towards zero as per formula in section 3.2.
 
 ## 6. Exporting to Documentation
 
-To produce a clean, human-readable `PLAN.md` and `QUESTIONS.md` for git commits:
+Before a merge (or at any milestone), export the project state for git commits:
 
 ```bash
 airlock sync
 ```
+
+This writes the canonical JSON snapshot (`docs/.airlock-state.json`, the lossless backup and the only `airlock import` source) plus the human-readable Markdown views `PLAN.md` and `QUESTIONS.md`. If a merge conflicts in a generated file, simply re-run `airlock sync` afterwards instead of resolving by hand.

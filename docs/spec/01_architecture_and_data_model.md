@@ -84,10 +84,11 @@ To prevent duplicate work when multiple agent sessions run concurrently:
 
 ## 3. Storage Architecture
 
-Airlock supports a dual-layer storage model:
-1. **Local SQLite (`.airlock/airlock.db`)**:
+Airlock uses a central hub store, independent of any repository:
+1. **Hub Store (SQLite per project, `~/.local/state/airlock/projects/<uuid>/airlock.db`)**:
    - Uses Write-Ahead Logging (WAL) mode.
-   - Provides concurrent, multi-process read/write access across separate git worktrees without requiring a continuously running daemon.
-   - Zero network overhead.
+   - Provides concurrent, multi-process read/write access across separate git worktrees and clones without requiring a continuously running daemon.
+   - Zero network overhead. Git worktrees each own a working-tree copy, so the store is never placed inside a repository.
+   - Projects reference their store via a merge-trivial `.airlock` marker file (project id only); project configuration lives hub-side in `project.json`.
 2. **Git-Synchronized Export Layer**:
-   - CLI/MCP commands allow instant synchronization between the SQLite state and project markdown files (`docs/PLAN.md`, `docs/spec/QUESTIONS.md`).
+   - `airlock sync` exports the SQLite state into a canonical JSON snapshot (`docs/.airlock-state.json`, lossless backup and the only `airlock import` source) plus deterministic Markdown views (`docs/PLAN.md`, `docs/spec/QUESTIONS.md`). See Spec 05.

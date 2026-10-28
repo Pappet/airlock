@@ -8,15 +8,17 @@ This document outlines the phased implementation plan for Airlock.
 - [x] Initial project setup (Rust edition 2024, Cargo manifest with locked dependencies).
 - [x] Core data models (`Task`, `Question`, `ProjectConfig`, `TaskStatus`, `QuestionStatus`).
 - [x] Behavioral specifications (`docs/spec/01` - `05`).
-- [ ] SQLite persistence layer (`rusqlite` with WAL mode).
+- [ ] Central hub SQLite persistence layer (XDG state dir, `rusqlite` with WAL mode) with project registry and `.airlock` marker resolution.
 - [ ] Functional CLI commands: `airlock init`, `airlock task list/next/claim/done`, `airlock question ask/list/answer`.
 - [ ] Integration and smoke test suite in `tests/`.
 
 ---
 
-## Phase 2: Markdown Sync & Importer
-- [ ] Parser for existing monolithic `PLAN.md` files (importing existing OpenSHR `L-...` and `E-...` packages directly).
-- [ ] Markdown generator for `PLAN.md` and `QUESTIONS.md`.
+## Phase 2: Sync & Export Layer
+- [ ] Deterministic JSON state snapshot generator (`docs/.airlock-state.json`, canonical export).
+- [ ] Markdown view generators for `PLAN.md` and `QUESTIONS.md`.
+- [ ] `airlock import` from the JSON snapshot (replace-all with confirmation).
+- [ ] Legacy `PLAN.md` migration parser (one-time import of existing OpenSHR `L-...` and `E-...` packages; not a canonical round-trip path).
 - [ ] Automated dependency graph resolution (marking tasks `Ready` when blockers reach `Done`).
 
 ---
