@@ -38,6 +38,15 @@ impl From<&Task> for WorkPackage {
     }
 }
 
+/// A task of the same role held by another session.
+#[derive(Debug, Clone, Serialize)]
+pub struct OtherClaim {
+    pub id: String,
+    pub title: String,
+    pub session: String,
+    pub lease_minutes_left: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaimedTask {
     #[serde(flatten)]
@@ -59,6 +68,8 @@ pub struct Briefing {
     pub claimed: Vec<ClaimedTask>,
     /// The next ready package of the role, when nothing is claimed
     pub next: Option<WorkPackage>,
+    /// Tasks of this role that other sessions hold, so a session can tell live work from stale leases
+    pub others: Vec<OtherClaim>,
     /// The session's own questions that are answered but not resolved
     pub answered_questions: Vec<Question>,
 }
@@ -93,6 +104,20 @@ pub fn build(
         }
         _ => None,
     };
+    let others = tasks
+        .iter()
+        .filter(|t| {
+            t.state == TaskState::InProgress
+                && Some(t.role.as_str()) == role
+                && t.claimed_by.as_deref() != Some(session)
+        })
+        .map(|t| OtherClaim {
+            id: t.id.clone(),
+            title: t.title.clone(),
+            session: t.claimed_by.clone().unwrap_or_default(),
+            lease_minutes_left: t.lease_minutes_left(now),
+        })
+        .collect();
     let answered_questions = store
         .questions()?
         .into_iter()
@@ -112,6 +137,7 @@ pub fn build(
         lease_minutes: project.config.lease_minutes,
         claimed,
         next,
+        others,
         answered_questions,
     })
 }
@@ -185,6 +211,25 @@ impl Briefing {
                 out,
                 "\n## No work ready\n\nNo task of role `{}` is ready. Ask the lead for work or check back later.",
                 self.role.as_deref().unwrap_or_default()
+            );
+        }
+
+        if !self.others.is_empty() {
+            out.push_str("\n## In progress by other sessions of your role\n\n");
+            for other in &self.others {
+                let lease = other
+                    .lease_minutes_left
+                    .map(|m| format!(", lease {m} min left"))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "- **{}** {} — `{}`{lease}",
+                    other.id, other.title, other.session
+                );
+            }
+            out.push_str(
+                "\nLeave these alone: a lease stays alive only while its session sends heartbeats \
+                 and becomes free on its own when it expires.\n",
             );
         }
 

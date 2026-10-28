@@ -115,7 +115,7 @@ Replaces the project's tasks, questions, and roles with a snapshot (default: the
 | Command | Purpose |
 |---|---|
 | `airlock use [<role>] [--lock] [--force] [--clear]` | Bind this worktree to a role and session, or show the binding |
-| `airlock start` | Print the session briefing (role, rules, claimed work, next package) |
+| `airlock start [--role <role>]` | Print the session briefing (role, rules, claimed work, other sessions' claims of the role, next package); `--role` / `AIRLOCK_ROLE` for a second role in a shared checkout |
 | `airlock role list` / `role set <name> …` / `role remove <name>` | Manage roles, their instructions, and their reading list |
 | `airlock doctor` | Check binary, project, worktrees, bindings, and harness configurations; exits `1` on errors |
 | `airlock setup <claude\|antigravity\|dsh> [--role <role>]` | Print the MCP configuration of this worktree for a harness |

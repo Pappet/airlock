@@ -607,3 +607,163 @@ fn doctor_flags_bare_commands_and_split_identities() {
         "{warnings:?}"
     );
 }
+
+#[test]
+fn setup_writes_only_file_content_to_stdout() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine"]);
+    let out = env.run(&env.engine, &["setup", "claude"]);
+    assert!(out.status.success());
+    let config: Value = serde_json::from_slice(&out.stdout).expect("stdout is a valid .mcp.json");
+    assert_eq!(config["mcpServers"]["airlock"]["args"], json!(["mcp"]));
+    let hint = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        hint.contains(".mcp.json") && hint.contains("local"),
+        "{hint}"
+    );
+
+    let out = env.run(&env.engine, &["setup", "antigravity"]);
+    serde_json::from_slice::<Value>(&out.stdout).expect("stdout is valid JSON");
+}
+
+#[test]
+fn start_takes_a_second_role_in_a_shared_checkout() {
+    let env = Env::new();
+    env.ok(&env.main, &["use", "spec", "--session", "spec-1"]);
+    env.ok(
+        &env.main,
+        &[
+            "task",
+            "add",
+            "L-1",
+            "Lead work",
+            "--role",
+            "lead",
+            "--do",
+            "x",
+            "--verify",
+            "y",
+        ],
+    );
+
+    let brief = env.json(
+        &env.main,
+        &["--session", "lead-1", "start", "--role", "lead"],
+    );
+    assert_eq!(
+        (brief["role"].as_str(), brief["session"].as_str()),
+        (Some("lead"), Some("lead-1"))
+    );
+    assert_eq!(brief["next"]["id"], "L-1");
+
+    let out = env
+        .cmd(&env.main, &["start", "--json"])
+        .env("AIRLOCK_ROLE", "lead")
+        .env("AIRLOCK_SESSION", "lead-1")
+        .output()
+        .unwrap();
+    let brief: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(brief["role"], "lead");
+    let next = env
+        .cmd(&env.main, &["task", "next", "--json"])
+        .env("AIRLOCK_ROLE", "lead")
+        .output()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&next.stdout).unwrap()["id"],
+        "L-1"
+    );
+
+    assert!(
+        env.fail(&env.main, &["start", "--role", "ghost"])
+            .contains("unknown role")
+    );
+    env.ok(&env.engine, &["use", "engine", "--lock"]);
+    assert!(
+        env.fail(&env.engine, &["start", "--role", "lead"])
+            .contains("locked to role `engine`")
+    );
+}
+
+#[test]
+fn briefing_shows_tasks_held_by_other_sessions_of_the_role() {
+    let env = Env::new();
+    env.add_engine_task("E-1");
+    env.add_engine_task("E-2");
+    env.ok(
+        &env.engine,
+        &["--session", "engine-a", "task", "claim", "E-1"],
+    );
+
+    let brief = env.json(
+        &env.engine,
+        &["--session", "engine-b", "start", "--role", "engine"],
+    );
+    assert_eq!(brief["others"][0]["id"], "E-1");
+    assert_eq!(brief["others"][0]["session"], "engine-a");
+    assert_eq!(brief["others"][0]["lease_minutes_left"], 60);
+    assert_eq!(brief["next"]["id"], "E-2");
+    let text = env.ok(
+        &env.engine,
+        &["--session", "engine-b", "start", "--role", "engine"],
+    );
+    assert!(
+        text.contains("## In progress by other sessions of your role")
+            && text.contains("`engine-a`, lease 60 min left")
+    );
+
+    let own = env.json(
+        &env.engine,
+        &["--session", "engine-a", "start", "--role", "engine"],
+    );
+    assert_eq!(
+        own["others"],
+        json!([]),
+        "own claims are not listed as others"
+    );
+}
+
+// `HOME` decides where doctor looks for ~/.claude.json; Windows ignores it.
+#[cfg(unix)]
+#[test]
+fn doctor_checks_claude_local_scope_against_every_worktree() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine", "--lock"]);
+    let main_key = std::fs::canonicalize(&env.main)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let lead = json!({ "command": "/bin/airlock", "args": ["mcp", "--role", "lead", "--session", "lead-1"] });
+    std::fs::write(
+        env.home.join(".claude.json"),
+        json!({ "projects": { main_key: { "mcpServers": { "airlock": lead } } } }).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        env.main.join(".mcp.json"),
+        json!({ "mcpServers": { "airlock": { "command": "/bin/airlock", "args": ["mcp"] } } })
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(env.engine.join(".mcp.json"), "# not json\n{}").unwrap();
+
+    let findings = env.json(&env.main, &["doctor"]);
+    let warnings: Vec<String> = findings
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["level"] == "warn")
+        .map(|f| f["message"].as_str().unwrap().to_string())
+        .collect();
+    let has = |text: &str| warnings.iter().any(|w| w.contains(text));
+    assert!(has("for every worktree of this repository"), "{warnings:?}");
+    assert!(
+        has("--role lead contradicts the locked binding to engine"),
+        "{warnings:?}"
+    );
+    assert!(
+        has("is defined in .mcp.json and in Claude Code's local scope"),
+        "{warnings:?}"
+    );
+    assert!(has("not valid JSON"), "{warnings:?}");
+}

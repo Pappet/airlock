@@ -104,9 +104,19 @@ pub fn run(cli: Cli) -> Result<()> {
         | Command::Mcp { .. }
         | Command::Use { .. }
         | Command::Setup { .. } => unreachable!("handled above"),
-        Command::Start => {
-            let role = project.binding.as_ref().map(|b| b.role.as_str());
-            let brief = briefing::build(&store, &project, &session, role, now)?;
+        Command::Start { role } => {
+            let role = match (role, &project.binding) {
+                (Some(role), Some(b)) if b.locked && role != b.role => bail!(
+                    "this worktree is locked to role `{}`; `--role {role}` is refused",
+                    b.role
+                ),
+                (Some(role), _) => {
+                    ensure_role(&project, &role)?;
+                    Some(role)
+                }
+                (None, binding) => binding.as_ref().map(|b| b.role.clone()),
+            };
+            let brief = briefing::build(&store, &project, &session, role.as_deref(), now)?;
             out.print(&brief, || brief.markdown(briefing::Via::Cli))
         }
         Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),
