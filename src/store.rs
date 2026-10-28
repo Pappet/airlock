@@ -6,16 +6,20 @@
 //! present expired leases as already released. Callers pass `now` (unix
 //! seconds) so behavior is testable without a clock.
 
-use crate::core::{Question, QuestionStatus, Task, TaskState, TaskStatus, dependents};
+use crate::core::{
+    Question, QuestionStatus, Task, TaskState, TaskStatus, check_task_id, dependents,
+};
+use crate::snapshot::Snapshot;
 use anyhow::{Context, Result, bail, ensure};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
-const SCHEMA_VERSION: i32 = 1;
+/// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
 
-const SCHEMA: &str = "
+const SCHEMA_V1: &str = "
 CREATE TABLE tasks (
     id               TEXT PRIMARY KEY,
     title            TEXT NOT NULL,
@@ -50,6 +54,14 @@ CREATE TABLE questions (
     spec_file   TEXT,
     created_at  INTEGER NOT NULL,
     answered_at INTEGER
+) STRICT;
+";
+
+/// Hashes of every snapshot this hub wrote or imported (Spec 05 §3.5).
+const SCHEMA_V2: &str = "
+CREATE TABLE exports (
+    sha256      TEXT PRIMARY KEY,
+    recorded_at INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -107,18 +119,18 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
 
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let version: i32 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        match version {
-            0 => {
-                tx.execute_batch(SCHEMA)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            SCHEMA_VERSION => {}
-            v => bail!(
-                "{} has schema version {v}; this airlock supports {SCHEMA_VERSION}",
-                path.display()
-            ),
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let version = usize::try_from(version).unwrap_or(usize::MAX);
+        ensure!(
+            version <= MIGRATIONS.len(),
+            "{} has schema version {version}; this airlock supports up to {}",
+            path.display(),
+            MIGRATIONS.len()
+        );
+        for migration in &MIGRATIONS[version..] {
+            tx.execute_batch(migration)?;
         }
+        tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
         tx.commit()?;
         Ok(Self { conn })
     }
@@ -149,7 +161,7 @@ impl Store {
     }
 
     pub fn add_task(&mut self, new: NewTask, now: i64) -> Result<Task> {
-        validate_task_id(&new.id)?;
+        check_task_id(&new.id).map_err(anyhow::Error::msg)?;
         let tx = self.write(now)?;
         ensure!(
             !task_exists(&tx, &new.id)?,
@@ -412,6 +424,87 @@ impl Store {
         Ok(question)
     }
 
+    /// Whether this hub wrote or imported a snapshot with this SHA-256 (hex).
+    pub fn is_known_export(&self, sha256: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM exports WHERE sha256 = ?1", [sha256], |_| {
+                Ok(())
+            })
+            .optional()?
+            .is_some())
+    }
+
+    pub fn record_export(&mut self, sha256: &str, now: i64) -> Result<()> {
+        let tx = self.write(now)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO exports (sha256, recorded_at) VALUES (?1, ?2)",
+            params![sha256, now],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Replaces all tasks and questions with the snapshot's content in one
+    /// transaction. The caller validates the snapshot first. Question ids are
+    /// kept; new questions continue after the highest id this store ever used.
+    pub fn replace_all(&mut self, snapshot: &Snapshot, now: i64) -> Result<()> {
+        let tx = self.write(now)?;
+        tx.execute_batch("DELETE FROM task_deps; DELETE FROM tasks; DELETE FROM questions;")?;
+        for t in &snapshot.tasks {
+            let state = match t.state {
+                TaskState::InProgress => TaskState::Open,
+                state => state,
+            };
+            tx.execute(
+                "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, notes, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    t.id,
+                    t.title,
+                    t.role,
+                    state.as_str(),
+                    t.priority,
+                    serde_json::to_string(&t.read)?,
+                    serde_json::to_string(&t.touch)?,
+                    t.r#do,
+                    t.verify,
+                    t.notes,
+                    t.created_at,
+                    now
+                ],
+            )?;
+        }
+        for t in &snapshot.tasks {
+            for dep in &t.blocked_by {
+                tx.execute(
+                    "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",
+                    params![t.id, dep],
+                )?;
+            }
+        }
+        for q in &snapshot.questions {
+            tx.execute(
+                "INSERT INTO questions (id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    sql_id(q.id)?,
+                    q.topic,
+                    q.asked_by,
+                    q.question,
+                    q.status.as_str(),
+                    q.answer,
+                    q.answered_by,
+                    q.spec_file,
+                    q.created_at,
+                    q.answered_at
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Starts a write transaction and releases expired leases.
     fn write(&mut self, now: i64) -> Result<Transaction<'_>> {
         let tx = self
@@ -424,17 +517,6 @@ impl Store {
         )?;
         Ok(tx)
     }
-}
-
-fn validate_task_id(id: &str) -> Result<()> {
-    ensure!(
-        !id.is_empty()
-            && id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
-        "invalid task id `{id}`: use letters, digits, `-`, `_`, or `.`"
-    );
-    Ok(())
 }
 
 fn task_exists(conn: &Connection, id: &str) -> Result<bool> {

@@ -7,6 +7,8 @@ pub mod core;
 pub mod hub;
 pub mod snapshot;
 pub mod store;
+pub mod sync;
+pub mod views;
 
 /// Airlock crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

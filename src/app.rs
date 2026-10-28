@@ -5,10 +5,12 @@ use crate::config::ProjectConfig;
 use crate::core::{Question, Task, TaskState, TaskStatus, dependents};
 use crate::hub::{Hub, MARKER_FILE, Marker, Project};
 use crate::store::{Completion, NewTask, Store};
+use crate::sync;
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +34,43 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Init { .. } => unreachable!("handled above"),
         Command::Task(sub) => task(&mut store, &project, &session, sub, now, &out),
         Command::Question(sub) => question(&mut store, &session, sub, now, &out),
+        Command::Sync { force } => {
+            let root = project_root(&project, "sync")?;
+            let report = sync::sync(&mut store, &project, root, force, now)?;
+            out.print(&report, || {
+                let mut lines: Vec<String> = report
+                    .written
+                    .iter()
+                    .map(|p| format!("wrote     {p}"))
+                    .collect();
+                lines.extend(report.unchanged.iter().map(|p| format!("unchanged {p}")));
+                lines.join("\n")
+            })
+        }
+        Command::Import { from, yes } => {
+            let path = match from {
+                Some(path) => path,
+                None => {
+                    sync::state_path(project_root(&project, "import")?, &project.config.export)?
+                }
+            };
+            let loaded = sync::load_snapshot(&path)?;
+            sync::check_import(&loaded.snapshot, &project.id)?;
+            let (tasks, questions) = (store.tasks(now)?.len(), store.questions()?.len());
+            let prompt = format!(
+                "Replace {tasks} tasks and {questions} questions of project {} with {} tasks and {} questions from {}?",
+                project.config.name,
+                loaded.snapshot.tasks.len(),
+                loaded.snapshot.questions.len(),
+                path.display()
+            );
+            ensure!(yes || confirm(&prompt)?, "import cancelled");
+            sync::import(&mut store, &hub, &project, &loaded, now)?;
+            out.print(
+                &json!({ "tasks": loaded.snapshot.tasks.len(), "questions": loaded.snapshot.questions.len() }),
+                || format!("Imported {} tasks and {} questions", loaded.snapshot.tasks.len(), loaded.snapshot.questions.len()),
+            )
+        }
         other => bail!(
             "`airlock {}` is not implemented yet; see docs/plans/PHASE_PLAN.md",
             other.name()
@@ -472,6 +511,25 @@ fn question_list(questions: &[Question]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// The directory of the marker that selected the project; required for file exports.
+fn project_root<'a>(project: &'a Project, command: &str) -> Result<&'a Path> {
+    project.root.as_deref().with_context(|| {
+        format!("`airlock {command}` needs a project root: run it inside a directory with the project's {MARKER_FILE} marker")
+    })
+}
+
+/// Asks a yes/no question on the terminal; refuses without one.
+fn confirm(prompt: &str) -> Result<bool> {
+    ensure!(
+        std::io::stdin().is_terminal(),
+        "{prompt}\nNo terminal to confirm on; pass --yes"
+    );
+    eprint!("{prompt} [y/N] ");
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
 fn default_session() -> String {

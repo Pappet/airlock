@@ -225,3 +225,57 @@ fn concurrent_claims_from_separate_connections_have_one_winner() {
         .count();
     assert_eq!(winners, 1);
 }
+
+#[test]
+fn version_1_databases_are_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    Store::open(&path).unwrap();
+    // Roll back to the version 1 layout.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("DROP TABLE exports; PRAGMA user_version = 1;")
+        .unwrap();
+    drop(conn);
+
+    let mut store = Store::open(&path).unwrap();
+    store.record_export("abc", 1).unwrap();
+    assert!(store.is_known_export("abc").unwrap());
+    assert!(!store.is_known_export("def").unwrap());
+}
+
+#[test]
+fn replace_all_swaps_state_and_never_reuses_question_ids() {
+    use airlock::config::ProjectConfig;
+    use airlock::snapshot::Snapshot;
+
+    let (_dir, mut store) = open();
+    store.add_task(new_task("OLD", &[]), 0).unwrap();
+    for _ in 0..5 {
+        store.ask("t", "q", "s", 0).unwrap();
+    }
+
+    let (_src_dir, mut source) = open();
+    source.add_task(new_task("A", &[]), 0).unwrap();
+    source.add_task(new_task("B", &["A"]), 0).unwrap();
+    source.claim("A", "s1", MIN, 1).unwrap();
+    source.ask("melee.md", "Front arc?", "engine-1", 2).unwrap();
+    let snapshot = Snapshot::new(
+        "id",
+        &ProjectConfig::default(),
+        &source.tasks(3).unwrap(),
+        &source.questions().unwrap(),
+    );
+
+    store.replace_all(&snapshot, 10).unwrap();
+    let tasks = store.tasks(10).unwrap();
+    assert_eq!(
+        tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+        ["A", "B"]
+    );
+    assert_eq!(tasks[0].state, TaskState::Open, "claims are not imported");
+    assert_eq!(tasks[1].blocked_by, ["A"]);
+    assert_eq!(store.questions().unwrap()[0].id, 1);
+
+    let next = store.ask("t", "q", "s", 11).unwrap();
+    assert_eq!(next.id, 6, "continues after the highest id ever used");
+}

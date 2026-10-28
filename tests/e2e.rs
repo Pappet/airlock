@@ -181,7 +181,7 @@ fn task_flow_with_json_output() {
             .contains("unknown role")
     );
     assert!(
-        env.fail(&project, &["sync"])
+        env.fail(&project, &["serve"])
             .contains("not implemented yet")
     );
 }
@@ -261,4 +261,202 @@ fn marker_ids_cannot_escape_the_hub() {
         env.fail(&outside, &["--project", "../repo", "task", "list"])
             .contains("no project")
     );
+}
+
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+fn project_with_tasks(env: &Env) -> PathBuf {
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    add(env, &project, "L-1", &[]);
+    add(env, &project, "E-1", &["--blocked-by", "L-1"]);
+    env.ok(
+        &project,
+        &["question", "ask", "Front arc?", "--topic", "melee.md"],
+    );
+    project
+}
+
+#[test]
+fn sync_is_byte_stable_and_ignores_session_state() {
+    let env = Env::new();
+    let project = project_with_tasks(&env);
+    let report = env.json(&project, &["sync"]);
+    assert_eq!(
+        report["written"],
+        serde_json::json!([
+            "docs/.airlock-state.json",
+            "docs/PLAN.md",
+            "docs/spec/QUESTIONS.md"
+        ])
+    );
+    let state = read(&project.join("docs/.airlock-state.json"));
+    assert!(read(&project.join("docs/PLAN.md")).contains("### E-1"));
+
+    env.ok(&project, &["task", "claim", "L-1"]);
+    let again = env.json(&project, &["sync"]);
+    assert_eq!(again["written"], serde_json::json!([]));
+    assert_eq!(read(&project.join("docs/.airlock-state.json")), state);
+
+    env.ok(&project, &["task", "done", "L-1"]);
+    let changed = env.json(&project, &["sync"]);
+    assert_eq!(
+        changed["written"].as_array().unwrap().len(),
+        2,
+        "snapshot and plan, not questions"
+    );
+}
+
+#[test]
+fn sync_refuses_foreign_snapshots_but_accepts_its_own_history() {
+    let env = Env::new();
+    let project = project_with_tasks(&env);
+    let state_path = project.join("docs/.airlock-state.json");
+    env.ok(&project, &["sync"]);
+    let first = read(&state_path);
+
+    // Own older version (e.g. the other side of a merge): accepted.
+    env.ok(
+        &project,
+        &["question", "ask", "Second?", "--topic", "melee.md"],
+    );
+    env.ok(&project, &["sync"]);
+    std::fs::write(&state_path, &first).unwrap();
+    env.ok(&project, &["sync"]);
+    assert!(read(&state_path).contains("Second?"));
+
+    // Foreign content: refused, then replaced with --force.
+    std::fs::write(&state_path, read(&state_path).replace("Second?", "Edited?")).unwrap();
+    assert!(
+        env.fail(&project, &["sync"])
+            .contains("not written by this hub")
+    );
+    assert!(read(&state_path).contains("Edited?"), "nothing overwritten");
+    env.ok(&project, &["sync", "--force"]);
+    assert!(read(&state_path).contains("Second?"));
+}
+
+#[test]
+fn snapshot_moves_state_to_another_machine() {
+    let env = Env::new();
+    let project = project_with_tasks(&env);
+    env.ok(&project, &["question", "answer", "1", "Truncated."]);
+    env.ok(&project, &["sync"]);
+
+    // Second machine: own hub, a clone of the repository.
+    let hub2 = env.work.join("hub2");
+    let clone = env.dir("clone");
+    std::fs::copy(project.join(".airlock"), clone.join(".airlock")).unwrap();
+    std::fs::create_dir_all(clone.join("docs")).unwrap();
+    std::fs::copy(
+        project.join("docs/.airlock-state.json"),
+        clone.join("docs/.airlock-state.json"),
+    )
+    .unwrap();
+    let run2 = |args: &[&str]| {
+        env.cmd(&clone, args)
+            .env("AIRLOCK_HOME", &hub2)
+            .output()
+            .unwrap()
+    };
+
+    assert!(run2(&["init"]).status.success());
+    let refused = run2(&["import"]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("pass --yes"));
+
+    assert!(run2(&["import", "--yes"]).status.success());
+    let tasks: Value = serde_json::from_slice(&run2(&["task", "list", "--json"]).stdout).unwrap();
+    assert_eq!(tasks.as_array().unwrap().len(), 2);
+    let questions: Value =
+        serde_json::from_slice(&run2(&["question", "list", "--json"]).stdout).unwrap();
+    assert_eq!(questions[0]["answer"], "Truncated.");
+
+    // The imported file is known to the new hub: sync accepts it and changes nothing.
+    let synced: Value = serde_json::from_slice(&run2(&["sync", "--json"]).stdout).unwrap();
+    assert!(
+        synced["unchanged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p == "docs/.airlock-state.json")
+    );
+}
+
+#[test]
+fn import_rejects_invalid_snapshots() {
+    let env = Env::new();
+    let project = project_with_tasks(&env);
+    env.ok(&project, &["sync"]);
+    let state_path = project.join("docs/.airlock-state.json");
+    let state = read(&state_path);
+
+    let id = env.json(&project, &["init"])["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let other_id = state.replace(&id, "00000000-0000-4000-8000-000000000000");
+    let bad = env.work.join("bad.json");
+    std::fs::write(&bad, other_id).unwrap();
+    assert!(
+        env.fail(
+            &project,
+            &["import", "--yes", "--from", bad.to_str().unwrap()]
+        )
+        .contains("belongs to project")
+    );
+
+    std::fs::write(&bad, state.replace("\"L-1\"\n", "\"L-9\"\n")).unwrap();
+    assert!(
+        env.fail(
+            &project,
+            &["import", "--yes", "--from", bad.to_str().unwrap()]
+        )
+        .contains("unknown task `L-9`")
+    );
+
+    std::fs::write(
+        &bad,
+        state.replace("\"role\": \"engine\"", "\"role\": \"ghost\""),
+    )
+    .unwrap();
+    assert!(
+        env.fail(
+            &project,
+            &["import", "--yes", "--from", bad.to_str().unwrap()]
+        )
+        .contains("role `ghost`")
+    );
+
+    assert_eq!(
+        env.json(&project, &["task", "list"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "state untouched"
+    );
+}
+
+#[test]
+fn sync_needs_a_root_and_safe_export_paths() {
+    let env = Env::new();
+    let project = project_with_tasks(&env);
+    let outside = env.dir("outside");
+    assert!(
+        env.fail(&outside, &["--project", "project", "sync"])
+            .contains("needs a project root")
+    );
+
+    let id = env.json(&project, &["init"])["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let config_path = env.hub.join("projects").join(&id).join("project.json");
+    let config = read(&config_path).replace("docs/.airlock-state.json", "../escaped.json");
+    std::fs::write(&config_path, config).unwrap();
+    assert!(env.fail(&project, &["sync"]).contains("must be relative"));
+    assert!(!env.work.join("escaped.json").exists());
 }

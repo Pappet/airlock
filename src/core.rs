@@ -127,6 +127,21 @@ impl Task {
     }
 }
 
+/// Checks a task id: non-empty ASCII letters, digits, `-`, `_`, or `.`.
+pub fn check_task_id(id: &str) -> Result<(), String> {
+    if !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid task id `{id}`: use letters, digits, `-`, `_`, or `.`"
+        ))
+    }
+}
+
 /// Ids of the tasks that list `id` as a prerequisite (the inverse of `blocked_by`).
 pub fn dependents<'a>(tasks: &'a [Task], id: &str) -> Vec<&'a str> {
     tasks

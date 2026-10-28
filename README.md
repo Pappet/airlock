@@ -2,7 +2,7 @@
 
 A local-first coordinator for multi-agent and human development sessions: tasks, questions, and leases in one store shared by every worktree of a project.
 
-> **Status: Phase 1.** The hub store and the task and question CLI work (`init`, `task …`, `question …`). Sync/import, the MCP server, and the dashboard are specified in [`docs/spec/`](docs/spec/) but not built yet; those commands exit with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
+> **Status: Phase 2.** The hub store, the task and question CLI, and `sync`/`import` work. The MCP server and the dashboard are specified in [`docs/spec/`](docs/spec/) but not built yet; `airlock mcp` and `airlock serve` exit with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
 
 ---
 
@@ -58,7 +58,7 @@ airlock task claim E-6d                       # take it under a lease
 airlock task done E-6d --notes "All unit tests passing."
 
 airlock question ask "How does blast radius degrade?" --topic missiles.md
-airlock sync                                  # export snapshot and views for git (Phase 2)
+airlock sync                                  # export snapshot and views for git
 ```
 
 More: [Quickstart walkthrough](docs/walkthroughs/quickstart.md).
