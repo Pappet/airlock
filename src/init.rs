@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 pub(crate) struct Options {
     pub name: Option<String>,
@@ -240,11 +240,7 @@ fn apply(
 ) -> Result<()> {
     let now = crate::app::unix_now();
     for spec in &layout.worktrees {
-        let path = if spec.path == "." {
-            main.to_path_buf()
-        } else {
-            lexical(&main.join(&spec.path))
-        };
+        let path = Layout::resolve(main, spec);
         if spec.path != "." && !path.exists() {
             let dir = path
                 .file_name()
@@ -286,11 +282,43 @@ fn apply(
         }
         let key = binding_key(&path)?;
         if let Some(b) = store.binding(&key)? {
-            actions.push(act(
-                "bound",
-                &path,
-                format!("already: role {}, session {}", b.role, b.session),
-            ));
+            if spec.lock && !b.locked && spec.roles.contains(&b.role) {
+                // Tightening only: the layout's lock is added, role and session stay.
+                store.bind(
+                    &key,
+                    &Binding {
+                        locked: true,
+                        ..b.clone()
+                    },
+                    false,
+                    now,
+                )?;
+                actions.push(act(
+                    "locked",
+                    &path,
+                    format!(
+                        "role {}, session {} (airlock.toml requires a lock)",
+                        b.role, b.session
+                    ),
+                ));
+            } else if !spec.roles.contains(&b.role) {
+                actions.push(act(
+                    "bound",
+                    &path,
+                    format!(
+                        "already: role {}, session {} — airlock.toml lists {}; change with `airlock use`",
+                        b.role,
+                        b.session,
+                        spec.roles.join(", ")
+                    ),
+                ));
+            } else {
+                actions.push(act(
+                    "bound",
+                    &path,
+                    format!("already: role {}, session {}", b.role, b.session),
+                ));
+            }
             continue;
         }
         let role = &spec.roles[0];
@@ -480,21 +508,6 @@ fn act(action: &'static str, path: &Path, detail: String) -> Action {
         path: path.display().to_string(),
         detail,
     }
-}
-
-/// Resolves `.` and `..` without touching the file system.
-fn lexical(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 fn is_worktree_of(main: &Path, path: &Path) -> bool {

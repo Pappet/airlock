@@ -574,3 +574,36 @@ fn doctor_understands_flags_with_equals_sign() {
         "{findings}"
     );
 }
+
+#[test]
+fn doctor_flags_bare_commands_and_split_identities() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine"]);
+    std::fs::write(
+        env.engine.join(".mcp.json"),
+        json!({ "mcpServers": { "airlock": {
+            "command": "airlock",
+            "args": ["mcp", "--role", "lead", "--session", "engine-1"],
+        } } })
+        .to_string(),
+    )
+    .unwrap();
+    let findings = env.json(&env.main, &["doctor"]);
+    let warnings: Vec<String> = findings
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["level"] == "warn")
+        .map(|f| f["message"].as_str().unwrap().to_string())
+        .collect();
+    let has = |text: &str| warnings.iter().any(|w| w.contains(text));
+    assert!(has("is looked up in the client's PATH"), "{warnings:?}");
+    assert!(
+        has("--session engine-1 differs from the worktree's bound session engine@game-engine"),
+        "{warnings:?}"
+    );
+    assert!(
+        has("--role lead differs from the worktree's bound role engine"),
+        "{warnings:?}"
+    );
+}

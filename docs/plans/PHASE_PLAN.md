@@ -42,7 +42,7 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 - [x] Session briefing: `airlock start`, MCP tool `session_start`, MCP prompt `start`.
 - [x] `airlock doctor` and `airlock setup claude|antigravity|dsh`.
 - [x] Guided `airlock init` with templates, worktree creation, and a committed `airlock.toml` layout.
-- [ ] Validation with real agents (Claude Code, Antigravity, DSH) on OpenSHR, recorded in `docs/walkthroughs/`.
+- [ ] Validation with real agents (Claude Code, Antigravity, DSH) on OpenSHR — in progress, recorded in [`docs/walkthroughs/agent-validation.md`](../walkthroughs/agent-validation.md).
 
 ---
 
@@ -55,5 +55,5 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 
 ## Phase 5: Polish & Packaging
 - [ ] Global installation (`cargo install --path .`) and release builds.
-- [ ] Role templates for `airlock init --template` (Clean-Room RE, Web App Fullstack, Research & Spec).
+- [x] Role templates for `airlock init --template` — done in Phase 3b (`single`, `clean-room`, `parallel`); more templates as needed.
 - [ ] User documentation and walkthroughs.
