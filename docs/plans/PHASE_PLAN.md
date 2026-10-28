@@ -41,7 +41,7 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 - [x] Role management (`airlock role`), role instructions and reading lists.
 - [x] Session briefing: `airlock start`, MCP tool `session_start`, MCP prompt `start`.
 - [x] `airlock doctor` and `airlock setup claude|antigravity|dsh`.
-- [ ] Guided `airlock init` with templates, worktree creation, and a committed `airlock.toml` layout.
+- [x] Guided `airlock init` with templates, worktree creation, and a committed `airlock.toml` layout.
 - [ ] Validation with real agents (Claude Code, Antigravity, DSH) on OpenSHR, recorded in `docs/walkthroughs/`.
 
 ---

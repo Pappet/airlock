@@ -1,6 +1,7 @@
 //! Command-line interface definition (Spec 02).
 
 use crate::core::{QuestionStatus, TaskStatus};
+use crate::layout::Template;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -37,14 +38,20 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Register the current directory as an Airlock project (or adopt an existing marker)
+    /// Register this checkout as a project, apply a template, and create worktrees and bindings
     Init {
         /// Project name; defaults to the directory name
         #[arg(long)]
         name: Option<String>,
-        /// Role template to start from
-        #[arg(long, default_value = "default")]
-        template: String,
+        /// Roles and layout to start from [default: asked on a terminal, else `default`]
+        #[arg(long, value_enum)]
+        template: Option<Template>,
+        /// Number of dev worktrees for the `parallel` template
+        #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u32).range(1..=16))]
+        agents: u32,
+        /// Do not ask; allows init to commit and create worktrees without a terminal
+        #[arg(long)]
+        yes: bool,
     },
     /// Bind this worktree to a role and session, or show its binding
     Use {

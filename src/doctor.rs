@@ -2,6 +2,7 @@
 //! configurations (Spec 06 §5). Read-only.
 
 use crate::app::Output;
+use crate::git;
 use crate::hub::{Binding, Hub, MARKER_FILE, Marker, Project, binding_key};
 use anyhow::{Result, bail};
 use serde::Serialize;
@@ -9,7 +10,6 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -143,7 +143,7 @@ fn check_project(report: &mut Report, project: &Project) -> Result<()> {
         return Ok(());
     };
 
-    match git(root, &["ls-files", "--error-unmatch", "--", MARKER_FILE]) {
+    match git::query(root, &["ls-files", "--error-unmatch", "--", MARKER_FILE]) {
         Some(Ok(_)) => report.add(Level::Ok, "marker", format!("{MARKER_FILE} is committed")),
         Some(Err(_)) => report.add(
             Level::Warn,
@@ -153,14 +153,7 @@ fn check_project(report: &mut Report, project: &Project) -> Result<()> {
         None => {}
     }
 
-    let worktrees: Vec<PathBuf> = match git(root, &["worktree", "list", "--porcelain"]) {
-        Some(Ok(text)) => text
-            .lines()
-            .filter_map(|l| l.strip_prefix("worktree "))
-            .map(PathBuf::from)
-            .collect(),
-        _ => vec![root.clone()],
-    };
+    let worktrees = git::worktrees(root).unwrap_or_else(|| vec![root.clone()]);
     for worktree in &worktrees {
         check_worktree(report, project, &bindings, worktree);
     }
@@ -462,22 +455,4 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 fn same_content(a: &Path, b: &Path) -> bool {
     let hash = |p: &Path| std::fs::read(p).ok().map(Sha256::digest);
     matches!((hash(a), hash(b)), (Some(x), Some(y)) if x == y)
-}
-
-/// Runs git in `dir`; `None` if git is unavailable, `Err(stderr)` if it failed.
-fn git(dir: &Path, args: &[&str]) -> Option<Result<String, String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .ok()?;
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if output.status.success() {
-        Some(Ok(String::from_utf8_lossy(&output.stdout).into_owned()))
-    } else if stderr.contains("not a git repository") {
-        None
-    } else {
-        Some(Err(stderr))
-    }
 }

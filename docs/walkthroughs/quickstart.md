@@ -17,18 +17,28 @@ cargo install --path .
 ## 2. Initializing a Project
 
 ```bash
-cd ~/Projects/my-project
-airlock init
-git add .airlock && git commit -m "chore: register project with airlock"
+cd ~/Projects/my-project        # a git repository with at least one commit
+airlock init                    # on a terminal: choose a template, confirm the plan
 ```
+
+Templates (`--template`, see [Spec 06 §7](../spec/06_onboarding.md#7-guided-init)):
+
+| Template | Result |
+|---|---|
+| `default` | roles lead, spec, engine; no worktrees — commit `.airlock` yourself |
+| `single` | one role `dev` in this checkout |
+| `clean-room` | lead + spec here, engine in `../my-project-engine` (branch `engine`, locked) |
+| `parallel` | lead here, `--agents N` dev worktrees `../my-project-dev-<n>` |
+
+A template commits `.airlock` and `airlock.toml` (nothing else), creates the worktrees, and binds each to its role. `airlock init` is safe to re-run; it only adds what is missing. In scripts, pass `--template … --yes`.
 
 This creates the project in the Airlock hub (`~/.local/state/airlock/` on Linux) and writes the marker file `.airlock` containing only the project id. The database never lives inside the repository, so every worktree of the project shares the same state.
 
-On another machine, run `airlock init` in the fresh clone (it adopts the marker's id) and then `airlock import` to load the committed snapshot.
+On another machine, run `airlock init` in the fresh clone — it adopts the marker's id and recreates the worktrees and bindings from `airlock.toml` — and then `airlock import --yes` to load the committed snapshot.
 
-### Worktrees and roles
+### Worktrees and roles by hand
 
-Create worktrees *after* committing the marker — they inherit it. Then bind each worktree to the role that works there:
+Without a template, create worktrees *after* committing the marker — they inherit it — and bind each one:
 
 ```bash
 git worktree add -b engine ../my-project-engine
