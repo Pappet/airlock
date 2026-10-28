@@ -71,11 +71,11 @@ pub fn remote_branch_exists(dir: &Path, branch: &str) -> bool {
     ) else {
         return false;
     };
-    let suffix = format!("/{branch}");
+    // refs/remotes/<remote>/<branch>: compare the whole branch part, so `origin/feature/engine`
+    // does not count as `engine`.
     refs.lines()
-        .filter(|r| {
-            r.ends_with(&suffix) && r.matches('/').count() == 3 + branch.matches('/').count()
-        })
+        .filter_map(|r| r.strip_prefix("refs/remotes/")?.split_once('/'))
+        .filter(|(_, name)| *name == branch)
         .count()
         == 1
 }

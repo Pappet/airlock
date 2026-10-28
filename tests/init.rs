@@ -220,7 +220,11 @@ fn single_template_works_without_git() {
     let env = Env::new();
     let dir = env.path("notes");
     std::fs::create_dir_all(&dir).unwrap();
-    let report = env.json(&dir, &["init", "--template", "single"]);
+    assert!(
+        env.fail(&dir, &["init", "--template", "single"])
+            .contains("pass --yes")
+    );
+    let report = env.json(&dir, &["init", "--template", "single", "--yes"]);
     assert!(actions(&report).iter().all(|a| !a.starts_with("committed")));
     assert!(dir.join("airlock.toml").is_file());
     assert_eq!(env.json(&dir, &["use"])["role"], "dev");
@@ -283,6 +287,8 @@ fn fresh_clone_recreates_worktrees_from_the_layout() {
         &env.path("origin/game-engine"),
         &["commit", "-q", "--allow-empty", "-m", "engine work"],
     );
+    // A branch whose last segment matches must not hide `engine`.
+    git(&origin, &["branch", "feature/engine"]);
 
     // Another machine: its own hub and a clone in a different directory.
     std::fs::create_dir_all(env.path("m2")).unwrap();

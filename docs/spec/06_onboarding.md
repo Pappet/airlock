@@ -133,7 +133,11 @@ Prints the configuration for the current worktree; it never edits harness files.
 | `clean-room` | lead, spec, engine (clean-room, with default instructions) | this checkout: lead, spec · `../<dir>-engine` on branch `engine`: engine, locked |
 | `parallel` | lead, dev | this checkout: lead · `../<dir>-dev-<n>` on branch `dev-<n>` for n = 1…`--agents` (default 2): dev |
 
-`<dir>` is the name of the main checkout's directory. On a terminal without `--template` and `--yes`, init asks for the template (and the agent count for `parallel`) and shows the plan for confirmation.
+`<dir>` is the name of the main checkout's directory. On a terminal without `--template` and `--yes`, init asks for the template (and the agent count for `parallel`), re-asking on invalid input, and shows the plan for confirmation:
+
+- **new project:** all four templates, default `default`;
+- **known project without `airlock.toml`:** `none` (the default — nothing changes), `single`, `clean-room`, `parallel`. This is how an existing setup gets a layout;
+- **known project with a layout, or a fresh clone:** no wizard; init applies `airlock.toml`.
 
 ### 7.2 Layout File
 The layout is committed as `airlock.toml` in the main checkout. It says only which worktree hosts which roles; roles themselves are defined in the project configuration (§4):
@@ -159,7 +163,7 @@ Init is idempotent and runs in the main checkout:
 2. **Write and commit** a new layout. Only a new layout causes a commit: `.airlock` (if just created) and `airlock.toml`, committed by path so other staged changes stay untouched. Worktrees branch off after this commit and inherit both files. Plain `airlock init` without a layout never commits; it reminds the user to commit `.airlock`.
 3. **Apply** the layout (also on every later `init`): for each entry, create the worktree if its path does not exist — checking out an existing local branch or the single remote branch of that name (fresh clone), otherwise creating the branch from `HEAD` — and bind it if it has no binding yet. Existing bindings are never changed. A path that exists but is not a worktree of this repository, or a worktree without the marker (merge the main branch into it), is skipped with a message.
 
-Templates that create worktrees need a git repository with at least one commit. Without a terminal, a template that commits requires `--yes`. Applying a template to a project that already has `airlock.toml` is refused — edit the file and run `airlock init` instead.
+Templates that create worktrees need a git repository with at least one commit. Without a terminal, every template that writes a layout requires `--yes`, whether or not it commits (it registers the project, writes `airlock.toml`, and binds worktrees). Applying a template to a project that already has `airlock.toml` is refused — edit the file and run `airlock init` instead.
 
 ### 7.4 Typical Flows
 - **New project:** `git init && git commit --allow-empty -m init && airlock init` → choose template → done; then `airlock setup <harness>` per worktree.

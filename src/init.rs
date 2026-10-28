@@ -55,7 +55,11 @@ pub(crate) fn run(hub: &Hub, cwd: &Path, opts: Options, out: &Output) -> Result<
 
     // A brand-new project started on a terminal gets the wizard.
     let (template, agents) = match opts.template {
-        None if marker.is_none() && interactive => prompt_template(&dir, opts.agents)?,
+        // On a terminal, a new project gets the wizard, and so does a known project without a
+        // layout (where the default answer leaves it unchanged).
+        None if interactive && existing_layout.is_none() && (marker.is_none() || known) => {
+            prompt_template(&dir, opts.agents, known)?
+        }
         template => (template, opts.agents),
     };
     if let (Some(template), Some(_)) = (template, &existing_layout) {
@@ -102,7 +106,7 @@ pub(crate) fn run(hub: &Hub, cwd: &Path, opts: Options, out: &Output) -> Result<
         );
         if interactive {
             ensure!(confirm(&plan)?, "init cancelled");
-        } else if commits && new_layout.is_some() && !opts.yes {
+        } else if new_layout.is_some() && !opts.yes {
             bail!("{plan}\nNo terminal to confirm on; pass --yes");
         }
     }
@@ -389,57 +393,78 @@ fn plan_text(
         }
     }
     if commits {
+        let files = if new {
+            format!("{MARKER_FILE} and {LAYOUT_FILE}")
+        } else {
+            LAYOUT_FILE.to_string()
+        };
         lines.push(format!(
-            "Commit {MARKER_FILE}{} (nothing else) and create the worktrees.",
-            if layout.is_some() {
-                format!(" and {LAYOUT_FILE}")
-            } else {
-                String::new()
-            }
+            "Commit {files} (nothing else), then create and bind the worktrees."
         ));
     }
     lines.join("\n")
 }
 
-fn prompt_template(dir: &str, agents: u32) -> Result<(Option<Template>, u32)> {
-    let templates = [
+/// Asks for a template; for an existing project the default is to change nothing.
+fn prompt_template(dir: &str, agents: u32, existing: bool) -> Result<(Option<Template>, u32)> {
+    let mut choices: Vec<(Option<Template>, String)> = Vec::new();
+    if existing {
+        choices.push((None, "leave the project as it is".to_string()));
+    }
+    for t in [
         Template::Default,
         Template::Single,
         Template::CleanRoom,
         Template::Parallel,
-    ];
+    ] {
+        // In an existing project, `default` would only add roles; offer layouts only.
+        if !(existing && t == Template::Default) {
+            choices.push((Some(t), t.describe(dir, agents)));
+        }
+    }
     let mut stderr = std::io::stderr();
-    writeln!(stderr, "Template:")?;
-    for (i, t) in templates.iter().enumerate() {
+    writeln!(
+        stderr,
+        "{}",
+        if existing {
+            "Apply a layout template?"
+        } else {
+            "Template:"
+        }
+    )?;
+    for (i, (t, text)) in choices.iter().enumerate() {
         writeln!(
             stderr,
-            "  {}) {:<11} {}",
+            "  {}) {:<11} {text}",
             i + 1,
-            t.name(),
-            t.describe(dir, agents)
+            t.map_or("none", Template::name)
         )?;
     }
-    let choice = ask("Choose [1-4, default 1]: ")?;
-    let template = match choice.as_str() {
-        "" | "1" => Template::Default,
-        "2" => Template::Single,
-        "3" => Template::CleanRoom,
-        "4" => Template::Parallel,
-        other => bail!("unknown choice `{other}`"),
+    let template = loop {
+        let answer = ask(&format!("Choose [1-{}, default 1]: ", choices.len()))?;
+        match answer
+            .parse::<usize>()
+            .ok()
+            .or((answer.is_empty()).then_some(1))
+        {
+            Some(n) if (1..=choices.len()).contains(&n) => break choices[n - 1].0,
+            _ => writeln!(stderr, "Please enter a number from 1 to {}.", choices.len())?,
+        }
     };
-    let agents = if template == Template::Parallel {
-        match ask(&format!("Number of dev worktrees [{agents}]: "))?.as_str() {
-            "" => agents,
-            n => n
-                .parse()
-                .ok()
-                .filter(|n| (1..=16).contains(n))
-                .context("enter a number from 1 to 16")?,
+    let agents = if template == Some(Template::Parallel) {
+        loop {
+            match ask(&format!("Number of dev worktrees [{agents}]: "))?.as_str() {
+                "" => break agents,
+                n => match n.parse().ok().filter(|n| (1..=16).contains(n)) {
+                    Some(n) => break n,
+                    None => writeln!(stderr, "Please enter a number from 1 to 16.")?,
+                },
+            }
         }
     } else {
         agents
     };
-    Ok((Some(template), agents))
+    Ok((template, agents))
 }
 
 fn ask(prompt: &str) -> Result<String> {
