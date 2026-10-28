@@ -5,6 +5,7 @@
 //! tool set restricted to their own role's tasks and their own questions.
 
 use crate::app::{TaskView, done_ids, ensure_role, next_ready, project_root, unix_now};
+use crate::briefing::{self, Briefing, Via, WorkPackage};
 use crate::core::{QuestionStatus, Task, dependents};
 use crate::hub::{Hub, Project};
 use crate::store::{NewTask, Store};
@@ -18,6 +19,7 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "
 
 /// Tools exposed to sessions bound to a clean-room role (Spec 03 §2.1).
 const CLEAN_ROOM_TOOLS: &[&str] = &[
+    "session_start",
     "task_next",
     "task_get",
     "task_claim",
@@ -32,6 +34,7 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const PARSE_ERROR: i64 = -32700;
+const INTERNAL_ERROR: i64 = -32603;
 
 pub struct Server {
     hub: Hub,
@@ -107,6 +110,12 @@ impl Server {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": self.tool_definitions() })),
             "tools/call" => self.tools_call(&params),
+            "prompts/list" => Ok(json!({ "prompts": [{
+                "name": "start",
+                "title": "Start Airlock session",
+                "description": "Briefing for this session: role, rules, claimed work, next work package.",
+            }] })),
+            "prompts/get" => self.prompts_get(&params),
             _ => Err((METHOD_NOT_FOUND, format!("method `{method}` not found"))),
         };
         Some(match result {
@@ -129,16 +138,49 @@ impl Server {
         };
         json!({
             "protocolVersion": version,
-            "capabilities": { "tools": { "listChanged": false } },
+            "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
             "serverInfo": { "name": "airlock", "version": crate::VERSION },
             "instructions": format!(
                 "Airlock coordinates work on project `{}` as session `{}`.{role} \
+                 Call session_start first: it tells you your role, rules, and current work. \
                  Workflow: task_next shows your next work package; task_claim it before starting; \
                  task_heartbeat during long work so the lease does not expire; task_complete when \
                  the Verify step passes. If a spec is ambiguous, ask with question_ask instead of guessing.",
                 self.project.config.name, self.session
             ),
         })
+    }
+
+    fn prompts_get(&mut self, params: &Value) -> Result<Value, (i64, String)> {
+        match params.get("name").and_then(Value::as_str) {
+            Some("start") => {}
+            Some(name) => return Err((INVALID_PARAMS, format!("unknown prompt `{name}`"))),
+            None => return Err((INVALID_PARAMS, "missing prompt name".to_string())),
+        }
+        let brief = self
+            .briefing()
+            .map_err(|e| (INTERNAL_ERROR, format!("{e:#}")))?;
+        Ok(json!({
+            "description": "Airlock session briefing",
+            "messages": [{
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": format!("{}\nBegin with the claimed or next work package.", brief.markdown(Via::Mcp)),
+                },
+            }],
+        }))
+    }
+
+    fn briefing(&mut self) -> Result<Briefing> {
+        self.project.config = self.hub.load_config(&self.project.id)?;
+        briefing::build(
+            &self.store,
+            &self.project,
+            &self.session,
+            self.role.as_deref(),
+            unix_now(),
+        )
     }
 
     fn tools_call(&mut self, params: &Value) -> Result<Value, (i64, String)> {
@@ -155,6 +197,19 @@ impl Server {
             Some(Value::Object(args)) => args,
             Some(_) => return Err((INVALID_PARAMS, "arguments must be an object".to_string())),
         };
+        if name == "session_start" {
+            // The briefing reads best as Markdown; the structure is in structuredContent.
+            return Ok(match self.briefing() {
+                Ok(brief) => json!({
+                    "content": [{ "type": "text", "text": brief.markdown(Via::Mcp) }],
+                    "structuredContent": brief,
+                    "isError": false,
+                }),
+                Err(e) => {
+                    json!({ "content": [{ "type": "text", "text": format!("{e:#}") }], "isError": true })
+                }
+            });
+        }
         // Execution and argument errors are tool results, so the model can correct itself.
         Ok(match self.call(name, args) {
             Ok(structured) => json!({
@@ -178,7 +233,7 @@ impl Server {
             "task_next" => {
                 let role = self.role_arg(args)?;
                 let tasks = self.store.tasks(now)?;
-                Ok(json!({ "task": next_ready(&tasks, &role).map(|v| work_package(v.task)) }))
+                Ok(json!({ "task": next_ready(&tasks, &role).map(|v| WorkPackage::from(v.task)) }))
             }
             "task_get" => {
                 let id = str_arg(args, "task_id")?;
@@ -370,19 +425,6 @@ impl Server {
     }
 }
 
-/// The compact work package returned by `task_next`.
-fn work_package(task: &Task) -> Value {
-    json!({
-        "id": task.id,
-        "title": task.title,
-        "blocked_by": task.blocked_by,
-        "read": task.read,
-        "touch": task.touch,
-        "do": task.r#do,
-        "verify": task.verify,
-    })
-}
-
 fn tool_definitions(role_bound: bool) -> Vec<Value> {
     let task_id = json!({ "type": "string", "description": "Task id, e.g. \"E-6d\"" });
     let lease = json!({ "type": "integer", "minimum": 1, "description": "Lease duration in minutes (default: project setting)" });
@@ -391,6 +433,12 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
     let role_required: &[&str] = if role_bound { &[] } else { &["role"] };
 
     vec![
+        tool(
+            "session_start",
+            "Call first: your session briefing with role, rules, files to read, claimed work, the next work package, and answers to your questions.",
+            json!({}),
+            &[],
+        ),
         tool(
             "task_next",
             "Show the next ready work package for a role (not claimed yet). Returns {task: null} if none is ready.",

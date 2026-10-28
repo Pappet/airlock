@@ -26,6 +26,24 @@ This creates the project in the Airlock hub (`~/.local/state/airlock/` on Linux)
 
 On another machine, run `airlock init` in the fresh clone (it adopts the marker's id) and then `airlock import` to load the committed snapshot.
 
+### Worktrees and roles
+
+Create worktrees *after* committing the marker — they inherit it. Then bind each worktree to the role that works there:
+
+```bash
+git worktree add -b engine ../my-project-engine
+airlock use lead                                   # main checkout
+airlock -C ../my-project-engine use engine --lock  # clean-room worktree, role fixed
+airlock doctor                                     # checks marker, worktrees, bindings, configs
+```
+
+A binding gives the worktree a fixed session id (`engine@my-project-engine`), so CLI and MCP act as the same session and a restarted agent keeps its leases. Roles carry the rules agents see in their briefing:
+
+```bash
+airlock role set engine --instructions "Work only from docs/spec; never read decompiled output." \
+  --read CLAUDE.md --read docs/PROCESS.md
+```
+
 ---
 
 ## 3. Creating Work Packages
@@ -51,9 +69,8 @@ Prerequisites must exist before a task can reference them. `E-1` stays `blocked`
 ## 4. Working as an Agent
 
 ```bash
-export AIRLOCK_SESSION=engine-agent-1
-
-airlock task next --role engine     # show the next ready work package
+airlock start                       # briefing: role, rules, claimed work, next package
+airlock task next                   # the next ready work package of the bound role
 airlock task claim E-1              # take it (60-minute lease by default)
 airlock task heartbeat E-1          # extend the lease during long work
 airlock task done E-1 --notes "Window and event loop implemented; cargo test setup passes."
@@ -63,20 +80,18 @@ Use `airlock task done E-1 --review` to hand the task to a human for approval (`
 
 ### Connecting an AI agent over MCP
 
-Instead of running CLI commands, an agent can use Airlock's MCP tools directly. For Claude Code, add a `.mcp.json` next to the `.airlock` marker of the worktree the agent works in:
+Agents use Airlock's MCP tools directly. `airlock setup` prints the configuration for the current worktree:
 
-```json
-{
-  "mcpServers": {
-    "airlock": {
-      "command": "airlock",
-      "args": ["mcp", "--role", "engine", "--session", "engine-agent-1"]
-    }
-  }
-}
+```bash
+cd ../my-project-engine
+airlock setup claude        # `claude mcp add …` command and .mcp.json entry
+airlock setup antigravity   # entry for the global ~/.gemini/antigravity/mcp_config.json
+airlock setup dsh > ~/.dsh/airlock/my-project-engine.yml   # patch overlay; start: dsh web --patch … --port 0
 ```
 
-The server is bound to the project, the session, and the role. For a clean-room role (`engine` in the default template) the agent only sees the tools it needs — `task_next`, `task_claim`, `task_heartbeat`, `task_complete`, `question_ask`, and a few more — and only its own role's tasks and its own questions. See [Spec 03](../spec/03_mcp_protocol.md).
+Per-directory harnesses (Claude Code) only need `airlock mcp` — role and session come from the binding. Global configurations carry the worktree with `-C <dir>`. For a clean-room role the agent only sees the tools it needs and only its own role's tasks and questions (Spec 03 §2.1).
+
+The agent's first action is the briefing: the MCP tool `session_start`, the MCP prompt `start` (in Claude Code: `/mcp__airlock__start`), or `airlock start`. One line in `CLAUDE.md` / `AGENTS.md` is enough: *"Coordinate through Airlock: call `session_start` (or run `airlock start`) before anything else."*
 
 ---
 

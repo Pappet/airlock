@@ -24,14 +24,24 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 - [x] Canonical snapshot model and serializer with golden-file test (`src/snapshot.rs`).
 - [x] `airlock sync`: snapshot plus `PLAN.md` / `QUESTIONS.md` views, foreign-change guard (Spec 05 §3.5).
 - [x] `airlock import` with validation and confirmation.
-- [ ] Legacy `PLAN.md` migration (`airlock import-plan`; one-time, not a round-trip path).
+- [x] Legacy `PLAN.md` migration (`airlock import-plan`; one-time, not a round-trip path).
 
 ---
 
-## Phase 3: MCP Server (Current)
+## Phase 3: MCP Server
 - [x] Stdio MCP server with project/session/role binding.
 - [x] Tools per Spec 03, including the restricted clean-room tool set.
-- [ ] Agent testing with Claude Code and Antigravity.
+- [x] Agent testing with Claude Code and Antigravity.
+
+---
+
+## Phase 3b: Onboarding (Current, Spec 06)
+- [x] Worktree bindings in the hub, `airlock use` with lock, binding-derived session and role for CLI and MCP.
+- [x] Global `-C <dir>`.
+- [x] Role management (`airlock role`), role instructions and reading lists.
+- [x] Session briefing: `airlock start`, MCP tool `session_start`, MCP prompt `start`.
+- [x] `airlock doctor` and `airlock setup claude|antigravity|dsh`.
+- [ ] Guided `airlock init` with templates, worktree creation, and a committed `airlock.toml` layout.
 
 ---
 

@@ -3,6 +3,7 @@
 use crate::config::ProjectConfig;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +13,20 @@ pub const MARKER_FILE: &str = ".airlock";
 const PROJECTS_DIR: &str = "projects";
 const CONFIG_FILE: &str = "project.json";
 const DATABASE_FILE: &str = "airlock.db";
+const BINDINGS_FILE: &str = "bindings.json";
+
+/// A worktree's role and session (Spec 06 §2), keyed by canonical project root.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Binding {
+    pub role: String,
+    pub session: String,
+    /// Refuse role changes without `--force`
+    #[serde(default)]
+    pub locked: bool,
+}
+
+/// All bindings of one project, keyed by canonical root path.
+pub type Bindings = BTreeMap<String, Binding>;
 
 /// Whether `id` is a project id: a UUID in canonical lowercase hyphenated form.
 pub fn is_project_id(id: &str) -> bool {
@@ -80,6 +95,8 @@ pub struct Project {
     pub root: Option<PathBuf>,
     /// Path of the SQLite store
     pub database: PathBuf,
+    /// Binding of `root`, if the worktree is bound to a role
+    pub binding: Option<Binding>,
 }
 
 impl Hub {
@@ -210,11 +227,45 @@ impl Hub {
                 (marker.project_id, Some(dir))
             }
         };
+        let binding = match &root {
+            Some(root) => self.bindings(&id)?.remove(&binding_key(root)?),
+            None => None,
+        };
         Ok(Project {
             config: self.load_config(&id)?,
             database: self.database_path(&id)?,
             id,
             root,
+            binding,
         })
     }
+
+    pub fn bindings(&self, id: &str) -> Result<Bindings> {
+        let path = self.project_dir(id)?.join(BINDINGS_FILE);
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Bindings::new()),
+            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+
+    /// Writes `bindings.json` atomically.
+    pub fn save_bindings(&self, id: &str, bindings: &Bindings) -> Result<()> {
+        let dir = self.project_dir(id)?;
+        let mut json = serde_json::to_string_pretty(bindings)?;
+        json.push('\n');
+        let tmp = dir.join(format!("{BINDINGS_FILE}.tmp"));
+        fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
+        fs::rename(&tmp, dir.join(BINDINGS_FILE)).context("replacing bindings.json")
+    }
+}
+
+/// The key of a project root in `bindings.json`: its canonical absolute path.
+pub fn binding_key(root: &Path) -> Result<String> {
+    let path = fs::canonicalize(root).with_context(|| format!("resolving {}", root.display()))?;
+    path.into_os_string()
+        .into_string()
+        .map_err(|p| anyhow::anyhow!("path {} is not valid UTF-8", p.to_string_lossy()))
 }
