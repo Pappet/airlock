@@ -11,3 +11,4 @@ Behavioral and architectural specifications for **Airlock**. Where a spec and th
 | [03_mcp_protocol.md](03_mcp_protocol.md) | MCP | Server binding, clean-room tool set, tool schemas |
 | [04_web_dashboard_and_api.md](04_web_dashboard_and_api.md) | Web UI & REST/SSE API | Local-only security model, Kanban board, review queue, endpoints |
 | [05_git_sync_and_airlock.md](05_git_sync_and_airlock.md) | Git Sync & Airlock Boundary | Worktree model, bootstrap, snapshot format, import, merge rule, boundary guarantees and limits |
+| [06_onboarding.md](06_onboarding.md) | Onboarding | Worktree bindings, `-C`, session briefing, role management, doctor, harness setup, guided init (planned) |

@@ -1,11 +1,11 @@
 //! Command execution: resolves project and session, runs the operation, prints the result.
 
-use crate::cli::{Cli, Command, QuestionCommand, TaskCommand, TaskSpec};
+use crate::cli::{Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskSpec};
 use crate::config::ProjectConfig;
 use crate::core::{Question, Task, TaskState, TaskStatus, dependents};
-use crate::hub::{Hub, MARKER_FILE, Marker, Project};
+use crate::hub::{Binding, Hub, MARKER_FILE, Marker, Project, binding_key};
 use crate::store::{Completion, NewTask, Store};
-use crate::{mcp, sync};
+use crate::{briefing, doctor, mcp, setup, sync};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::json;
@@ -17,20 +17,40 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Runs one parsed invocation against the hub at `$AIRLOCK_HOME` or the platform default.
 pub fn run(cli: Cli) -> Result<()> {
     let hub = Hub::locate()?;
-    let cwd = std::env::current_dir().context("reading the current directory")?;
+    let current = std::env::current_dir().context("reading the current directory")?;
+    // `-C <dir>` behaves like starting in <dir> (Spec 06 §2.4).
+    let cwd = match cli.directory {
+        Some(dir) => {
+            let dir = current.join(dir);
+            ensure!(dir.is_dir(), "-C {}: not a directory", dir.display());
+            dir
+        }
+        None => current,
+    };
     let out = Output { json: cli.json };
     let now = unix_now();
 
     let command = match cli.command {
         Command::Init { name, template } => return init(&hub, &cwd, name, &template, &out),
+        Command::Doctor => return doctor::run(&hub, &cwd, cli.project.as_deref(), &out),
         command => command,
     };
 
     let project = hub.resolve(cli.project.as_deref(), &cwd)?;
+    let bound_session = project.binding.as_ref().map(|b| b.session.clone());
     if let Command::Mcp { role } = command {
-        // Agents rarely set a session id; give each server its own.
+        let role = match (role, &project.binding) {
+            (Some(role), Some(b)) if b.locked && role != b.role => bail!(
+                "this worktree is locked to role `{}`; `--role {role}` is refused",
+                b.role
+            ),
+            (Some(role), _) => Some(role),
+            (None, binding) => binding.as_ref().map(|b| b.role.clone()),
+        };
+        // Without a binding, give each server its own session id.
         let session = cli
             .session
+            .or(bound_session)
             .unwrap_or_else(|| format!("mcp-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
         eprintln!(
             "airlock mcp: project {} ({}), session {session}{}",
@@ -43,11 +63,37 @@ pub fn run(cli: Cli) -> Result<()> {
         let mut server = mcp::Server::new(hub, project, session, role)?;
         return server.run(std::io::stdin().lock(), std::io::stdout().lock());
     }
-    let session = cli.session.unwrap_or_else(default_session);
+    match command {
+        Command::Use {
+            role,
+            lock,
+            force,
+            clear,
+        } => {
+            return use_binding(&project, role, lock, force, clear, cli.session, &out);
+        }
+        Command::Setup { harness, role } => return setup::run(&project, harness, role, &out),
+        _ => {}
+    }
+
+    let session = cli
+        .session
+        .or(bound_session)
+        .unwrap_or_else(default_session);
     let mut store = Store::open(&project.database)?;
 
     match command {
-        Command::Init { .. } => unreachable!("handled above"),
+        Command::Init { .. }
+        | Command::Doctor
+        | Command::Mcp { .. }
+        | Command::Use { .. }
+        | Command::Setup { .. } => unreachable!("handled above"),
+        Command::Start => {
+            let role = project.binding.as_ref().map(|b| b.role.as_str());
+            let brief = briefing::build(&store, &project, &session, role, now)?;
+            out.print(&brief, || brief.markdown(briefing::Via::Cli))
+        }
+        Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),
         Command::Task(sub) => task(&mut store, &project, &session, sub, now, &out),
         Command::Question(sub) => question(&mut store, &session, sub, now, &out),
         Command::Sync { force } => {
@@ -65,7 +111,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::Import { from, yes } => {
             let path = match from {
-                Some(path) => path,
+                Some(path) => cwd.join(path),
                 None => {
                     sync::state_path(project_root(&project, "import")?, &project.config.export)?
                 }
@@ -91,6 +137,163 @@ pub fn run(cli: Cli) -> Result<()> {
             "`airlock {}` is not implemented yet; see docs/plans/PHASE_PLAN.md",
             other.name()
         ),
+    }
+}
+
+fn use_binding(
+    project: &Project,
+    role: Option<String>,
+    lock: bool,
+    force: bool,
+    clear: bool,
+    session: Option<String>,
+    out: &Output,
+) -> Result<()> {
+    let root = project_root(project, "use")?;
+    let key = binding_key(root)?;
+    let mut store = Store::open(&project.database)?;
+    let now = unix_now();
+
+    if clear {
+        let removed = store.unbind(&key, force, now)?;
+        return out.print(&json!({ "cleared": key, "removed": removed }), || {
+            if removed {
+                format!("Removed the binding of {key}")
+            } else {
+                format!("{key} had no binding")
+            }
+        });
+    }
+
+    let Some(role) = role else {
+        if session.is_some() {
+            eprintln!("note: --session / AIRLOCK_SESSION is ignored when showing a binding");
+        }
+        let current = store.binding(&key)?;
+        return out.print(&current, || match &current {
+            Some(b) => format!(
+                "{key} is bound to role {} as session {}{}",
+                b.role,
+                b.session,
+                if b.locked { " (locked)" } else { "" }
+            ),
+            None => format!("{key} has no binding; bind it with `airlock use <role>`"),
+        });
+    };
+
+    ensure_role(project, &role)?;
+    let session = session.unwrap_or_else(|| {
+        let dir = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("worktree");
+        format!("{role}@{dir}")
+    });
+    let binding = Binding {
+        role,
+        session,
+        locked: lock,
+    };
+    store.bind(&key, &binding, force, now)?;
+    out.print(&binding, || {
+        format!(
+            "Bound {key} to role {} as session {}{}",
+            binding.role,
+            binding.session,
+            if binding.locked { " (locked)" } else { "" }
+        )
+    })
+}
+
+fn role(
+    hub: &Hub,
+    store: &Store,
+    project: &Project,
+    sub: RoleCommand,
+    now: i64,
+    out: &Output,
+) -> Result<()> {
+    let mut config = project.config.clone();
+    match sub {
+        RoleCommand::List => out.print(&config.roles, || {
+            config
+                .roles
+                .iter()
+                .map(|(name, r)| {
+                    let mut line = format!(
+                        "{name}{}  {}",
+                        if r.clean_room { " (clean-room)" } else { "" },
+                        r.description
+                    );
+                    if !r.read.is_empty() {
+                        line.push_str(&format!("\n  read: {}", r.read.join(", ")));
+                    }
+                    if let Some(instructions) = &r.instructions {
+                        line.push_str(&format!(
+                            "\n  instructions: {}",
+                            instructions.replace('\n', "\n    ")
+                        ));
+                    }
+                    line
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }),
+        RoleCommand::Set {
+            name,
+            description,
+            clean_room,
+            instructions,
+            read,
+            clear_read,
+        } => {
+            ensure!(
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')),
+                "invalid role name `{name}`: use letters, digits, `-`, or `_`"
+            );
+            let role = config.roles.entry(name.clone()).or_default();
+            if let Some(description) = description {
+                role.description = description;
+            }
+            if let Some(clean_room) = clean_room {
+                role.clean_room = clean_room;
+            }
+            if let Some(instructions) = instructions {
+                role.instructions = Some(instructions).filter(|i| !i.trim().is_empty());
+            }
+            if clear_read {
+                role.read.clear();
+            } else if !read.is_empty() {
+                role.read = read;
+            }
+            let role = role.clone();
+            hub.save_config(&project.id, &config)?;
+            out.print(&role, || format!("Saved role {name}"))
+        }
+        RoleCommand::Remove { name } => {
+            ensure!(config.roles.contains_key(&name), "no role `{name}`");
+            let tasks = store.tasks(now)?.iter().filter(|t| t.role == name).count();
+            ensure!(tasks == 0, "role `{name}` is used by {tasks} task(s)");
+            let bound: Vec<String> = store
+                .bindings()?
+                .into_iter()
+                .filter(|(_, b)| b.role == name)
+                .map(|(path, _)| path)
+                .collect();
+            ensure!(
+                bound.is_empty(),
+                "role `{name}` is bound to {}",
+                bound.join(", ")
+            );
+            config.roles.remove(&name);
+            hub.save_config(&project.id, &config)?;
+            out.print(&json!({ "removed": name }), || {
+                format!("Removed role {name}")
+            })
+        }
     }
 }
 
@@ -206,6 +409,12 @@ fn task(
             out.print(&views, || task_table(&views))
         }
         TaskCommand::Next { role } => {
+            let role = match role.or_else(|| project.binding.as_ref().map(|b| b.role.clone())) {
+                Some(role) => role,
+                None => {
+                    bail!("no role: pass --role or bind this worktree with `airlock use <role>`")
+                }
+            };
             ensure_role(project, &role)?;
             let tasks = store.tasks(now)?;
             let next = next_ready(&tasks, &role)
@@ -327,12 +536,12 @@ impl<'a> TaskView<'a> {
 }
 
 /// Text or JSON output for one command.
-struct Output {
-    json: bool,
+pub(crate) struct Output {
+    pub json: bool,
 }
 
 impl Output {
-    fn print(&self, value: &impl Serialize, text: impl FnOnce() -> String) -> Result<()> {
+    pub fn print(&self, value: &impl Serialize, text: impl FnOnce() -> String) -> Result<()> {
         if self.json {
             println!("{}", serde_json::to_string_pretty(value)?);
         } else {

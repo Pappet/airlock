@@ -252,7 +252,7 @@ fn unbound_session_runs_the_full_workflow() {
             call(14, "task_claim", json!({ "task_id": "nope" })),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 12);
+    assert_eq!(s.tool_names(1).len(), 13);
     assert!(s.tool_error(2).contains("missing required argument `role`"));
     assert_eq!(s.ok(3)["status"], "blocked");
     assert!(s.ok(4)["lease_expires_at"].is_i64());
@@ -309,6 +309,7 @@ fn clean_room_session_gets_a_restricted_tool_set() {
     assert_eq!(
         s.tool_names(1),
         [
+            "session_start",
             "task_next",
             "task_get",
             "task_claim",
@@ -362,7 +363,7 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
             call(5, "task_claim", json!({ "task_id": "L-2" })),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 12);
+    assert_eq!(s.tool_names(1).len(), 13);
     assert_eq!(
         s.ok(2)["role"],
         "engine",

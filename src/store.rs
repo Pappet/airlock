@@ -9,6 +9,7 @@
 use crate::core::{
     Question, QuestionStatus, Task, TaskState, TaskStatus, check_task_id, dependents,
 };
+use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
 use anyhow::{Context, Result, bail, ensure};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
@@ -17,7 +18,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
 
 const SCHEMA_V1: &str = "
 CREATE TABLE tasks (
@@ -62,6 +63,16 @@ const SCHEMA_V2: &str = "
 CREATE TABLE exports (
     sha256      TEXT PRIMARY KEY,
     recorded_at INTEGER NOT NULL
+) STRICT;
+";
+
+/// Machine-local worktree bindings (Spec 06 §2), keyed by canonical root path.
+const SCHEMA_V3: &str = "
+CREATE TABLE bindings (
+    root    TEXT PRIMARY KEY,
+    role    TEXT NOT NULL,
+    session TEXT NOT NULL,
+    locked  INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 ";
 
@@ -510,6 +521,64 @@ impl Store {
         Ok(())
     }
 
+    /// All worktree bindings, keyed by canonical root path.
+    pub fn bindings(&self) -> Result<Bindings> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT root, role, session, locked FROM bindings ORDER BY root")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                Binding {
+                    role: row.get(1)?,
+                    session: row.get(2)?,
+                    locked: row.get(3)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn binding(&self, root: &str) -> Result<Option<Binding>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT role, session, locked FROM bindings WHERE root = ?1",
+                [root],
+                |row| {
+                    Ok(Binding {
+                        role: row.get(0)?,
+                        session: row.get(1)?,
+                        locked: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Binds `root`; a locked binding is only replaced with `force`. Check and
+    /// write share one transaction, so concurrent `use` calls cannot lose updates.
+    pub fn bind(&mut self, root: &str, binding: &Binding, force: bool, now: i64) -> Result<()> {
+        let tx = self.write(now)?;
+        ensure_unlocked(&tx, root, force)?;
+        tx.execute(
+            "INSERT INTO bindings (root, role, session, locked) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (root) DO UPDATE SET role = ?2, session = ?3, locked = ?4",
+            params![root, binding.role, binding.session, binding.locked],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Removes the binding of `root`; returns whether there was one.
+    pub fn unbind(&mut self, root: &str, force: bool, now: i64) -> Result<bool> {
+        let tx = self.write(now)?;
+        ensure_unlocked(&tx, root, force)?;
+        let removed = tx.execute("DELETE FROM bindings WHERE root = ?1", [root])? > 0;
+        tx.commit()?;
+        Ok(removed)
+    }
+
     /// Starts a write transaction and releases expired leases.
     fn write(&mut self, now: i64) -> Result<Transaction<'_>> {
         let tx = self
@@ -638,6 +707,20 @@ fn released_if_expired(mut task: Task, now: i64) -> Task {
         task.lease_expires_at = None;
     }
     task
+}
+
+fn ensure_unlocked(conn: &Connection, root: &str, force: bool) -> Result<()> {
+    let locked_role: Option<String> = conn
+        .query_row(
+            "SELECT role FROM bindings WHERE root = ?1 AND locked = 1",
+            [root],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(role) = locked_role.filter(|_| !force) {
+        bail!("this worktree is locked to role `{role}`; pass --force to change it");
+    }
+    Ok(())
 }
 
 /// Question ids are `u64` in the model and `INTEGER` (i64) in SQLite.

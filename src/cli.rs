@@ -15,11 +15,15 @@ use std::path::PathBuf;
                   of a project, with CLI and MCP interfaces."
 )]
 pub struct Cli {
+    /// Run as if started in DIR (marker discovery, project root, worktree binding)
+    #[arg(short = 'C', global = true, value_name = "DIR")]
+    pub directory: Option<PathBuf>,
+
     /// Project id or name; overrides `.airlock` marker discovery
     #[arg(long, global = true, env = "AIRLOCK_PROJECT")]
     pub project: Option<String>,
 
-    /// Session id for claims, questions, and answers [default: human:$USER]
+    /// Session id for claims, questions, and answers [default: the worktree binding's, else human:$USER]
     #[arg(long, global = true, env = "AIRLOCK_SESSION")]
     pub session: Option<String>,
 
@@ -42,6 +46,35 @@ pub enum Command {
         #[arg(long, default_value = "default")]
         template: String,
     },
+    /// Bind this worktree to a role and session, or show its binding
+    Use {
+        /// Role to bind; omit to show the current binding
+        role: Option<String>,
+        /// Refuse later role changes without --force (for clean-room worktrees)
+        #[arg(long, requires = "role")]
+        lock: bool,
+        /// Override a locked binding
+        #[arg(long)]
+        force: bool,
+        /// Remove the binding
+        #[arg(long, conflicts_with_all = ["role", "lock"])]
+        clear: bool,
+    },
+    /// Print the session briefing: role, rules, claimed work, next package
+    Start,
+    /// Check the installation, worktrees, bindings, and harness configurations
+    Doctor,
+    /// Print the MCP configuration of this worktree for an agent harness
+    Setup {
+        #[arg(value_enum)]
+        harness: Harness,
+        /// Role to configure [default: the worktree binding's]
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Role management
+    #[command(subcommand)]
+    Role(RoleCommand),
     /// Task operations
     #[command(subcommand)]
     Task(TaskCommand),
@@ -87,8 +120,9 @@ pub enum TaskCommand {
     },
     /// Show the next ready task for a role
     Next {
+        /// Role [default: the worktree binding's]
         #[arg(long)]
-        role: String,
+        role: Option<String>,
     },
     /// Show one task
     Show { id: String },
@@ -167,6 +201,39 @@ pub struct TaskSpec {
     pub priority: i32,
 }
 
+/// Agent harnesses `airlock setup` knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Harness {
+    Claude,
+    Antigravity,
+    Dsh,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RoleCommand {
+    /// List roles
+    List,
+    /// Create or change a role
+    Set {
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long, value_name = "BOOL")]
+        clean_room: Option<bool>,
+        /// Short rules shown in the session briefing
+        #[arg(long)]
+        instructions: Option<String>,
+        /// File every session of this role reads first (repeatable; replaces the list)
+        #[arg(long)]
+        read: Vec<String>,
+        /// Empty the reading list
+        #[arg(long, conflicts_with = "read")]
+        clear_read: bool,
+    },
+    /// Remove a role no task or binding uses
+    Remove { name: String },
+}
+
 #[derive(Debug, Subcommand)]
 pub enum QuestionCommand {
     /// List questions
@@ -203,6 +270,15 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Init { .. } => "init",
+            Self::Use { .. } => "use",
+            Self::Start => "start",
+            Self::Doctor => "doctor",
+            Self::Setup { .. } => "setup",
+            Self::Role(sub) => match sub {
+                RoleCommand::List => "role list",
+                RoleCommand::Set { .. } => "role set",
+                RoleCommand::Remove { .. } => "role remove",
+            },
             Self::Task(sub) => match sub {
                 TaskCommand::List { .. } => "task list",
                 TaskCommand::Next { .. } => "task next",

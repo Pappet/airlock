@@ -1,8 +1,10 @@
 //! Hub directory, project registry, and `.airlock` marker resolution (Spec 01 §3.1, Spec 02 §2.2).
 
 use crate::config::ProjectConfig;
+use crate::store::Store;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +14,19 @@ pub const MARKER_FILE: &str = ".airlock";
 const PROJECTS_DIR: &str = "projects";
 const CONFIG_FILE: &str = "project.json";
 const DATABASE_FILE: &str = "airlock.db";
+
+/// A worktree's role and session (Spec 06 §2), keyed by canonical project root.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Binding {
+    pub role: String,
+    pub session: String,
+    /// Refuse role changes without `--force`
+    #[serde(default)]
+    pub locked: bool,
+}
+
+/// All bindings of one project, keyed by canonical root path.
+pub type Bindings = BTreeMap<String, Binding>;
 
 /// Whether `id` is a project id: a UUID in canonical lowercase hyphenated form.
 pub fn is_project_id(id: &str) -> bool {
@@ -80,6 +95,8 @@ pub struct Project {
     pub root: Option<PathBuf>,
     /// Path of the SQLite store
     pub database: PathBuf,
+    /// Binding of `root`, if the worktree is bound to a role
+    pub binding: Option<Binding>,
 }
 
 impl Hub {
@@ -210,11 +227,25 @@ impl Hub {
                 (marker.project_id, Some(dir))
             }
         };
+        let database = self.database_path(&id)?;
+        let binding = match &root {
+            Some(root) => Store::open(&database)?.binding(&binding_key(root)?)?,
+            None => None,
+        };
         Ok(Project {
             config: self.load_config(&id)?,
-            database: self.database_path(&id)?,
+            database,
             id,
             root,
+            binding,
         })
     }
+}
+
+/// The key of a project root in the bindings table: its canonical absolute path.
+pub fn binding_key(root: &Path) -> Result<String> {
+    let path = fs::canonicalize(root).with_context(|| format!("resolving {}", root.display()))?;
+    path.into_os_string()
+        .into_string()
+        .map_err(|p| anyhow::anyhow!("path {} is not valid UTF-8", p.to_string_lossy()))
 }

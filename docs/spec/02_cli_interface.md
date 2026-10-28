@@ -12,8 +12,9 @@ The CLI gives human developers, shell scripts, and CI runners direct access to a
 
 | Option | Env | Meaning |
 |---|---|---|
+| `-C <dir>` | — | Run as if started in `<dir>` (Spec 06 §2.4) |
 | `--project <id-or-name>` | `AIRLOCK_PROJECT` | Select the project explicitly (see 2.2) |
-| `--session <id>` | `AIRLOCK_SESSION` | Session id for claims, questions, and answers; default `human:$USER` |
+| `--session <id>` | `AIRLOCK_SESSION` | Session id for claims, questions, and answers; default: the worktree binding's session (Spec 06 §2.3), else `human:$USER` |
 | `--json` | — | Print machine-readable JSON instead of human-readable text |
 
 Global options may appear before or after the subcommand.
@@ -49,8 +50,8 @@ Commit `.airlock` to the repository.
 #### `airlock task list [--role <role>] [--status <status>]`
 Lists tasks as a table (id, status, role, priority, claimed by, title). `<status>` is one of `blocked`, `ready`, `in_progress`, `in_review`, `done` (effective status, Spec 01 §2.1).
 
-#### `airlock task next --role <role>`
-Shows the next ready task for the role (selection order: Spec 01 §2.1) as a compact work package: id, title, prerequisites, **Read**, **Touch**, **Do**, **Verify**. Does not claim it. Exits `1` with a clear message if no task is ready.
+#### `airlock task next [--role <role>]`
+Shows the next ready task for the role (default: the worktree binding's role) (selection order: Spec 01 §2.1) as a compact work package: id, title, prerequisites, **Read**, **Touch**, **Do**, **Verify**. Does not claim it. Exits `1` with a clear message if no task is ready.
 
 #### `airlock task show <id>`
 Shows one task in full, including dependents and lease information.
@@ -98,7 +99,7 @@ Closes an answered question, optionally recording the spec file that now codifie
 ### 3.4 Servers and Export
 
 #### `airlock mcp [--role <role>]`
-Runs the MCP server over stdio (Spec 03). `--role` binds the server to one role.
+Runs the MCP server over stdio (Spec 03). `--role` binds the server to one role; without it, the worktree binding's role applies (Spec 06 §2.3).
 
 #### `airlock serve [--port <port>]`
 Serves the dashboard and REST/SSE API on `127.0.0.1:<port>` (default 3000; Spec 04).
@@ -108,3 +109,13 @@ Writes the canonical snapshot and Markdown views into the project root (Spec 05 
 
 #### `airlock import [--from <path>] [--yes]`
 Replaces the project's tasks, questions, and roles with a snapshot (default: the configured `state_file` in the project root). Validates before writing (Spec 05 §3.4). Asks for confirmation on a terminal unless `--yes` is given; without a terminal, `--yes` is required. Markdown files are never parsed for reconstruction.
+
+### 3.5 Onboarding (Spec 06)
+
+| Command | Purpose |
+|---|---|
+| `airlock use [<role>] [--lock] [--force] [--clear]` | Bind this worktree to a role and session, or show the binding |
+| `airlock start` | Print the session briefing (role, rules, claimed work, next package) |
+| `airlock role list` / `role set <name> …` / `role remove <name>` | Manage roles, their instructions, and their reading list |
+| `airlock doctor` | Check binary, project, worktrees, bindings, and harness configurations; exits `1` on errors |
+| `airlock setup <claude\|antigravity\|dsh> [--role <role>]` | Print the MCP configuration of this worktree for a harness |

@@ -25,13 +25,19 @@ pub struct ProjectConfig {
 }
 
 /// Role configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoleConfig {
     /// Human-readable description of the role's purpose
     pub description: String,
     /// Whether sessions bound to this role get the restricted clean-room tool set
     #[serde(default)]
     pub clean_room: bool,
+    /// Short rules shown to sessions of this role in their briefing
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// Files every session of this role reads first
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read: Vec<String>,
 }
 
 /// Export paths, relative to the project root that invokes `airlock sync`.
@@ -65,6 +71,7 @@ impl Default for ProjectConfig {
         let role = |description: &str, clean_room| RoleConfig {
             description: description.to_string(),
             clean_room,
+            ..RoleConfig::default()
         };
         let roles = BTreeMap::from([
             (

@@ -2,7 +2,7 @@
 
 A local-first coordinator for multi-agent and human development sessions: tasks, questions, and leases in one store shared by every worktree of a project.
 
-> **Status: Phase 3.** The hub store, the task and question CLI, `sync`/`import`, and the MCP server work. The dashboard is specified in [`docs/spec/`](docs/spec/) but not built yet; `airlock serve` exits with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
+> **Status: Phase 3b.** The hub store, the task and question CLI, `sync`/`import`, the MCP server, and onboarding (`use`, `start`, `doctor`, `setup`) work. The dashboard is specified in [`docs/spec/`](docs/spec/) but not built yet; `airlock serve` exits with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
 
 ---
 
@@ -17,6 +17,7 @@ Airlock replaces it with:
 - **Derived readiness**: tasks become ready when their prerequisites are done — no manual bookkeeping.
 - **A question channel** between implementation and specification sessions, with an audit trail in git.
 - **CLI for humans, MCP for agents**, plus a local web dashboard.
+- **Guided onboarding**: worktrees bound to roles, a session briefing agents read first, `doctor` and `setup` for harness configuration.
 
 ## Features (specified)
 
@@ -25,6 +26,7 @@ Airlock replaces it with:
 - **Questions:** `open → answered → resolved`, optionally linked to the spec file that codifies the answer.
 - **Deterministic export:** `airlock sync` writes a byte-stable JSON snapshot (`docs/.airlock-state.json`, the only import source) plus `docs/PLAN.md` and `docs/spec/QUESTIONS.md` views. Merge conflicts in generated files are cleared by re-running `airlock sync`; a guard refuses to overwrite snapshots written by another machine.
 - **MCP tools:** `task_next`, `task_claim`, `task_heartbeat`, `task_complete`, `question_ask`, … with role binding and a restricted tool set for clean-room roles.
+- **Onboarding:** `airlock use <role>` binds a worktree to a role and a stable session; `airlock start` / MCP `session_start` brief an agent on its rules, claims, and next package; `airlock doctor` checks the setup; `airlock setup claude|antigravity|dsh` prints harness configurations.
 - **Dashboard:** loopback-only, token-protected Kanban board, review queue, and questions inbox.
 
 Scope of v0.x: one machine per project state. The clean-room features structure and record the exchange between sessions; actual isolation of a clean-room session must come from its environment (separate user, container, or sandbox) — see [Spec 05 §4](docs/spec/05_git_sync_and_airlock.md#4-the-airlock-boundary).
