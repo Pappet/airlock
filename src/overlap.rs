@@ -142,7 +142,7 @@ pub fn analyze(tasks: &[Task]) -> Analysis {
         })
         .collect();
     // Stable sort keeps the path order among equally shared files.
-    files.sort_by(|a, b| b.tasks.len().cmp(&a.tasks.len()));
+    files.sort_by_key(|f| std::cmp::Reverse(f.tasks.len()));
 
     let no_touch = entries
         .iter()
