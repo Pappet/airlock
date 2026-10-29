@@ -17,6 +17,7 @@ pub mod snapshot;
 pub mod store;
 pub mod sync;
 pub mod views;
+pub mod web;
 
 /// Airlock crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
