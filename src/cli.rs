@@ -100,6 +100,7 @@ pub enum Command {
     },
     /// Serve the local web dashboard and REST API on 127.0.0.1
     Serve {
+        /// Port on 127.0.0.1 and ::1; 0 picks a free port
         #[arg(long, default_value_t = 3000)]
         port: u16,
     },

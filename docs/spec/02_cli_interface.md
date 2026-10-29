@@ -102,7 +102,7 @@ Closes an answered question, optionally recording the spec file that now codifie
 Runs the MCP server over stdio (Spec 03). `--role` binds the server to one role; without it, the worktree binding's role applies (Spec 06 §2.3).
 
 #### `airlock serve [--port <port>]`
-Serves the dashboard and REST/SSE API on `127.0.0.1:<port>` (default 3000; Spec 04).
+Serves the dashboard and REST/SSE API on `127.0.0.1:<port>` and `[::1]:<port>` (default 3000; `0` picks a free port; Spec 04). Prints `Dashboard: http://127.0.0.1:<port>/#token=<token>` on stdout and runs until stopped. The token changes on every start.
 
 #### `airlock sync [--force]`
 Writes the canonical snapshot and Markdown views into the project root (Spec 05 §3). Refuses to overwrite a snapshot changed outside this hub unless `--force` is given (Spec 05 §3.5).

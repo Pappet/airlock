@@ -1,7 +1,7 @@
 //! Hub store: transitions, leases, validation, concurrency (Spec 01 §2, §3.2).
 
 use airlock::core::{QuestionStatus, TaskState};
-use airlock::store::{NewTask, Store};
+use airlock::store::{NewTask, NotFound, Store};
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
@@ -279,4 +279,20 @@ fn replace_all_swaps_state_and_never_reuses_question_ids() {
 
     let next = store.ask("t", "q", "s", 11).unwrap();
     assert_eq!(next.id, 6, "continues after the highest id ever used");
+}
+
+#[test]
+fn unknown_ids_are_not_found() {
+    let (_dir, mut store) = open();
+    store.add_task(new_task("A", &[]), 0).unwrap();
+    store.add_task(new_task("B", &["A"]), 0).unwrap();
+    let not_found = |e: anyhow::Error| e.downcast_ref::<NotFound>().is_some();
+
+    assert!(not_found(store.task("nope", 0).unwrap_err()));
+    assert!(not_found(store.release("nope", "s", true, 0).unwrap_err()));
+    assert!(not_found(store.claim("nope", "s", MIN, 0).unwrap_err()));
+    assert!(not_found(store.question(99).unwrap_err()));
+    assert_eq!(err(store.task("nope", 0)), "no task `nope`");
+    // A failed transition on an existing task is not a lookup failure.
+    assert!(!not_found(store.claim("B", "s", MIN, 0).unwrap_err()));
 }

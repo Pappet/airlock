@@ -180,10 +180,6 @@ fn task_flow_with_json_output() {
         env.fail(&project, &["task", "next", "--role", "nope"])
             .contains("unknown role")
     );
-    assert!(
-        env.fail(&project, &["serve"])
-            .contains("not implemented yet")
-    );
 }
 
 #[test]

@@ -172,3 +172,20 @@ git add docs/.airlock-state.json docs/PLAN.md docs/spec/QUESTIONS.md
 ```
 
 This writes the canonical snapshot and the Markdown views into the current worktree. If a merge conflicts in a generated file, take either side and re-run `airlock sync` — never resolve generated files by hand.
+
+---
+
+## 7. The Dashboard
+
+```bash
+airlock serve            # or: airlock -C ~/Projects/game serve --port 3100
+```
+
+Open the printed `http://127.0.0.1:3000/#token=…` URL. The token changes on every start; after a restart, open the new URL (the same tab is fine). The server only listens on loopback.
+
+- **Board** — Kanban by effective status, with overlap badges.
+- **Stages** — what can run now and what waits; select a task to see every open task that touches the same files.
+- **Files** — the files several open tasks touch; ▶ marks files held by a running task.
+- **Review**, **Questions**, **Leases** — approve or reject, answer and resolve, force-release.
+
+Tasks without `--touch` show "no touch data": list the files a task changes so overlaps become visible.

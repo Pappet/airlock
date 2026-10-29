@@ -11,9 +11,9 @@
 ## Project Stats
 
 - **Language:** Rust (edition 2024, MSRV 1.85)
-- **Interfaces:** CLI (`clap`), MCP server over stdio; planned: local web server (`axum`)
+- **Interfaces:** CLI (`clap`), MCP server over stdio, local web dashboard (`axum`)
 - **Persistence:** one SQLite database (WAL) per project in the hub directory (`~/.local/state/airlock/projects/<uuid>/` on Linux, override with `AIRLOCK_HOME`), referenced from the repository by a `.airlock` marker file
-- **Status:** Phase 1 (hub store and CLI) complete, Phase 2 (sync and import) mostly complete, Phase 3 (MCP server) in progress — see [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md)
+- **Status:** Phases 1–3 (hub store, CLI, sync and import, MCP server) and 3b onboarding complete apart from the agent validation runs; Phase 4 (web dashboard) implemented — see [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md)
 - **License:** MIT
 
 ---
@@ -107,6 +107,8 @@ graph TD
 - [`src/sync.rs`](src/sync.rs): `sync` (exports, foreign-change guard, atomic writes) and `import` (checks, replace-all, role update).
 - [`src/mcp.rs`](src/mcp.rs): MCP server — JSON-RPC over stdio, project/session/role binding, tool definitions, clean-room tool set.
 - [`src/views.rs`](src/views.rs): `PLAN.md` and `QUESTIONS.md` rendered from a snapshot.
+- [`src/overlap.rs`](src/overlap.rs): File overlap between open tasks' `touch` lists and dependency stages.
+- [`src/web.rs`](src/web.rs): `airlock serve` — loopback server, token/Host/Origin checks, REST API, SSE from `data_version` polling; assets in [`src/web/`](src/web/).
 
 ### `tests/`
 - [`tests/model.rs`](tests/model.rs): Derived status, leases, dependents, graph validation, config defaults.
@@ -118,6 +120,7 @@ graph TD
 - [`tests/init.rs`](tests/init.rs): Templates, commit scope, worktree creation, adoption of existing projects, fresh-clone recreation, foreign directories.
 - [`tests/onboarding.rs`](tests/onboarding.rs): Bindings, `-C`, roles, briefing, MCP binding and prompt, doctor, setup — against real git worktrees.
 - [`tests/views.rs`](tests/views.rs): Exact layout of the generated views.
+- [`tests/web.rs`](tests/web.rs): The dashboard server through the binary — security checks, every endpoint and status code, live events.
 - [`tests/common/mod.rs`](tests/common/mod.rs): Shared fixtures.
 
 ### `docs/`

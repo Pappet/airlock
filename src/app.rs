@@ -4,7 +4,7 @@ use crate::cli::{Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskSp
 use crate::core::{Question, Task, TaskState, TaskStatus, dependents};
 use crate::hub::{Binding, Hub, MARKER_FILE, Project, binding_key};
 use crate::store::{Completion, NewTask, Store};
-use crate::{briefing, doctor, init, mcp, setup, sync};
+use crate::{briefing, doctor, init, mcp, setup, sync, web};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::json;
@@ -89,6 +89,7 @@ pub fn run(cli: Cli) -> Result<()> {
             return use_binding(&project, role, lock, force, clear, cli.session, &out);
         }
         Command::Setup { harness, role } => return setup::run(&project, harness, role, &out),
+        Command::Serve { port } => return web::serve(project, port),
         _ => {}
     }
 
@@ -103,7 +104,8 @@ pub fn run(cli: Cli) -> Result<()> {
         | Command::Doctor
         | Command::Mcp { .. }
         | Command::Use { .. }
-        | Command::Setup { .. } => unreachable!("handled above"),
+        | Command::Setup { .. }
+        | Command::Serve { .. } => unreachable!("handled above"),
         Command::Start { role } => {
             let role = match (role, &project.binding) {
                 (Some(role), Some(b)) if b.locked && role != b.role => bail!(
@@ -159,10 +161,6 @@ pub fn run(cli: Cli) -> Result<()> {
                 || format!("Imported {} tasks and {} questions", loaded.snapshot.tasks.len(), loaded.snapshot.questions.len()),
             )
         }
-        other => bail!(
-            "`airlock {}` is not implemented yet; see docs/plans/PHASE_PLAN.md",
-            other.name()
-        ),
     }
 }
 

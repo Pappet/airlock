@@ -109,6 +109,19 @@ pub struct Completion {
     pub now_ready: Vec<String>,
 }
 
+/// Error for an unknown task or question id; callers can tell it apart from a
+/// refused transition with `anyhow::Error::downcast_ref`.
+#[derive(Debug)]
+pub struct NotFound(pub String);
+
+impl std::fmt::Display for NotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NotFound {}
+
 /// An open connection to one project's store.
 pub struct Store {
     conn: Connection,
@@ -144,6 +157,14 @@ impl Store {
         tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
         tx.commit()?;
         Ok(Self { conn })
+    }
+
+    /// SQLite's `PRAGMA data_version`: changes whenever another connection
+    /// commits to the store.
+    pub fn data_version(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))?)
     }
 
     /// All tasks, sorted by id, with expired leases shown as released.
@@ -613,7 +634,7 @@ fn load_task(conn: &Connection, id: &str) -> Result<Task> {
         task_from_row,
     )
     .optional()?
-    .with_context(|| format!("no task `{id}`"))
+    .ok_or_else(|| NotFound(format!("no task `{id}`")).into())
 }
 
 fn load_question(conn: &Connection, id: u64) -> Result<Question> {
@@ -623,14 +644,14 @@ fn load_question(conn: &Connection, id: u64) -> Result<Question> {
         question_from_row,
     )
     .optional()?
-    .with_context(|| format!("no question #{id}"))
+    .ok_or_else(|| NotFound(format!("no question #{id}")).into())
 }
 
 fn find<'a>(tasks: &'a [Task], id: &str) -> Result<&'a Task> {
     tasks
         .iter()
         .find(|t| t.id == id)
-        .with_context(|| format!("no task `{id}`"))
+        .ok_or_else(|| NotFound(format!("no task `{id}`")).into())
 }
 
 fn status_of(tasks: &[Task], task: &Task) -> TaskStatus {

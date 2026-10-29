@@ -11,11 +11,13 @@ pub mod hub;
 pub mod init;
 pub mod layout;
 pub mod mcp;
+pub mod overlap;
 pub mod setup;
 pub mod snapshot;
 pub mod store;
 pub mod sync;
 pub mod views;
+pub mod web;
 
 /// Airlock crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

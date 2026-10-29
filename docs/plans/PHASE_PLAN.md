@@ -47,9 +47,11 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 ---
 
 ## Phase 4: Web Dashboard
-- [ ] `axum` server on loopback with token auth, Host/Origin checks (Spec 04 §2).
-- [ ] Embedded single-page dashboard (assets via `rust-embed`): Kanban, review queue, questions inbox, live leases.
-- [ ] Server-Sent Events driven by `PRAGMA data_version` polling.
+- [x] `axum` server on loopback with token auth, Host/Origin checks (Spec 04 §2).
+- [x] Embedded single-page dashboard (assets via `include_str!`): Kanban, review queue, questions inbox, live leases.
+- [x] Overlap analysis over `touch` lists, Stages view and File matrix (Spec 04 §3.5–3.7; design: [`docs/superpowers/specs/2026-10-29-dashboard-design.md`](../superpowers/specs/2026-10-29-dashboard-design.md)).
+- [x] Server-Sent Events driven by `PRAGMA data_version` polling.
+- [ ] Overlap warning at claim time: `task next` skips ready tasks whose `touch` overlaps an occupying task, `task claim` (CLI and MCP) warns when such a task is taken anyway. Reuses `overlap::analyze`.
 
 ---
 
