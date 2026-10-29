@@ -159,6 +159,14 @@ impl Store {
         Ok(Self { conn })
     }
 
+    /// SQLite's `PRAGMA data_version`: changes whenever another connection
+    /// commits to the store.
+    pub fn data_version(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))?)
+    }
+
     /// All tasks, sorted by id, with expired leases shown as released.
     pub fn tasks(&self, now: i64) -> Result<Vec<Task>> {
         Ok(load_tasks(&self.conn)?

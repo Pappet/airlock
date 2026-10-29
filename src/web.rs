@@ -4,7 +4,9 @@
 //! `Host` header must name this server (DNS-rebinding defense), and `/api/*`
 //! additionally needs the bearer token printed at startup, a same-origin or
 //! absent `Origin`, and a JSON body for `POST`. Each request opens its own
-//! [`Store`] on a blocking thread, like any CLI invocation.
+//! [`Store`] on a blocking thread, like any CLI invocation. A watcher thread
+//! polls `PRAGMA data_version` once per second and turns changes into
+//! server-sent events.
 
 use crate::app::{TaskView, done_ids, ensure_role, unix_now};
 use crate::core::{QuestionStatus, TaskStatus, dependents};
@@ -18,14 +20,19 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::broadcast;
 
 /// Session id recorded for answers and force-releases made in the dashboard.
 pub const DASHBOARD_SESSION: &str = "dashboard";
@@ -39,6 +46,14 @@ struct AppState {
     project: Project,
     port: u16,
     token: String,
+    events: broadcast::Sender<Change>,
+}
+
+/// One changed entity, sent as an SSE event named `kind` with data `{ "id": id }`.
+#[derive(Debug, Clone)]
+struct Change {
+    kind: &'static str,
+    id: Value,
 }
 
 type Shared = Arc<AppState>;
@@ -61,11 +76,15 @@ async fn run(project: Project, port: u16) -> Result<()> {
         .await
         .ok();
     let name = project.config.name.clone();
+    let (events, _) = broadcast::channel(256);
     let state = Arc::new(AppState {
         project,
         port,
         token: new_token()?,
+        events,
     });
+    let watched = state.clone();
+    std::thread::spawn(move || watch(&watched.project, &watched.events));
     let app = router(state.clone());
 
     println!("Dashboard: http://127.0.0.1:{port}/#token={}", state.token);
@@ -103,6 +122,7 @@ fn router(state: Shared) -> Router {
         .route("/api/questions/{id}/answer", post(answer_question))
         .route("/api/questions/{id}/resolve", post(resolve_question))
         .route("/api/overlaps", get(show_overlaps))
+        .route("/api/events", get(events))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -514,4 +534,98 @@ async fn show_overlaps(State(state): State<Shared>) -> ApiResult {
         Ok(serde_json::to_value(overlap::analyze(&store.tasks(now)?))?)
     })
     .await
+}
+
+async fn events(
+    State(state): State<Shared>,
+) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
+    let stream = futures_util::stream::unfold(state.events.subscribe(), |mut rx| async move {
+        let event = match rx.recv().await {
+            Ok(change) => SseEvent::default()
+                .event(change.kind)
+                .data(json!({ "id": change.id }).to_string()),
+            // Missed events: the client reloads everything.
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                SseEvent::default().event("resync").data("{}")
+            }
+            Err(broadcast::error::RecvError::Closed) => return None,
+        };
+        Some((Ok(event), rx))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Serialized form of every task and question, for change detection.
+#[derive(Default)]
+struct Digest {
+    tasks: BTreeMap<String, String>,
+    questions: BTreeMap<u64, String>,
+    /// Earliest lease expiry: leases run out without a write to the store
+    next_expiry: Option<i64>,
+}
+
+impl Digest {
+    fn load(store: &Store, now: i64) -> Result<Self> {
+        let tasks = store.tasks(now)?;
+        Ok(Self {
+            next_expiry: tasks.iter().filter_map(|t| t.lease_expires_at).min(),
+            tasks: tasks
+                .iter()
+                .map(|t| Ok((t.id.clone(), serde_json::to_string(t)?)))
+                .collect::<Result<_>>()?,
+            questions: store
+                .questions()?
+                .iter()
+                .map(|q| Ok((q.id, serde_json::to_string(q)?)))
+                .collect::<Result<_>>()?,
+        })
+    }
+}
+
+/// Ids whose entry was added, removed, or changed between `old` and `new`.
+fn changed<K: Ord + Clone>(old: &BTreeMap<K, String>, new: &BTreeMap<K, String>) -> Vec<K> {
+    let mut ids: Vec<K> = new
+        .iter()
+        .filter(|(k, v)| old.get(*k) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    ids.extend(old.keys().filter(|k| !new.contains_key(*k)).cloned());
+    ids
+}
+
+/// Polls the store once per second and broadcasts what changed (Spec 04 §4).
+fn watch(project: &Project, events: &broadcast::Sender<Change>) {
+    let store = match Store::open(&project.database) {
+        Ok(store) => store,
+        Err(e) => return eprintln!("airlock serve: live updates disabled: {e:#}"),
+    };
+    let mut version = store.data_version().ok();
+    let mut digest = Digest::load(&store, unix_now()).unwrap_or_default();
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let now = unix_now();
+        let current = store.data_version().ok();
+        let expired = digest.next_expiry.is_some_and(|t| t <= now);
+        if current == version && !expired {
+            continue;
+        }
+        version = current;
+        let Ok(next) = Digest::load(&store, now) else {
+            continue;
+        };
+        // Sending fails only while no client listens; nothing to do then.
+        for id in changed(&digest.tasks, &next.tasks) {
+            let _ = events.send(Change {
+                kind: "task_changed",
+                id: id.into(),
+            });
+        }
+        for id in changed(&digest.questions, &next.questions) {
+            let _ = events.send(Change {
+                kind: "question_changed",
+                id: id.into(),
+            });
+        }
+        digest = next;
+    }
 }

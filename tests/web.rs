@@ -538,3 +538,37 @@ fn verify_is_never_executed() {
     }
     assert!(!marker.exists());
 }
+
+#[test]
+fn events_report_task_and_question_changes() {
+    let s = Server::start();
+    add_task(&s, "A", &[]);
+    let mut stream = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let request = format!(
+        "GET /api/events HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\n\r\n",
+        s.host(),
+        s.token
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+
+    let mut seen = String::new();
+    let mut read_until = |needle: &str, seen: &mut String| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut buf = [0u8; 4096];
+        while !seen.contains(needle) && std::time::Instant::now() < deadline {
+            if let Ok(n) = stream.read(&mut buf) {
+                seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        }
+        assert!(seen.contains(needle), "no {needle:?} in {seen:?}");
+    };
+    read_until("text/event-stream", &mut seen);
+
+    s.cli(&["--session", "s1", "task", "claim", "A"]);
+    read_until("event: task_changed\ndata: {\"id\":\"A\"}", &mut seen);
+    s.cli(&["question", "ask", "Why?", "--topic", "melee.md"]);
+    read_until("event: question_changed\ndata: {\"id\":1}", &mut seen);
+}
