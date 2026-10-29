@@ -30,3 +30,6 @@ tasks.db
 
 # Local AI session memory (DSH memoir tooling state)
 PROJECT_MEMORY.md
+
+# Brainstorming mockups and plan-execution workspaces (superpowers)
+.superpowers/

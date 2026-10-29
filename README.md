@@ -2,7 +2,7 @@
 
 A local-first coordinator for multi-agent and human development sessions: tasks, questions, and leases in one store shared by every worktree of a project.
 
-> **Status: Phase 3b.** The hub store, the task and question CLI, `sync`/`import`, the MCP server, and onboarding (`use`, `start`, `doctor`, `setup`) work. The dashboard is specified in [`docs/spec/`](docs/spec/) but not built yet; `airlock serve` exits with "not implemented yet". Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
+> **Status: Phase 4.** The hub store, the task and question CLI, `sync`/`import`, the MCP server, onboarding (`use`, `start`, `doctor`, `setup`), and the dashboard (`airlock serve`) work. Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
 
 ---
 
@@ -27,7 +27,7 @@ Airlock replaces it with:
 - **Deterministic export:** `airlock sync` writes a byte-stable JSON snapshot (`docs/.airlock-state.json`, the only import source) plus `docs/PLAN.md` and `docs/spec/QUESTIONS.md` views. Merge conflicts in generated files are cleared by re-running `airlock sync`; a guard refuses to overwrite snapshots written by another machine.
 - **MCP tools:** `task_next`, `task_claim`, `task_heartbeat`, `task_complete`, `question_ask`, … with role binding and a restricted tool set for clean-room roles.
 - **Onboarding:** `airlock init --template clean-room|parallel|single` registers the project, commits a layout (`airlock.toml`), creates the worktrees, and binds them; `airlock use <role>` binds a worktree to a role and a stable session; `airlock start` / MCP `session_start` brief an agent on its rules, claims, and next package; `airlock doctor` checks the setup; `airlock setup claude|antigravity|dsh` prints harness configurations.
-- **Dashboard:** loopback-only, token-protected Kanban board, review queue, and questions inbox.
+- **Dashboard:** loopback-only, token-protected Kanban board, dependency stages, file-overlap matrix, review queue, questions inbox, and lease monitor.
 
 Scope of v0.x: one machine per project state. The clean-room features structure and record the exchange between sessions; actual isolation of a clean-room session must come from its environment (separate user, container, or sandbox) — see [Spec 05 §4](docs/spec/05_git_sync_and_airlock.md#4-the-airlock-boundary).
 
