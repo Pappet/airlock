@@ -1,2 +1,42 @@
 <!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
 <title>Airlock</title>
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<header class="studio-header">
+  <div class="studio-header__brand">
+    <div class="logo-tile" aria-hidden="true">A</div>
+    <span class="studio-header__product">AIRLOCK</span>
+    <span class="studio-header__tag" id="version">STUDIO // v0.1</span>
+  </div>
+  <div class="studio-header__actions">
+    <span class="project" id="project-name"></span>
+  </div>
+</header>
+
+<div class="section-strip">
+  <span class="section-strip__slot section-strip__slot--left" id="counts"></span>
+  <span class="section-strip__slot section-strip__slot--center">
+    <span class="pulse-dot" id="live-dot" aria-hidden="true"></span>
+    <span id="live-label">CONNECTING</span>
+  </span>
+  <span class="section-strip__slot section-strip__slot--right" id="role-filter" role="group" aria-label="Role filter"></span>
+</div>
+
+<nav class="tabs" id="tabs" role="tablist"></nav>
+
+<main id="view" tabindex="-1"></main>
+
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer__body" id="drawer-body"></div>
+</aside>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

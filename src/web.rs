@@ -310,6 +310,7 @@ async fn show_project(State(state): State<Shared>) -> ApiResult {
         "roles": roles,
         "lease_minutes": project.config.lease_minutes,
         "session": DASHBOARD_SESSION,
+        "version": crate::VERSION,
     })))
 }
 
