@@ -6,18 +6,22 @@
 //! absent `Origin`, and a JSON body for `POST`. Each request opens its own
 //! [`Store`] on a blocking thread, like any CLI invocation.
 
-use crate::app::{TaskView, done_ids, unix_now};
-use crate::core::TaskStatus;
+use crate::app::{TaskView, done_ids, ensure_role, unix_now};
+use crate::core::{QuestionStatus, TaskStatus, dependents};
 use crate::hub::Project;
-use crate::store::{NotFound, Store};
+use crate::overlap;
+use crate::store::{NewTask, NotFound, Store};
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Query, Request, State};
+use axum::body::Bytes;
+use axum::extract::rejection::QueryRejection;
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -89,7 +93,16 @@ fn router(state: Shared) -> Router {
             "/style.css",
             get(|| async { asset("text/css; charset=utf-8", STYLE_CSS) }),
         )
-        .route("/api/tasks", get(list_tasks))
+        .route("/api/project", get(show_project))
+        .route("/api/tasks", get(list_tasks).post(create_task))
+        .route("/api/tasks/{id}", get(show_task))
+        .route("/api/tasks/{id}/release", post(release_task))
+        .route("/api/tasks/{id}/approve", post(approve_task))
+        .route("/api/tasks/{id}/reject", post(reject_task))
+        .route("/api/questions", get(list_questions))
+        .route("/api/questions/{id}/answer", post(answer_question))
+        .route("/api/questions/{id}/resolve", post(resolve_question))
+        .route("/api/overlaps", get(show_overlaps))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -232,13 +245,65 @@ where
     .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
 }
 
+/// Parses a JSON request body; an empty body counts as `{}`.
+fn body<T: DeserializeOwned>(bytes: &Bytes) -> Result<T, ApiError> {
+    let bytes: &[u8] = if bytes.is_empty() { b"{}" } else { bytes };
+    serde_json::from_slice(bytes).map_err(|e| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("invalid request body: {e}"),
+        )
+    })
+}
+
+fn query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
+    query
+        .map(|Query(q)| q)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.body_text()))
+}
+
+/// A required free-text field: must contain more than whitespace.
+fn required(value: Option<String>, field: &str) -> Result<String, ApiError> {
+    value
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, format!("`{field}` is required")))
+}
+
+fn question_id(raw: &str) -> Result<u64, ApiError> {
+    raw.parse()
+        .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, format!("no question #{raw}")))
+}
+
+async fn show_project(State(state): State<Shared>) -> ApiResult {
+    let project = &state.project;
+    let roles: Vec<Value> = project
+        .config
+        .roles
+        .iter()
+        .map(|(name, role)| {
+            json!({ "name": name, "description": role.description, "clean_room": role.clean_room })
+        })
+        .collect();
+    Ok(axum::Json(json!({
+        "id": project.id,
+        "name": project.config.name,
+        "roles": roles,
+        "lease_minutes": project.config.lease_minutes,
+        "session": DASHBOARD_SESSION,
+    })))
+}
+
 #[derive(Deserialize)]
 struct TaskFilter {
     role: Option<String>,
     status: Option<TaskStatus>,
 }
 
-async fn list_tasks(State(state): State<Shared>, Query(filter): Query<TaskFilter>) -> ApiResult {
+async fn list_tasks(
+    State(state): State<Shared>,
+    filter: Result<Query<TaskFilter>, QueryRejection>,
+) -> ApiResult {
+    let filter = query(filter)?;
     with_store(&state, StatusCode::BAD_REQUEST, move |store, _, now| {
         let tasks = store.tasks(now)?;
         let done = done_ids(&tasks);
@@ -249,6 +314,204 @@ async fn list_tasks(State(state): State<Shared>, Query(filter): Query<TaskFilter
             .filter(|v| filter.status.is_none_or(|s| v.status == s))
             .collect();
         Ok(serde_json::to_value(views)?)
+    })
+    .await
+}
+
+/// Body of `POST /api/tasks`, with the parameter names of MCP `task_create`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateTask {
+    id: String,
+    title: String,
+    role: String,
+    #[serde(default)]
+    priority: i32,
+    #[serde(default)]
+    blocked_by: Vec<String>,
+    #[serde(default)]
+    read: Vec<String>,
+    #[serde(default)]
+    touch: Vec<String>,
+    r#do: String,
+    verify: String,
+}
+
+async fn create_task(State(state): State<Shared>, bytes: Bytes) -> Result<Response, ApiError> {
+    let new: CreateTask = body(&bytes)?;
+    let task = with_store(
+        &state,
+        StatusCode::BAD_REQUEST,
+        move |store, project, now| {
+            ensure_role(project, &new.role)?;
+            let task = store.add_task(
+                NewTask {
+                    id: new.id,
+                    title: new.title,
+                    role: new.role,
+                    priority: new.priority,
+                    blocked_by: new.blocked_by,
+                    read: new.read,
+                    touch: new.touch,
+                    r#do: new.r#do,
+                    verify: new.verify,
+                },
+                now,
+            )?;
+            let tasks = store.tasks(now)?;
+            Ok(serde_json::to_value(TaskView::new(
+                &task,
+                &done_ids(&tasks),
+            ))?)
+        },
+    )
+    .await?;
+    Ok((StatusCode::CREATED, task).into_response())
+}
+
+async fn show_task(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    with_store(&state, StatusCode::BAD_REQUEST, move |store, _, now| {
+        let task = store.task(&id, now)?;
+        let tasks = store.tasks(now)?;
+        let mut view = TaskView::new(&task, &done_ids(&tasks));
+        view.dependents = Some(
+            dependents(&tasks, &id)
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        );
+        Ok(serde_json::to_value(view)?)
+    })
+    .await
+}
+
+/// The task with its effective status after a change.
+fn task_value(store: &Store, id: &str, now: i64) -> Result<Value> {
+    let tasks = store.tasks(now)?;
+    let task = store.task(id, now)?;
+    Ok(serde_json::to_value(TaskView::new(
+        &task,
+        &done_ids(&tasks),
+    ))?)
+}
+
+async fn release_task(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    bytes: Bytes,
+) -> ApiResult {
+    let _: Value = body(&bytes)?;
+    with_store(&state, StatusCode::CONFLICT, move |store, _, now| {
+        store.release(&id, DASHBOARD_SESSION, true, now)?;
+        task_value(store, &id, now)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct Notes {
+    notes: Option<String>,
+}
+
+async fn approve_task(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    bytes: Bytes,
+) -> ApiResult {
+    let Notes { notes } = body(&bytes)?;
+    with_store(&state, StatusCode::CONFLICT, move |store, _, now| {
+        let completion =
+            store.approve(&id, notes.as_deref().filter(|n| !n.trim().is_empty()), now)?;
+        Ok(json!({ "task": task_value(store, &id, now)?, "now_ready": completion.now_ready }))
+    })
+    .await
+}
+
+async fn reject_task(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    bytes: Bytes,
+) -> ApiResult {
+    let Notes { notes } = body(&bytes)?;
+    let notes = required(notes, "notes")?;
+    with_store(&state, StatusCode::CONFLICT, move |store, _, now| {
+        store.reject(&id, &notes, now)?;
+        task_value(store, &id, now)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct QuestionFilter {
+    topic: Option<String>,
+    status: Option<QuestionStatus>,
+}
+
+async fn list_questions(
+    State(state): State<Shared>,
+    filter: Result<Query<QuestionFilter>, QueryRejection>,
+) -> ApiResult {
+    let filter = query(filter)?;
+    with_store(&state, StatusCode::BAD_REQUEST, move |store, _, _| {
+        let questions: Vec<_> = store
+            .questions()?
+            .into_iter()
+            .filter(|q| filter.topic.as_ref().is_none_or(|t| &q.topic == t))
+            .filter(|q| filter.status.is_none_or(|s| q.status == s))
+            .collect();
+        Ok(serde_json::to_value(questions)?)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct AnswerBody {
+    answer: Option<String>,
+    spec_file: Option<String>,
+}
+
+async fn answer_question(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    bytes: Bytes,
+) -> ApiResult {
+    let id = question_id(&id)?;
+    let AnswerBody { answer, spec_file } = body(&bytes)?;
+    let answer = required(answer, "answer")?;
+    with_store(&state, StatusCode::CONFLICT, move |store, _, now| {
+        let spec_file = spec_file.filter(|s| !s.trim().is_empty());
+        let q = store.answer(id, &answer, DASHBOARD_SESSION, spec_file.as_deref(), now)?;
+        Ok(serde_json::to_value(q)?)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct ResolveBody {
+    spec_file: Option<String>,
+}
+
+async fn resolve_question(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    bytes: Bytes,
+) -> ApiResult {
+    let id = question_id(&id)?;
+    let ResolveBody { spec_file } = body(&bytes)?;
+    with_store(&state, StatusCode::CONFLICT, move |store, _, now| {
+        let spec_file = spec_file.filter(|s| !s.trim().is_empty());
+        Ok(serde_json::to_value(store.resolve(
+            id,
+            spec_file.as_deref(),
+            now,
+        )?)?)
+    })
+    .await
+}
+
+async fn show_overlaps(State(state): State<Shared>) -> ApiResult {
+    with_store(&state, StatusCode::BAD_REQUEST, move |store, _, now| {
+        Ok(serde_json::to_value(overlap::analyze(&store.tasks(now)?))?)
     })
     .await
 }
