@@ -423,3 +423,33 @@ fn edit_of_started_tasks_needs_force() {
     store.claim("B", "s2", MIN, 7).unwrap();
     store.edit_task("B", retitle(), false, 7 + 2 * MIN).unwrap();
 }
+
+#[test]
+fn ask_once_keeps_one_open_question_per_session_and_topic() {
+    let (_dir, mut store) = open();
+    let first = store
+        .ask_once("overlap:E-2", "Continue?", "engine-1", 1)
+        .unwrap();
+    let again = store
+        .ask_once("overlap:E-2", "Continue now?", "engine-1", 2)
+        .unwrap();
+    assert_eq!(again.id, first.id, "the open question is reused");
+    assert_eq!(again.question, "Continue?");
+
+    let other = store
+        .ask_once("overlap:E-2", "Continue?", "engine-2", 3)
+        .unwrap();
+    assert_ne!(other.id, first.id, "another session gets its own question");
+
+    store
+        .answer(first.id, "Go ahead.", "lead-1", None, 4)
+        .unwrap();
+    let after_answer = store
+        .ask_once("overlap:E-2", "Continue?", "engine-1", 5)
+        .unwrap();
+    assert_ne!(
+        after_answer.id, first.id,
+        "an answered question does not swallow a new claim"
+    );
+    assert_eq!(store.questions().unwrap().len(), 3);
+}

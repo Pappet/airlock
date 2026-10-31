@@ -4,7 +4,7 @@
 //! optionally to one role. Sessions bound to a clean-room role see a reduced
 //! tool set restricted to their own role's tasks and their own questions.
 
-use crate::app::{TaskView, done_ids, ensure_role, next_ready, project_root, unix_now};
+use crate::app::{TaskView, claim, done_ids, ensure_role, next_ready, project_root, unix_now};
 use crate::briefing::{self, Briefing, Via, WorkPackage};
 use crate::core::{QuestionStatus, Task, dependents};
 use crate::hub::{Hub, Project};
@@ -233,7 +233,7 @@ impl Server {
             "task_next" => {
                 let role = self.role_arg(args)?;
                 let tasks = self.store.tasks(now)?;
-                Ok(json!({ "task": next_ready(&tasks, &role).map(|v| WorkPackage::from(v.task)) }))
+                Ok(json!({ "task": next_ready(&tasks, &role).map(|v| WorkPackage::from(&v)) }))
             }
             "task_get" => {
                 let id = str_arg(args, "task_id")?;
@@ -261,12 +261,22 @@ impl Server {
                     opt_u32(args, "lease_minutes")?.unwrap_or(self.project.config.lease_minutes);
                 ensure!(minutes > 0, "lease_minutes must be at least 1");
                 let lease = i64::from(minutes) * 60;
-                let task = if name == "task_claim" {
-                    self.store.claim(&id, &self.session, lease, now)?
-                } else {
-                    self.store.heartbeat(&id, &self.session, lease, now)?
-                };
-                Ok(json!({ "task_id": task.id, "lease_expires_at": task.lease_expires_at }))
+                if name == "task_heartbeat" {
+                    let task = self.store.heartbeat(&id, &self.session, lease, now)?;
+                    return Ok(
+                        json!({ "task_id": task.id, "lease_expires_at": task.lease_expires_at }),
+                    );
+                }
+                let claimed = claim(&mut self.store, &id, &self.session, lease, now)?;
+                let mut result = json!({
+                    "task_id": claimed.task.id,
+                    "lease_expires_at": claimed.task.lease_expires_at,
+                });
+                if let Some(question) = claimed.question_id {
+                    result["overlaps"] = serde_json::to_value(&claimed.overlaps)?;
+                    result["question_id"] = question.into();
+                }
+                Ok(result)
             }
             "task_release" => {
                 let id = str_arg(args, "task_id")?;

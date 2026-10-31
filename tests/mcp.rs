@@ -342,6 +342,72 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
 }
 
 #[test]
+fn overlapping_work_warns_and_asks_the_lead() {
+    let env = Env::new();
+    for (id, priority) in [("E-5", "0"), ("E-6", "9")] {
+        env.cli(&[
+            "task",
+            "add",
+            id,
+            "Sim",
+            "--role",
+            "engine",
+            "--do",
+            "x",
+            "--verify",
+            "y",
+            "--touch",
+            "src/sim.rs",
+            "--priority",
+            priority,
+        ]);
+    }
+    env.cli(&["--session", "engine-2", "task", "claim", "E-5"]);
+
+    // E-6 outranks E-1 but shares the occupied src/sim.rs; E-1 has no touch
+    // data, so its overlap is unknown and it is not held back.
+    let first = env.session(
+        &["--role", "engine", "--session", "engine-1"],
+        &[call(1, "task_next", json!({}))],
+    );
+    assert_eq!(first.ok(1)["task"]["id"], "E-1");
+    assert!(first.ok(1)["task"].get("overlaps").is_none());
+
+    env.cli(&["--session", "engine-3", "task", "claim", "E-1"]);
+    let s = env.session(
+        &["--role", "engine", "--session", "engine-1"],
+        &[
+            call(1, "session_start", json!({})),
+            call(2, "task_next", json!({})),
+            call(3, "task_claim", json!({ "task_id": "E-6" })),
+            call(4, "question_list", json!({})),
+        ],
+    );
+    let brief = &s.get(1)["result"];
+    assert_eq!(
+        brief["structuredContent"]["next"]["overlaps"][0]["id"],
+        "E-5"
+    );
+    let text = brief["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("src/sim.rs with E-5"), "{text}");
+    let next = &s.ok(2)["task"];
+    assert_eq!(next["id"], "E-6", "nothing clean left: E-6 anyway");
+    assert_eq!(next["overlaps"][0]["paths"], json!(["src/sim.rs"]));
+
+    let claimed = s.ok(3);
+    assert_eq!(claimed["overlaps"][0]["id"], "E-5");
+    let question_id = claimed["question_id"].as_u64().unwrap();
+    let questions = s.ok(4)["questions"].as_array().unwrap().clone();
+    assert_eq!(
+        questions.len(),
+        1,
+        "the clean-room session sees its overlap question"
+    );
+    assert_eq!(questions[0]["id"].as_u64(), Some(question_id));
+    assert_eq!(questions[0]["topic"], "overlap:E-6");
+}
+
+#[test]
 fn clean_room_session_gets_a_restricted_tool_set() {
     let env = Env::new();
     env.cli(&[

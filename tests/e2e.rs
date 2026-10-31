@@ -241,6 +241,84 @@ fn task_edit_changes_content_and_guards_started_tasks() {
 }
 
 #[test]
+fn overlapping_work_is_handed_out_last_and_claims_ask_the_lead() {
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    add(&env, &project, "E-1", &["--touch", "src/sim.rs"]);
+    add(
+        &env,
+        &project,
+        "E-2",
+        &["--touch", "./src/sim.rs", "--priority", "9"],
+    );
+    add(&env, &project, "E-3", &["--touch", "src/other.rs"]);
+    env.ok(&project, &["--session", "engine-2", "task", "claim", "E-1"]);
+
+    // E-2 has the higher priority but touches the occupied src/sim.rs.
+    let next = env.json(&project, &["task", "next", "--role", "engine"]);
+    assert_eq!(next["id"], "E-3");
+    assert!(next.get("overlaps").is_none(), "no warning for clean work");
+
+    let clean = env.json(&project, &["--session", "engine-3", "task", "claim", "E-3"]);
+    assert!(clean.get("overlaps").is_none() && clean.get("question_id").is_none());
+    let out = env.run(&project, &["task", "next", "--role", "engine"]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("E-2"),
+        "nothing clean left: E-2 anyway"
+    );
+    let warning = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        warning.contains("warning: E-2") && warning.contains("src/sim.rs with E-1"),
+        "{warning}"
+    );
+
+    let claimed = env.json(&project, &["--session", "engine-1", "task", "claim", "E-2"]);
+    assert_eq!(claimed["overlaps"][0]["id"], "E-1");
+    assert_eq!(
+        claimed["overlaps"][0]["paths"],
+        serde_json::json!(["src/sim.rs"])
+    );
+    let question_id = claimed["question_id"]
+        .as_u64()
+        .expect("question for the lead");
+    let questions = env.json(&project, &["question", "list", "--status", "open"]);
+    let q = &questions[0];
+    assert_eq!(q["id"].as_u64(), Some(question_id));
+    assert_eq!(
+        (q["topic"].as_str(), q["asked_by"].as_str()),
+        (Some("overlap:E-2"), Some("engine-1"))
+    );
+    let text = q["question"].as_str().unwrap();
+    assert!(
+        text.contains("engine-1 claimed E-2")
+            && text.contains("src/sim.rs (E-1, in_progress by engine-2)")
+            && text.contains("release E-2"),
+        "{text}"
+    );
+
+    // Claiming again keeps the one open question.
+    env.ok(
+        &project,
+        &["--session", "engine-1", "task", "release", "E-2"],
+    );
+    let out = env.run(&project, &["--session", "engine-1", "task", "claim", "E-2"]);
+    let warning = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        warning.contains(&format!("question #{question_id}")),
+        "{warning}"
+    );
+    assert_eq!(
+        env.json(&project, &["question", "list"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn session_defaults_to_environment() {
     let env = Env::new();
     let project = env.dir("project");

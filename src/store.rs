@@ -523,6 +523,39 @@ impl Store {
         Ok(question)
     }
 
+    /// Asks unless `session` already has an open question on `topic`, in which
+    /// case that question is returned unchanged.
+    pub fn ask_once(
+        &mut self,
+        topic: &str,
+        question: &str,
+        session: &str,
+        now: i64,
+    ) -> Result<Question> {
+        let tx = self.write(now)?;
+        let open: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM questions WHERE topic = ?1 AND asked_by = ?2 AND status = 'open'
+                  ORDER BY id LIMIT 1",
+                params![topic, session],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let id = match open {
+            Some(id) => u64::try_from(id)?,
+            None => {
+                tx.execute(
+                    "INSERT INTO questions (topic, asked_by, question, status, created_at) VALUES (?1, ?2, ?3, 'open', ?4)",
+                    params![topic, session, question, now],
+                )?;
+                u64::try_from(tx.last_insert_rowid())?
+            }
+        };
+        let question = load_question(&tx, id)?;
+        tx.commit()?;
+        Ok(question)
+    }
+
     pub fn answer(
         &mut self,
         id: u64,

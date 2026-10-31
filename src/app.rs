@@ -3,6 +3,7 @@
 use crate::cli::{Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec};
 use crate::core::{Question, Task, TaskState, TaskStatus, dependents};
 use crate::hub::{Binding, Hub, MARKER_FILE, Project, binding_key};
+use crate::overlap::{self, Overlap};
 use crate::store::{Completion, NewTask, Store, TaskEdit};
 use crate::{briefing, doctor, init, mcp, setup, sync, web};
 use anyhow::{Context, Result, bail, ensure};
@@ -358,6 +359,13 @@ fn task(
             let tasks = store.tasks(now)?;
             let next = next_ready(&tasks, &role)
                 .with_context(|| format!("no ready task for role `{role}`"))?;
+            if !next.overlaps.is_empty() {
+                eprintln!(
+                    "warning: {} touches files of unfinished work: {}; no ready task of role `{role}` is free of overlap. Claiming it records a question for the lead.",
+                    next.task.id,
+                    overlap::describe(&next.overlaps)
+                );
+            }
             out.print(&next, || work_package(&next))
         }
         TaskCommand::Show { id } => {
@@ -398,8 +406,23 @@ fn task(
             })
         }
         TaskCommand::Claim { id, lease } => {
-            let task = store.claim(&id, session, lease_secs(lease)?, now)?;
-            print_lease(out, &task, "Claimed", now)
+            let claimed = claim(store, &id, session, lease_secs(lease)?, now)?;
+            if let Some(question) = claimed.question_id {
+                eprintln!(
+                    "warning: {id} touches files of unfinished work: {}; recorded as question #{question} for the lead",
+                    overlap::describe(&claimed.overlaps)
+                );
+            }
+            let task = &claimed.task;
+            let until = task
+                .lease_expires_at
+                .context("claimed task without lease")?;
+            let mut value = json!({ "task_id": task.id, "lease_expires_at": until });
+            if let Some(question) = claimed.question_id {
+                value["overlaps"] = serde_json::to_value(&claimed.overlaps)?;
+                value["question_id"] = question.into();
+            }
+            out.print(&value, || lease_text(task, "Claimed", now))
         }
         TaskCommand::Heartbeat { id, lease } => {
             let task = store.heartbeat(&id, session, lease_secs(lease)?, now)?;
@@ -475,6 +498,9 @@ pub(crate) struct TaskView<'a> {
     pub status: TaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dependents: Option<Vec<String>>,
+    /// Shared files with occupying tasks, set by `task next` when no clean task is left
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overlaps: Vec<Overlap>,
 }
 
 impl<'a> TaskView<'a> {
@@ -483,6 +509,7 @@ impl<'a> TaskView<'a> {
             task,
             status: task.status(|id| done.contains(id)),
             dependents: None,
+            overlaps: Vec::new(),
         }
     }
 }
@@ -509,14 +536,16 @@ fn print_lease(out: &Output, task: &Task, verb: &str, now: i64) -> Result<()> {
         .context("claimed task without lease")?;
     out.print(
         &json!({ "task_id": task.id, "lease_expires_at": until }),
-        || {
-            let minutes = task.lease_minutes_left(now).unwrap_or(0);
-            format!(
-                "{verb} {} for {} (lease: {minutes} min)",
-                task.id,
-                task.claimed_by.as_deref().unwrap_or("?")
-            )
-        },
+        || lease_text(task, verb, now),
+    )
+}
+
+fn lease_text(task: &Task, verb: &str, now: i64) -> String {
+    let minutes = task.lease_minutes_left(now).unwrap_or(0);
+    format!(
+        "{verb} {} for {} (lease: {minutes} min)",
+        task.id,
+        task.claimed_by.as_deref().unwrap_or("?")
     )
 }
 
@@ -569,20 +598,93 @@ fn task_edit(spec: TaskEditSpec) -> TaskEdit {
     }
 }
 
-/// The next ready task of `role`: highest priority first, then oldest, then by id (Spec 01 §2.1).
+/// The next ready task of `role`: highest priority first, then oldest, then by
+/// id, skipping tasks that share files with occupying tasks. When every ready
+/// task does, the first is returned with its `overlaps` (Spec 01 §2.1).
 pub(crate) fn next_ready<'a>(tasks: &'a [Task], role: &str) -> Option<TaskView<'a>> {
     let done = done_ids(tasks);
-    tasks
+    let mut ready: Vec<TaskView<'a>> = tasks
         .iter()
         .map(|t| TaskView::new(t, &done))
         .filter(|v| v.task.role == role && v.status == TaskStatus::Ready)
-        .min_by(|a, b| {
-            b.task
-                .priority
-                .cmp(&a.task.priority)
-                .then(a.task.created_at.cmp(&b.task.created_at))
-                .then(a.task.id.cmp(&b.task.id))
+        .collect();
+    ready.sort_by(|a, b| {
+        b.task
+            .priority
+            .cmp(&a.task.priority)
+            .then(a.task.created_at.cmp(&b.task.created_at))
+            .then(a.task.id.cmp(&b.task.id))
+    });
+    let analysis = overlap::analyze(tasks);
+    for view in &mut ready {
+        view.overlaps = analysis.conflicts(&view.task.id);
+    }
+    let clean = ready
+        .iter()
+        .position(|v| v.overlaps.is_empty())
+        .unwrap_or(0);
+    (!ready.is_empty()).then(|| ready.swap_remove(clean))
+}
+
+/// A claimed task and the files it shares with occupying tasks.
+pub(crate) struct Claimed {
+    pub task: Task,
+    pub overlaps: Vec<Overlap>,
+    /// The open overlap question for the lead, if there is an overlap
+    pub question_id: Option<u64>,
+}
+
+/// Claims a task; an overlap with occupying tasks never blocks the claim but
+/// records a question so the lead can check it (Spec 01 §2.1).
+pub(crate) fn claim(
+    store: &mut Store,
+    id: &str,
+    session: &str,
+    lease_secs: i64,
+    now: i64,
+) -> Result<Claimed> {
+    let task = store.claim(id, session, lease_secs, now)?;
+    let tasks = store.tasks(now)?;
+    let analysis = overlap::analyze(&tasks);
+    let overlaps = analysis.conflicts(id);
+    if overlaps.is_empty() {
+        return Ok(Claimed {
+            task,
+            overlaps,
+            question_id: None,
+        });
+    }
+    let held: Vec<String> = overlaps
+        .iter()
+        .map(|o| {
+            let status = analysis
+                .tasks
+                .iter()
+                .find(|t| t.id == o.id)
+                .map_or("open", |t| t.status.as_str());
+            let holder = tasks
+                .iter()
+                .find(|t| t.id == o.id)
+                .and_then(|t| t.claimed_by.as_deref())
+                .map(|s| format!(" by {s}"))
+                .unwrap_or_default();
+            format!("{} ({}, {status}{holder})", o.paths.join(", "), o.id)
         })
+        .collect();
+    let question = store.ask_once(
+        &format!("overlap:{id}"),
+        &format!(
+            "{session} claimed {id} although it touches files of unfinished work: {}. Continue, or release {id}?",
+            held.join("; ")
+        ),
+        session,
+        now,
+    )?;
+    Ok(Claimed {
+        task,
+        overlaps,
+        question_id: Some(question.id),
+    })
 }
 
 pub(crate) fn ensure_role(project: &Project, role: &str) -> Result<()> {
