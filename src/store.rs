@@ -7,7 +7,8 @@
 //! seconds) so behavior is testable without a clock.
 
 use crate::core::{
-    Question, QuestionStatus, Task, TaskState, TaskStatus, check_task_id, dependents,
+    Question, QuestionStatus, Task, TaskState, TaskStatus, check_dependencies, check_task_id,
+    dependents,
 };
 use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
@@ -99,6 +100,34 @@ pub struct NewTask {
     pub touch: Vec<String>,
     pub r#do: String,
     pub verify: String,
+}
+
+/// Changes to an existing task; `None` keeps the field, a list replaces it.
+/// A new content field must also go into `cli::TaskEditSpec`, the MCP
+/// `task_update` tool, the REST `EditTask` body, and Specs 02–04.
+#[derive(Debug, Clone, Default)]
+pub struct TaskEdit {
+    pub title: Option<String>,
+    pub role: Option<String>,
+    pub priority: Option<i32>,
+    pub blocked_by: Option<Vec<String>>,
+    pub read: Option<Vec<String>>,
+    pub touch: Option<Vec<String>>,
+    pub r#do: Option<String>,
+    pub verify: Option<String>,
+}
+
+impl TaskEdit {
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.role.is_none()
+            && self.priority.is_none()
+            && self.blocked_by.is_none()
+            && self.read.is_none()
+            && self.touch.is_none()
+            && self.r#do.is_none()
+            && self.verify.is_none()
+    }
 }
 
 /// Result of finishing a task.
@@ -237,6 +266,87 @@ impl Store {
         let task = load_task(&tx, &new.id)?;
         tx.commit()?;
         Ok(task)
+    }
+
+    /// Changes the content of a task. Tasks past `open` are only changed with
+    /// `force`, since a session may be working from the old content; state,
+    /// claim, lease, and notes are never touched.
+    pub fn edit_task(&mut self, id: &str, edit: TaskEdit, force: bool, now: i64) -> Result<Task> {
+        ensure!(!edit.is_empty(), "nothing to change for task `{id}`");
+        let tx = self.write(now)?;
+        let mut tasks = load_tasks(&tx)?;
+        let pos = tasks
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or_else(|| NotFound(format!("no task `{id}`")))?;
+        let state = tasks[pos].state;
+        ensure!(
+            force || state == TaskState::Open,
+            "task `{id}` is {}; use --force to edit it anyway",
+            state.as_str()
+        );
+
+        let task = &mut tasks[pos];
+        if let Some(blocked_by) = edit.blocked_by {
+            let mut seen = HashSet::new();
+            task.blocked_by = blocked_by
+                .into_iter()
+                .filter(|b| seen.insert(b.clone()))
+                .collect();
+        }
+        if let Some(title) = edit.title {
+            task.title = title;
+        }
+        if let Some(role) = edit.role {
+            task.role = role;
+        }
+        if let Some(priority) = edit.priority {
+            task.priority = priority;
+        }
+        if let Some(read) = edit.read {
+            task.read = read;
+        }
+        if let Some(touch) = edit.touch {
+            task.touch = touch;
+        }
+        if let Some(r#do) = edit.r#do {
+            task.r#do = r#do;
+        }
+        if let Some(verify) = edit.verify {
+            task.verify = verify;
+        }
+        check_dependencies(
+            tasks
+                .iter()
+                .map(|t| (t.id.as_str(), t.blocked_by.as_slice())),
+        )?;
+
+        let task = &tasks[pos];
+        let changed = tx.execute(
+            "UPDATE tasks SET title = ?1, role = ?2, priority = ?3, read = ?4, touch = ?5, do = ?6, verify = ?7, updated_at = ?8
+              WHERE id = ?9 AND state = ?10",
+            params![
+                task.title,
+                task.role,
+                task.priority,
+                serde_json::to_string(&task.read)?,
+                serde_json::to_string(&task.touch)?,
+                task.r#do,
+                task.verify,
+                now,
+                id,
+                state.as_str()
+            ],
+        )?;
+        ensure!(changed == 1, "task `{id}` changed concurrently; retry");
+        tx.execute("DELETE FROM task_deps WHERE task_id = ?1", [id])?;
+        for dep in &task.blocked_by {
+            tx.execute(
+                "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",
+                params![id, dep],
+            )?;
+        }
+        commit_task(tx, id)
     }
 
     pub fn claim(&mut self, id: &str, session: &str, lease_secs: i64, now: i64) -> Result<Task> {

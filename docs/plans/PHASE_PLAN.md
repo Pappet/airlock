@@ -51,6 +51,7 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 - [x] Embedded single-page dashboard (assets via `include_str!`): Kanban, review queue, questions inbox, live leases.
 - [x] Overlap analysis over `touch` lists, Stages view and File matrix (Spec 04 §3.5–3.7; design: [`docs/superpowers/specs/2026-10-29-dashboard-design.md`](../superpowers/specs/2026-10-29-dashboard-design.md)).
 - [x] Server-Sent Events driven by `PRAGMA data_version` polling.
+- [x] Task editing: `airlock task edit`, MCP `task_update`, `PATCH /api/tasks/{id}` with whole-graph validation; tasks past `open` only with `--force`.
 - [ ] Overlap warning at claim time: `task next` skips ready tasks whose `touch` overlaps an occupying task, `task claim` (CLI and MCP) warns when such a task is taken anyway. Reuses `overlap::analyze`.
 
 ---

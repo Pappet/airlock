@@ -1,9 +1,9 @@
 //! Command execution: resolves project and session, runs the operation, prints the result.
 
-use crate::cli::{Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskSpec};
+use crate::cli::{Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec};
 use crate::core::{Question, Task, TaskState, TaskStatus, dependents};
 use crate::hub::{Binding, Hub, MARKER_FILE, Project, binding_key};
-use crate::store::{Completion, NewTask, Store};
+use crate::store::{Completion, NewTask, Store, TaskEdit};
 use crate::{briefing, doctor, init, mcp, setup, sync, web};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
@@ -384,6 +384,19 @@ fn task(
                 format!("Added {} ({})", task.id, view.status.as_str())
             })
         }
+        TaskCommand::Edit(spec) => {
+            if let Some(role) = &spec.role {
+                ensure_role(project, role)?;
+            }
+            let id = spec.id.clone();
+            let force = spec.force;
+            let task = store.edit_task(&id, task_edit(spec), force, now)?;
+            let tasks = store.tasks(now)?;
+            let view = TaskView::new(&task, &done_ids(&tasks));
+            out.print(&view, || {
+                format!("Edited {} ({})", task.id, view.status.as_str())
+            })
+        }
         TaskCommand::Claim { id, lease } => {
             let task = store.claim(&id, session, lease_secs(lease)?, now)?;
             print_lease(out, &task, "Claimed", now)
@@ -533,6 +546,24 @@ fn new_task(spec: TaskSpec) -> NewTask {
         blocked_by: spec.blocked_by,
         read: spec.read,
         touch: spec.touch,
+        r#do: spec.r#do,
+        verify: spec.verify,
+    }
+}
+
+/// A list flag replaces the list when given and empties it with its `--clear-*` flag.
+fn replaced(list: Vec<String>, clear: bool) -> Option<Vec<String>> {
+    (clear || !list.is_empty()).then_some(list)
+}
+
+fn task_edit(spec: TaskEditSpec) -> TaskEdit {
+    TaskEdit {
+        title: spec.title,
+        role: spec.role,
+        priority: spec.priority,
+        blocked_by: replaced(spec.blocked_by, spec.clear_blocked_by),
+        read: replaced(spec.read, spec.clear_read),
+        touch: replaced(spec.touch, spec.clear_touch),
         r#do: spec.r#do,
         verify: spec.verify,
     }

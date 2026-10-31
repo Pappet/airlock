@@ -8,7 +8,7 @@ use crate::app::{TaskView, done_ids, ensure_role, next_ready, project_root, unix
 use crate::briefing::{self, Briefing, Via, WorkPackage};
 use crate::core::{QuestionStatus, Task, dependents};
 use crate::hub::{Hub, Project};
-use crate::store::{NewTask, Store};
+use crate::store::{NewTask, Store, TaskEdit};
 use crate::sync;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value, json};
@@ -311,6 +311,29 @@ impl Server {
                     &done_ids(&tasks),
                 ))?)
             }
+            "task_update" => {
+                let id = str_arg(args, "task_id")?;
+                let edit = TaskEdit {
+                    title: opt_str(args, "title")?,
+                    role: opt_str(args, "role")?,
+                    priority: opt_i32(args, "priority")?,
+                    blocked_by: opt_str_list(args, "blocked_by")?,
+                    read: opt_str_list(args, "read")?,
+                    touch: opt_str_list(args, "touch")?,
+                    r#do: opt_str(args, "do")?,
+                    verify: opt_str(args, "verify")?,
+                };
+                if let Some(role) = &edit.role {
+                    ensure_role(&self.project, role)?;
+                }
+                let force = opt_bool(args, "force")?.unwrap_or(false);
+                let task = self.store.edit_task(&id, edit, force, now)?;
+                let tasks = self.store.tasks(now)?;
+                Ok(serde_json::to_value(TaskView::new(
+                    &task,
+                    &done_ids(&tasks),
+                ))?)
+            }
             "question_ask" => {
                 let topic = str_arg(args, "topic")?;
                 let question = str_arg(args, "question")?;
@@ -496,6 +519,23 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
             &["id", "title", "role", "do", "verify"],
         ),
         tool(
+            "task_update",
+            "Change the content of a work package. Omitted fields are kept; a list replaces the old one ([] empties it). Tasks past open need force.",
+            json!({
+                "task_id": task_id,
+                "title": { "type": "string" },
+                "role": { "type": "string" },
+                "do": { "type": "string", "description": "Concrete behavioral instructions" },
+                "verify": { "type": "string", "description": "Test command or scenario proving completion" },
+                "read": strings,
+                "touch": strings,
+                "blocked_by": strings,
+                "priority": { "type": "integer" },
+                "force": { "type": "boolean", "description": "Edit a task that is in progress, in review, or done" },
+            }),
+            &["task_id"],
+        ),
+        tool(
             "question_ask",
             "Ask a behavioral question about a spec instead of guessing. Never include implementation code.",
             json!({
@@ -600,8 +640,12 @@ fn u64_arg(args: &Map<String, Value>, key: &str) -> Result<u64> {
 }
 
 fn str_list(args: &Map<String, Value>, key: &str) -> Result<Vec<String>> {
+    Ok(opt_str_list(args, key)?.unwrap_or_default())
+}
+
+fn opt_str_list(args: &Map<String, Value>, key: &str) -> Result<Option<Vec<String>>> {
     match args.get(key) {
-        None | Some(Value::Null) => Ok(Vec::new()),
+        None | Some(Value::Null) => Ok(None),
         Some(Value::Array(items)) => items
             .iter()
             .map(|i| {
@@ -609,7 +653,8 @@ fn str_list(args: &Map<String, Value>, key: &str) -> Result<Vec<String>> {
                     .map(str::to_string)
                     .with_context(|| format!("`{key}` must contain only strings"))
             })
-            .collect(),
+            .collect::<Result<_>>()
+            .map(Some),
         Some(_) => bail!("argument `{key}` must be an array of strings"),
     }
 }

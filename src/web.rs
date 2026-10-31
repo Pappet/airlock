@@ -3,16 +3,16 @@
 //! The server binds loopback addresses only and guards every request: the
 //! `Host` header must name this server (DNS-rebinding defense), and `/api/*`
 //! additionally needs the bearer token printed at startup, a same-origin or
-//! absent `Origin`, and a JSON body for `POST`. Each request opens its own
-//! [`Store`] on a blocking thread, like any CLI invocation. A watcher thread
-//! polls `PRAGMA data_version` once per second and turns changes into
-//! server-sent events.
+//! absent `Origin`, and a JSON body for every method but `GET` and `HEAD`.
+//! Each request opens its own [`Store`] on a blocking thread, like any CLI
+//! invocation. A watcher thread polls `PRAGMA data_version` once per second
+//! and turns changes into server-sent events.
 
 use crate::app::{TaskView, done_ids, ensure_role, unix_now};
 use crate::core::{QuestionStatus, TaskStatus, dependents};
 use crate::hub::Project;
 use crate::overlap;
-use crate::store::{NewTask, NotFound, Store};
+use crate::store::{NewTask, NotFound, Store, TaskEdit};
 use anyhow::{Context, Result};
 use axum::Router;
 use axum::body::Bytes;
@@ -114,7 +114,7 @@ fn router(state: Shared) -> Router {
         )
         .route("/api/project", get(show_project))
         .route("/api/tasks", get(list_tasks).post(create_task))
-        .route("/api/tasks/{id}", get(show_task))
+        .route("/api/tasks/{id}", get(show_task).patch(edit_task))
         .route("/api/tasks/{id}/release", post(release_task))
         .route("/api/tasks/{id}/approve", post(approve_task))
         .route("/api/tasks/{id}/reject", post(reject_task))
@@ -188,7 +188,7 @@ async fn guard(State(state): State<Shared>, req: Request, next: Next) -> Respons
             .get(header::CONTENT_TYPE)
             .and_then(|h| h.to_str().ok())
             .is_some_and(|t| t.split(';').next() == Some("application/json"));
-        if req.method() == Method::POST && !json {
+        if !matches!(*req.method(), Method::GET | Method::HEAD) && !json {
             return ApiError::new(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "mutating requests must be application/json",
@@ -402,6 +402,53 @@ async fn show_task(State(state): State<Shared>, Path(id): Path<String>) -> ApiRe
                 .collect(),
         );
         Ok(serde_json::to_value(view)?)
+    })
+    .await
+}
+
+/// Body of `PATCH /api/tasks/{id}`, with the parameter names of MCP `task_update`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EditTask {
+    title: Option<String>,
+    role: Option<String>,
+    priority: Option<i32>,
+    blocked_by: Option<Vec<String>>,
+    read: Option<Vec<String>>,
+    touch: Option<Vec<String>>,
+    r#do: Option<String>,
+    verify: Option<String>,
+    #[serde(default)]
+    force: bool,
+}
+
+async fn edit_task(State(state): State<Shared>, Path(id): Path<String>, bytes: Bytes) -> ApiResult {
+    let body: EditTask = body(&bytes)?;
+    let edit = TaskEdit {
+        title: body.title,
+        role: body.role,
+        priority: body.priority,
+        blocked_by: body.blocked_by,
+        read: body.read,
+        touch: body.touch,
+        r#do: body.r#do,
+        verify: body.verify,
+    };
+    if edit.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("nothing to change for task `{id}`"),
+        ));
+    }
+    if let Some(role) = &edit.role {
+        ensure_role(&state.project, role)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    }
+    // Remaining refusals conflict with stored state: a started task, an
+    // unknown prerequisite, or a cycle.
+    with_store(&state, StatusCode::CONFLICT, move |store, _, now| {
+        store.edit_task(&id, edit, body.force, now)?;
+        task_value(store, &id, now)
     })
     .await
 }

@@ -134,13 +134,13 @@ impl Server {
         }
     }
 
-    /// An authorized API request with a JSON body for `POST`.
+    /// An authorized API request with a JSON body for `POST` and `PATCH`.
     fn api(&self, method: &str, path: &str, body: Option<Value>) -> Response {
         let auth = format!("Bearer {}", self.token);
         let host = self.host();
         let mut headers = vec![("Host", host.as_str()), ("Authorization", auth.as_str())];
         let body = body.map(|b| b.to_string()).unwrap_or_default();
-        if method == "POST" {
+        if method == "POST" || method == "PATCH" {
             headers.push(("Content-Type", "application/json"));
         }
         self.raw(method, path, &headers, &body)
@@ -250,6 +250,22 @@ fn post_requires_json() {
         "{}",
     );
     assert_eq!(r.status, 415);
+}
+
+#[test]
+fn patch_requires_json() {
+    let s = Server::start();
+    add_task(&s, "A", &[]);
+    let auth = format!("Bearer {}", s.token);
+    let host = s.host();
+    let r = s.raw(
+        "PATCH",
+        "/api/tasks/A",
+        &[("Host", &host), ("Authorization", &auth)],
+        r#"{"title":"x"}"#,
+    );
+    assert_eq!(r.status, 415);
+    assert_eq!(s.api("GET", "/api/tasks/A", None).json()["title"], "Title");
 }
 
 #[test]
@@ -415,6 +431,68 @@ fn approve_and_reject_flow() {
     assert_eq!(rejected.status, 200, "{}", rejected.body);
     assert_eq!(rejected.json()["status"], "ready");
     assert_eq!(rejected.json()["notes"], "missing test");
+}
+
+#[test]
+fn patch_edits_task_content() {
+    let s = Server::start();
+    add_task(&s, "A", &["src/a.rs"]);
+    add_task(&s, "B", &[]);
+    let r = s.api(
+        "PATCH",
+        "/api/tasks/B",
+        Some(serde_json::json!({ "title": "Beta", "blocked_by": ["A"], "touch": ["src/b.rs"] })),
+    );
+    assert_eq!(r.status, 200, "{}", r.body);
+    let b = r.json();
+    assert_eq!(
+        (b["title"].as_str(), b["status"].as_str()),
+        (Some("Beta"), Some("blocked"))
+    );
+    assert_eq!(b["touch"], serde_json::json!(["src/b.rs"]));
+    assert_eq!(b["do"], "Do it", "omitted fields are kept");
+
+    for body in [
+        serde_json::json!({}),
+        serde_json::json!({ "role": "nope" }),
+        serde_json::json!({ "state": "done" }),
+    ] {
+        let r = s.api("PATCH", "/api/tasks/B", Some(body.clone()));
+        assert_eq!(r.status, 400, "{body}: {}", r.body);
+    }
+    let cycle = s.api(
+        "PATCH",
+        "/api/tasks/A",
+        Some(serde_json::json!({ "blocked_by": ["B"] })),
+    );
+    assert_eq!(cycle.status, 409, "{}", cycle.body);
+    assert!(
+        cycle.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("dependency cycle")
+    );
+    let missing = s.api(
+        "PATCH",
+        "/api/tasks/nope",
+        Some(serde_json::json!({ "title": "x" })),
+    );
+    assert_eq!(missing.status, 404);
+
+    s.cli(&["--session", "s1", "task", "claim", "A"]);
+    let started = s.api(
+        "PATCH",
+        "/api/tasks/A",
+        Some(serde_json::json!({ "title": "x" })),
+    );
+    assert_eq!(started.status, 409, "{}", started.body);
+    let forced = s.api(
+        "PATCH",
+        "/api/tasks/A",
+        Some(serde_json::json!({ "title": "x", "force": true })),
+    );
+    assert_eq!(forced.status, 200, "{}", forced.body);
+    assert_eq!(forced.json()["claimed_by"], "s1");
 }
 
 #[test]

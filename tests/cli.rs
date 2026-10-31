@@ -48,6 +48,52 @@ fn task_add_accepts_repeated_and_comma_separated_lists() {
 }
 
 #[test]
+fn task_edit_takes_optional_fields_and_clear_flags() {
+    let cli = parse(&[
+        "task",
+        "edit",
+        "E-6d",
+        "--title",
+        "Missiles",
+        "--touch",
+        "src/a.rs",
+        "--touch",
+        "src/b.rs",
+        "--blocked-by",
+        "L-1,L-2",
+        "--clear-read",
+        "--priority",
+        "-2",
+        "--force",
+    ]);
+    let Command::Task(TaskCommand::Edit(edit)) = cli.command else {
+        panic!("wrong command");
+    };
+    assert_eq!(edit.id, "E-6d");
+    assert_eq!(edit.title.as_deref(), Some("Missiles"));
+    assert_eq!(edit.touch, ["src/a.rs", "src/b.rs"]);
+    assert_eq!(edit.blocked_by, ["L-1", "L-2"]);
+    assert!(edit.clear_read && !edit.clear_touch && !edit.clear_blocked_by);
+    assert_eq!(edit.priority, Some(-2));
+    assert_eq!(edit.role, None);
+    assert!(edit.force);
+
+    let conflict = Cli::try_parse_from([
+        "airlock",
+        "task",
+        "edit",
+        "E-6d",
+        "--read",
+        "a",
+        "--clear-read",
+    ]);
+    assert!(
+        conflict.is_err(),
+        "a list cannot be replaced and cleared at once"
+    );
+}
+
+#[test]
 fn global_flags_work_after_the_subcommand() {
     let cli = parse(&[
         "task",

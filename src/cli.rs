@@ -140,6 +140,8 @@ pub enum TaskCommand {
     Show { id: String },
     /// Create a work package
     Add(TaskSpec),
+    /// Change the content of a work package
+    Edit(TaskEditSpec),
     /// Claim a ready task and start a lease
     Claim {
         id: String,
@@ -221,6 +223,45 @@ pub enum Harness {
     Dsh,
 }
 
+/// Changes to an existing work package; omitted fields keep their values.
+#[derive(Debug, Args)]
+pub struct TaskEditSpec {
+    pub id: String,
+    #[arg(long)]
+    pub title: Option<String>,
+    #[arg(long)]
+    pub role: Option<String>,
+    #[arg(long, allow_negative_numbers = true)]
+    pub priority: Option<i32>,
+    /// Spec or documentation file to read (repeatable; replaces the list)
+    #[arg(long)]
+    pub read: Vec<String>,
+    /// Empty the reading list
+    #[arg(long, conflicts_with = "read")]
+    pub clear_read: bool,
+    /// File the task may create or modify (repeatable; replaces the list)
+    #[arg(long)]
+    pub touch: Vec<String>,
+    /// Empty the touch list
+    #[arg(long, conflicts_with = "touch")]
+    pub clear_touch: bool,
+    /// Concrete behavioral instructions
+    #[arg(long = "do", value_name = "INSTRUCTIONS")]
+    pub r#do: Option<String>,
+    /// Verification command or scenario (never executed by Airlock)
+    #[arg(long)]
+    pub verify: Option<String>,
+    /// Prerequisite task ids, comma-separated; replaces the list
+    #[arg(long, value_delimiter = ',')]
+    pub blocked_by: Vec<String>,
+    /// Remove all prerequisites
+    #[arg(long, conflicts_with = "blocked_by")]
+    pub clear_blocked_by: bool,
+    /// Edit a task that is in progress, in review, or done
+    #[arg(long)]
+    pub force: bool,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum RoleCommand {
     /// List roles
@@ -296,6 +337,7 @@ impl Command {
                 TaskCommand::Next { .. } => "task next",
                 TaskCommand::Show { .. } => "task show",
                 TaskCommand::Add(_) => "task add",
+                TaskCommand::Edit(_) => "task edit",
                 TaskCommand::Claim { .. } => "task claim",
                 TaskCommand::Heartbeat { .. } => "task heartbeat",
                 TaskCommand::Release { .. } => "task release",

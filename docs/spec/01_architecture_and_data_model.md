@@ -74,6 +74,7 @@ stateDiagram-v2
 | Transition | CLI | MCP | Who |
 |---|---|---|---|
 | create | `task add` | `task_create` | any non-clean-room session |
+| edit content | `task edit [--force]` | `task_update` | any non-clean-room session; tasks past `open` only with `--force` |
 | claim | `task claim` | `task_claim` | any session; task must be `ready`, or `in_progress` with an expired lease |
 | renew lease | `task heartbeat` | `task_heartbeat` | lease holder |
 | release | `task release` | `task_release` | lease holder; others with `--force` |
@@ -81,12 +82,14 @@ stateDiagram-v2
 | approve | `task approve` | — | human / lead (CLI, dashboard) |
 | reject | `task reject --notes` | — | human / lead (CLI, dashboard) |
 
+Editing changes only the content fields (`title`, `role`, `priority`, `blocked_by`, `read`, `touch`, `do`, `verify`) and is not a transition: state, claim, lease, and `notes` stay as they are, and the id never changes. A task that is `in_progress`, `in_review`, or `done` is edited only with `--force`, since a session may be working from the old content.
+
 Leaving `in_progress` always clears `claimed_by` and `lease_expires_at`. `done` is terminal; there is no reopen in v0.x — create a follow-up task instead.
 
 #### Dependency Rules
 
 - Every `blocked_by` id must name an existing task when the task is created. Tasks are therefore added in dependency order, which makes cycles impossible on `add`.
-- Any operation that changes `blocked_by` on existing tasks (a future `task edit`, `airlock import`) must validate the whole graph: unique ids, known prerequisites, no cycles (`core::check_dependencies`).
+- Any operation that changes `blocked_by` on existing tasks (`task edit`, `airlock import`) must validate the whole graph: unique ids, known prerequisites, no cycles (`core::check_dependencies`).
 - Completing a task needs no extra bookkeeping: dependents become `ready` by derivation. `task done` reports which dependents became ready as a result.
 
 #### Selection Order for `task next`
