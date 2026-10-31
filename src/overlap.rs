@@ -216,6 +216,7 @@ mod tests {
             role: "engine".to_string(),
             state,
             priority: Priority::Normal,
+            track: None,
             blocked_by: blocked_by.iter().map(|s| s.to_string()).collect(),
             read: Vec::new(),
             touch: touch.iter().map(|s| s.to_string()).collect(),

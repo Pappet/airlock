@@ -159,6 +159,19 @@ impl std::str::FromStr for Priority {
     }
 }
 
+/// A named line of work with its own priority; tasks may belong to one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Track {
+    /// Unique name: letters, digits, `-`, `_`; case is preserved
+    pub name: String,
+    pub priority: Priority,
+    pub description: String,
+    /// Unix timestamp (seconds) of creation
+    pub created_at: i64,
+    /// Unix timestamp (seconds) of the last modification
+    pub updated_at: i64,
+}
+
 /// A structured work package.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
@@ -173,6 +186,9 @@ pub struct Task {
     /// Higher priorities are handed out first by `task next`
     #[serde(default)]
     pub priority: Priority,
+    /// The track this task belongs to, if any
+    #[serde(default)]
+    pub track: Option<String>,
     /// Prerequisites that must be `Done` before this task is ready
     #[serde(default)]
     pub blocked_by: Vec<String>,
@@ -234,6 +250,21 @@ pub fn check_task_id(id: &str) -> Result<(), String> {
     } else {
         Err(format!(
             "invalid task id `{id}`: use letters, digits, `-`, `_`, or `.`"
+        ))
+    }
+}
+
+/// Checks a track name: non-empty ASCII letters, digits, `-`, or `_`.
+pub fn check_track_name(name: &str) -> Result<(), String> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid track name `{name}`: use letters, digits, `-`, or `_`"
         ))
     }
 }

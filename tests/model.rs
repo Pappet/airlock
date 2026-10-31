@@ -4,7 +4,8 @@ mod common;
 
 use airlock::config::ProjectConfig;
 use airlock::core::{
-    GraphError, Priority, TaskState, TaskStatus, check_dependencies, dependents, task_number,
+    GraphError, Priority, TaskState, TaskStatus, check_dependencies, check_track_name, dependents,
+    task_number,
 };
 use common::task;
 
@@ -282,4 +283,18 @@ fn priority_orders_and_parses() {
         [0, 1, 2, 3]
     );
     assert_eq!(Priority::from_rank(4), None);
+}
+
+#[test]
+fn track_names_use_the_role_name_alphabet() {
+    for ok in ["core", "comfort-2", "Engine_UI"] {
+        assert!(check_track_name(ok).is_ok(), "{ok}");
+    }
+    for bad in ["", "a b", "ä", "a.b"] {
+        let message = check_track_name(bad).unwrap_err();
+        assert_eq!(
+            message,
+            format!("invalid track name `{bad}`: use letters, digits, `-`, or `_`")
+        );
+    }
 }

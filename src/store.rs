@@ -7,8 +7,8 @@
 //! seconds) so behavior is testable without a clock.
 
 use crate::core::{
-    Priority, Question, QuestionStatus, Task, TaskState, TaskStatus, check_dependencies,
-    check_task_prefix, dependents, task_number,
+    Priority, Question, QuestionStatus, Task, TaskState, TaskStatus, Track, check_dependencies,
+    check_task_prefix, check_track_name, dependents, task_number,
 };
 use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
@@ -96,8 +96,11 @@ const SELECT_TASKS: &str = "
 SELECT id, title, role, state, priority,
        (SELECT json_group_array(blocked_by)
           FROM (SELECT blocked_by FROM task_deps WHERE task_id = t.id ORDER BY rowid)),
-       read, touch, do, verify, notes, claimed_by, lease_expires_at, created_at, updated_at
+       read, touch, do, verify, notes, claimed_by, lease_expires_at, created_at, updated_at, track
   FROM tasks t";
+
+const SELECT_TRACKS: &str =
+    "SELECT name, priority, description, created_at, updated_at FROM tracks";
 
 const SELECT_QUESTIONS: &str = "
 SELECT id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at
@@ -112,6 +115,8 @@ pub struct NewTask {
     pub title: String,
     pub role: String,
     pub priority: Priority,
+    /// Must name a defined track
+    pub track: Option<String>,
     pub blocked_by: Vec<String>,
     pub read: Vec<String>,
     pub touch: Vec<String>,
@@ -120,6 +125,7 @@ pub struct NewTask {
 }
 
 /// Changes to an existing task; `None` keeps the field, a list replaces it.
+/// `track` is doubly optional: `Some(None)` clears it.
 /// A new content field must also go into `cli::TaskEditSpec`, the MCP
 /// `task_update` tool, the REST `EditTask` body, and Specs 02–04.
 #[derive(Debug, Clone, Default)]
@@ -127,6 +133,7 @@ pub struct TaskEdit {
     pub title: Option<String>,
     pub role: Option<String>,
     pub priority: Option<Priority>,
+    pub track: Option<Option<String>>,
     pub blocked_by: Option<Vec<String>>,
     pub read: Option<Vec<String>>,
     pub touch: Option<Vec<String>>,
@@ -139,12 +146,21 @@ impl TaskEdit {
         self.title.is_none()
             && self.role.is_none()
             && self.priority.is_none()
+            && self.track.is_none()
             && self.blocked_by.is_none()
             && self.read.is_none()
             && self.touch.is_none()
             && self.r#do.is_none()
             && self.verify.is_none()
     }
+}
+
+/// Changes to an existing track; `None` keeps the field.
+#[derive(Debug, Clone, Default)]
+pub struct TrackEdit {
+    pub name: Option<String>,
+    pub priority: Option<Priority>,
+    pub description: Option<String>,
 }
 
 /// Result of finishing a task.
@@ -238,9 +254,95 @@ impl Store {
         load_question(&self.conn, id)
     }
 
+    /// All tracks, highest priority first, then by name.
+    pub fn tracks(&self) -> Result<Vec<Track>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("{SELECT_TRACKS} ORDER BY priority DESC, name"))?;
+        let rows = stmt.query_map([], track_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn track(&self, name: &str) -> Result<Track> {
+        load_track(&self.conn, name)
+    }
+
+    pub fn add_track(
+        &mut self,
+        name: &str,
+        priority: Priority,
+        description: &str,
+        now: i64,
+    ) -> Result<Track> {
+        check_track_name(name).map_err(anyhow::Error::msg)?;
+        let tx = self.write(now)?;
+        ensure!(!track_exists(&tx, name)?, "track `{name}` already exists");
+        tx.execute(
+            "INSERT INTO tracks (name, priority, description, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![name, priority.rank(), description, now],
+        )?;
+        let track = load_track(&tx, name)?;
+        tx.commit()?;
+        Ok(track)
+    }
+
+    /// Renames, reprioritizes, or redescribes a track. A rename moves the
+    /// track's tasks along (`ON UPDATE CASCADE`) without touching their
+    /// `updated_at`.
+    pub fn edit_track(&mut self, name: &str, edit: TrackEdit, now: i64) -> Result<Track> {
+        ensure!(
+            edit.name.is_some() || edit.priority.is_some() || edit.description.is_some(),
+            "nothing to change for track `{name}`"
+        );
+        if let Some(new_name) = &edit.name {
+            check_track_name(new_name).map_err(anyhow::Error::msg)?;
+        }
+        let tx = self.write(now)?;
+        let mut track = load_track(&tx, name)?;
+        if let Some(new_name) = edit.name.filter(|n| n != name) {
+            ensure!(
+                !track_exists(&tx, &new_name)?,
+                "track `{new_name}` already exists"
+            );
+            track.name = new_name;
+        }
+        if let Some(priority) = edit.priority {
+            track.priority = priority;
+        }
+        if let Some(description) = edit.description {
+            track.description = description;
+        }
+        tx.execute(
+            "UPDATE tracks SET name = ?1, priority = ?2, description = ?3, updated_at = ?4 WHERE name = ?5",
+            params![track.name, track.priority.rank(), track.description, now, name],
+        )?;
+        let track = load_track(&tx, &track.name)?;
+        tx.commit()?;
+        Ok(track)
+    }
+
+    /// Removes a track no task belongs to.
+    pub fn remove_track(&mut self, name: &str, now: i64) -> Result<()> {
+        let tx = self.write(now)?;
+        load_track(&tx, name)?;
+        let used: i64 = tx.query_row(
+            "SELECT count(*) FROM tasks WHERE track = ?1",
+            [name],
+            |row| row.get(0),
+        )?;
+        ensure!(used == 0, "track `{name}` is used by {used} task(s)");
+        tx.execute("DELETE FROM tracks WHERE name = ?1", [name])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn add_task(&mut self, new: NewTask, now: i64) -> Result<Task> {
         check_task_prefix(&new.prefix).map_err(anyhow::Error::msg)?;
         let tx = self.write(now)?;
+        if let Some(track) = &new.track {
+            ensure_track(&tx, track)?;
+        }
         // Numbered inside the write transaction, so concurrent adds never collide.
         let id = format!("{}-{}", new.prefix, next_task_number(&tx, &new.prefix)?);
         let mut seen = HashSet::new();
@@ -257,13 +359,14 @@ impl Store {
         }
 
         tx.execute(
-            "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+            "INSERT INTO tasks (id, title, role, state, priority, track, read, touch, do, verify, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
             params![
                 id,
                 new.title,
                 new.role,
                 new.priority.rank(),
+                new.track,
                 serde_json::to_string(&new.read)?,
                 serde_json::to_string(&new.touch)?,
                 new.r#do,
@@ -317,6 +420,12 @@ impl Store {
         if let Some(priority) = edit.priority {
             task.priority = priority;
         }
+        if let Some(track) = edit.track {
+            if let Some(name) = &track {
+                ensure_track(&tx, name)?;
+            }
+            task.track = track;
+        }
         if let Some(read) = edit.read {
             task.read = read;
         }
@@ -337,12 +446,13 @@ impl Store {
 
         let task = &tasks[pos];
         let changed = tx.execute(
-            "UPDATE tasks SET title = ?1, role = ?2, priority = ?3, read = ?4, touch = ?5, do = ?6, verify = ?7, updated_at = ?8
-              WHERE id = ?9 AND state = ?10",
+            "UPDATE tasks SET title = ?1, role = ?2, priority = ?3, track = ?4, read = ?5, touch = ?6, do = ?7, verify = ?8, updated_at = ?9
+              WHERE id = ?10 AND state = ?11",
             params![
                 task.title,
                 task.role,
                 task.priority.rank(),
+                task.track,
                 serde_json::to_string(&task.read)?,
                 serde_json::to_string(&task.touch)?,
                 task.r#do,
@@ -807,6 +917,38 @@ fn load_task(conn: &Connection, id: &str) -> Result<Task> {
     .ok_or_else(|| NotFound(format!("no task `{id}`")).into())
 }
 
+fn load_track(conn: &Connection, name: &str) -> Result<Track> {
+    conn.query_row(
+        &format!("{SELECT_TRACKS} WHERE name = ?1"),
+        [name],
+        track_from_row,
+    )
+    .optional()?
+    .ok_or_else(|| NotFound(format!("no track `{name}`")).into())
+}
+
+fn track_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn
+        .query_row("SELECT 1 FROM tracks WHERE name = ?1", [name], |_| Ok(()))
+        .optional()?
+        .is_some())
+}
+
+/// Fails with the defined track names unless `name` is a track.
+fn ensure_track(conn: &Connection, name: &str) -> Result<()> {
+    if track_exists(conn, name)? {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT name FROM tracks ORDER BY name")?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if names.is_empty() {
+        bail!("no track `{name}`; no tracks defined (airlock track add)");
+    }
+    bail!("no track `{name}`; defined tracks: {}", names.join(", "))
+}
+
 fn load_question(conn: &Connection, id: u64) -> Result<Question> {
     conn.query_row(
         &format!("{SELECT_QUESTIONS} WHERE id = ?1"),
@@ -963,6 +1105,17 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         lease_expires_at: row.get(12)?,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+        track: row.get(15)?,
+    })
+}
+
+fn track_from_row(row: &Row<'_>) -> rusqlite::Result<Track> {
+    Ok(Track {
+        name: row.get(0)?,
+        priority: priority_column(row, 1)?,
+        description: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
     })
 }
 

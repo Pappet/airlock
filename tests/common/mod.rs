@@ -11,6 +11,7 @@ pub fn task(id: &str, state: TaskState, blocked_by: &[&str]) -> Task {
         role: "engine".to_string(),
         state,
         priority: Priority::Normal,
+        track: None,
         blocked_by: blocked_by.iter().map(|s| s.to_string()).collect(),
         read: vec!["docs/spec/missiles.md".to_string()],
         touch: vec!["src/missiles.rs".to_string()],

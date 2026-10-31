@@ -1,7 +1,7 @@
 //! Hub store: transitions, leases, validation, concurrency (Spec 01 §2, §3.2).
 
 use airlock::core::{Priority, QuestionStatus, TaskState};
-use airlock::store::{NewTask, NotFound, Store, TaskEdit};
+use airlock::store::{NewTask, NotFound, Store, TaskEdit, TrackEdit};
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
@@ -19,6 +19,7 @@ fn new_task(blocked_by: &[&str]) -> NewTask {
         title: "Task".to_string(),
         role: "engine".to_string(),
         priority: Priority::Normal,
+        track: None,
         blocked_by: blocked_by.iter().map(|s| s.to_string()).collect(),
         read: vec!["docs/spec/a.md".to_string()],
         touch: vec!["src/a.rs".to_string()],
@@ -405,6 +406,11 @@ fn version_3_priorities_are_migrated() {
         })
         .unwrap();
     assert_eq!(unset, 4, "migrated tasks have no track");
+
+    let mut store = Store::open(&path).unwrap();
+    let track = store.add_track("core", Priority::High, "", 0).unwrap();
+    assert_eq!(track.name, "core");
+    assert_eq!(store.tracks().unwrap(), [track]);
 }
 
 #[test]
@@ -648,4 +654,213 @@ fn ask_once_keeps_one_open_question_per_session_and_topic() {
         "an answered question does not swallow a new claim"
     );
     assert_eq!(store.questions().unwrap().len(), 3);
+}
+
+fn track_task(track: Option<&str>) -> NewTask {
+    NewTask {
+        track: track.map(str::to_string),
+        ..new_task(&[])
+    }
+}
+
+#[test]
+fn tracks_are_created_listed_and_validated() {
+    let (_dir, mut store) = open();
+    let core = store
+        .add_track("core", Priority::Critical, "Core fidelity", 5)
+        .unwrap();
+    store.add_track("comfort", Priority::Low, "", 6).unwrap();
+    store
+        .add_track("infra", Priority::default(), "", 7)
+        .unwrap();
+
+    assert_eq!(core.priority, Priority::Critical);
+    assert_eq!(core.description, "Core fidelity");
+    assert_eq!((core.created_at, core.updated_at), (5, 5));
+    let names: Vec<String> = store
+        .tracks()
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(names, ["core", "infra", "comfort"]);
+    assert_eq!(store.track("infra").unwrap().priority, Priority::Normal);
+
+    assert!(err(store.add_track("core", Priority::Low, "", 8)).contains("already exists"));
+    store.add_track("Core", Priority::Low, "", 8).unwrap();
+    assert!(
+        store.track("Core").is_ok(),
+        "names are unique exactly, case kept"
+    );
+    assert!(
+        err(store.add_track("Core fidelity", Priority::Low, "", 8)).contains("invalid track name")
+    );
+}
+
+#[test]
+fn tasks_reference_existing_tracks() {
+    let (_dir, mut store) = open();
+    store.add_track("comfort", Priority::Low, "", 0).unwrap();
+    store.add_track("core", Priority::High, "", 0).unwrap();
+
+    let task = store.add_task(track_task(Some("comfort")), 1).unwrap();
+    assert_eq!(task.track.as_deref(), Some("comfort"));
+    assert_eq!(
+        store.task(&task.id, 1).unwrap().track.as_deref(),
+        Some("comfort")
+    );
+
+    let message = err(store.add_task(track_task(Some("nope")), 2));
+    assert!(message.contains("no track `nope`"), "{message}");
+    assert!(
+        message.contains("defined tracks: comfort, core"),
+        "{message}"
+    );
+    assert_eq!(store.tasks(2).unwrap().len(), 1, "nothing was created");
+
+    let clear = TaskEdit {
+        track: Some(None),
+        ..TaskEdit::default()
+    };
+    assert_eq!(
+        store.edit_task(&task.id, clear, false, 3).unwrap().track,
+        None
+    );
+    let set = TaskEdit {
+        track: Some(Some("core".to_string())),
+        ..TaskEdit::default()
+    };
+    assert_eq!(
+        store
+            .edit_task(&task.id, set, false, 4)
+            .unwrap()
+            .track
+            .as_deref(),
+        Some("core")
+    );
+    let unknown = TaskEdit {
+        track: Some(Some("nope".to_string())),
+        ..TaskEdit::default()
+    };
+    assert!(err(store.edit_task(&task.id, unknown, false, 5)).contains("no track `nope`"));
+    assert_eq!(
+        store.task(&task.id, 5).unwrap().track.as_deref(),
+        Some("core")
+    );
+}
+
+#[test]
+fn no_tracks_defined_hints_at_the_command() {
+    let (_dir, mut store) = open();
+    let message = err(store.add_task(track_task(Some("core")), 0));
+    assert!(
+        message.contains("no tracks defined (airlock track add)"),
+        "{message}"
+    );
+}
+
+#[test]
+fn renaming_a_track_moves_its_tasks() {
+    let (_dir, mut store) = open();
+    store.add_track("comfort", Priority::Low, "", 0).unwrap();
+    store.add_track("core", Priority::High, "", 0).unwrap();
+    store.add_task(track_task(Some("comfort")), 1).unwrap();
+    let t2 = store.add_task(track_task(Some("comfort")), 1).unwrap();
+    store.add_task(track_task(None), 1).unwrap();
+    store.claim(&t2.id, "s", 600, 2).unwrap();
+    store.complete(&t2.id, "s", None, false, false, 3).unwrap();
+
+    let renamed = store
+        .edit_track(
+            "comfort",
+            TrackEdit {
+                name: Some("polish".to_string()),
+                ..TrackEdit::default()
+            },
+            10,
+        )
+        .unwrap();
+    assert_eq!(renamed.name, "polish");
+    assert_eq!(renamed.updated_at, 10);
+    assert_eq!(renamed.created_at, 0);
+
+    let tracks: Vec<Option<String>> = store
+        .tasks(10)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.track)
+        .collect();
+    assert_eq!(tracks, [Some("polish".into()), Some("polish".into()), None]);
+    assert_eq!(store.task("T-1", 10).unwrap().updated_at, 1);
+    let missing = store.track("comfort").unwrap_err();
+    assert!(missing.downcast_ref::<NotFound>().is_some());
+
+    let clash = TrackEdit {
+        name: Some("core".to_string()),
+        ..TrackEdit::default()
+    };
+    assert!(err(store.edit_track("polish", clash, 11)).contains("already exists"));
+    let bad = TrackEdit {
+        name: Some("a b".to_string()),
+        ..TrackEdit::default()
+    };
+    assert!(err(store.edit_track("polish", bad, 11)).contains("invalid track name"));
+    assert_eq!(store.track("polish").unwrap().updated_at, 10);
+}
+
+#[test]
+fn tracks_are_edited_in_place() {
+    let (_dir, mut store) = open();
+    store.add_track("core", Priority::Normal, "old", 0).unwrap();
+    assert!(err(store.edit_track("core", TrackEdit::default(), 1)).contains("nothing to change"));
+    assert!(
+        err(store.edit_track(
+            "nope",
+            TrackEdit {
+                priority: Some(Priority::Low),
+                ..TrackEdit::default()
+            },
+            1
+        ))
+        .contains("no track `nope`")
+    );
+
+    let edited = store
+        .edit_track(
+            "core",
+            TrackEdit {
+                priority: Some(Priority::Critical),
+                description: Some("new".to_string()),
+                ..TrackEdit::default()
+            },
+            2,
+        )
+        .unwrap();
+    assert_eq!(edited.priority, Priority::Critical);
+    assert_eq!(edited.description, "new");
+    assert_eq!((edited.created_at, edited.updated_at), (0, 2));
+}
+
+#[test]
+fn tracks_in_use_cannot_be_removed() {
+    let (_dir, mut store) = open();
+    store.add_track("core", Priority::High, "", 0).unwrap();
+    let task = store.add_task(track_task(Some("core")), 1).unwrap();
+    store.claim(&task.id, "s", 600, 2).unwrap();
+    store
+        .complete(&task.id, "s", None, false, false, 3)
+        .unwrap();
+
+    assert!(err(store.remove_track("core", 5)).contains("track `core` is used by 1 task(s)"));
+    assert!(store.track("core").is_ok());
+
+    let clear = TaskEdit {
+        track: Some(None),
+        ..TaskEdit::default()
+    };
+    store.edit_task(&task.id, clear, true, 6).unwrap();
+    store.remove_track("core", 7).unwrap();
+    assert!(store.tracks().unwrap().is_empty());
+    let gone = store.remove_track("core", 8).unwrap_err();
+    assert!(gone.downcast_ref::<NotFound>().is_some());
 }
