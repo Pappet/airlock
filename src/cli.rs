@@ -1,6 +1,6 @@
 //! Command-line interface definition (Spec 02).
 
-use crate::core::{QuestionStatus, TaskStatus};
+use crate::core::{Priority, QuestionStatus, TaskStatus};
 use crate::layout::Template;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -210,8 +210,9 @@ pub struct TaskSpec {
     /// Prerequisite task ids, comma-separated; must already exist
     #[arg(long, value_delimiter = ',')]
     pub blocked_by: Vec<String>,
-    #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
-    pub priority: i32,
+    /// critical, high, normal, or low
+    #[arg(long, value_enum, default_value_t)]
+    pub priority: Priority,
 }
 
 /// Agent harnesses `airlock setup` knows.
@@ -230,8 +231,9 @@ pub struct TaskEditSpec {
     pub title: Option<String>,
     #[arg(long)]
     pub role: Option<String>,
-    #[arg(long, allow_negative_numbers = true)]
-    pub priority: Option<i32>,
+    /// critical, high, normal, or low
+    #[arg(long, value_enum)]
+    pub priority: Option<Priority>,
     /// Spec or documentation file to read (repeatable; replaces the list)
     #[arg(long)]
     pub read: Vec<String>,

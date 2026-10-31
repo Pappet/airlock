@@ -30,7 +30,7 @@ const GOLDEN: &str = r#"{
       "title": "Task E-1",
       "role": "engine",
       "state": "open",
-      "priority": 0,
+      "priority": "normal",
       "blocked_by": [
         "L-1",
         "L-2"
@@ -51,7 +51,7 @@ const GOLDEN: &str = r#"{
       "title": "Task L-1",
       "role": "engine",
       "state": "done",
-      "priority": 0,
+      "priority": "normal",
       "blocked_by": [],
       "read": [
         "docs/spec/missiles.md"
@@ -69,7 +69,7 @@ const GOLDEN: &str = r#"{
       "title": "Task L-2",
       "role": "engine",
       "state": "in_review",
-      "priority": 0,
+      "priority": "normal",
       "blocked_by": [],
       "read": [
         "docs/spec/missiles.md"

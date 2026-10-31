@@ -48,7 +48,7 @@ On a merge conflict, take either side and re-run `airlock sync`. -->
 
 ### E-1 — Task E-1
 
-- **Status:** ready · **Priority:** 0
+- **Status:** ready · **Priority:** normal
 - **Blocked by:** L-1
 - **Read:** `docs/spec/missiles.md`
 - **Touch:** `src/missiles.rs`
@@ -59,7 +59,7 @@ On a merge conflict, take either side and re-run `airlock sync`. -->
 
 ### E-2 — Task E-2
 
-- **Status:** blocked · **Priority:** 0
+- **Status:** blocked · **Priority:** normal
 - **Blocked by:** E-1
 - **Read:** `docs/spec/missiles.md`
 - **Touch:** `src/missiles.rs`
@@ -70,7 +70,7 @@ On a merge conflict, take either side and re-run `airlock sync`. -->
 
 ### L-1 — Task L-1
 
-- **Status:** done · **Priority:** 0
+- **Status:** done · **Priority:** normal
 - **Read:** `docs/spec/missiles.md`
 - **Touch:** `src/missiles.rs`
 - **Do:** Implement shot clock

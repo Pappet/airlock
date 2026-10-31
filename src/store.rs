@@ -7,8 +7,8 @@
 //! seconds) so behavior is testable without a clock.
 
 use crate::core::{
-    Question, QuestionStatus, Task, TaskState, TaskStatus, check_dependencies, check_task_prefix,
-    dependents, task_number,
+    Priority, Question, QuestionStatus, Task, TaskState, TaskStatus, check_dependencies,
+    check_task_prefix, dependents, task_number,
 };
 use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
 
 const SCHEMA_V1: &str = "
 CREATE TABLE tasks (
@@ -77,6 +77,21 @@ CREATE TABLE bindings (
 ) STRICT;
 ";
 
+/// Priority becomes a four-level scale stored as a rank 0 to 3 (the old
+/// integers map by threshold, never to critical), and tasks may belong to a
+/// track.
+const SCHEMA_V4: &str = "
+UPDATE tasks SET priority = CASE WHEN priority >= 30 THEN 2 WHEN priority >= 10 THEN 1 ELSE 0 END;
+CREATE TABLE tracks (
+    name        TEXT PRIMARY KEY,
+    priority    INTEGER NOT NULL DEFAULT 1 CHECK (priority BETWEEN 0 AND 3),
+    description TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+) STRICT;
+ALTER TABLE tasks ADD COLUMN track TEXT REFERENCES tracks (name) ON UPDATE CASCADE;
+";
+
 const SELECT_TASKS: &str = "
 SELECT id, title, role, state, priority,
        (SELECT json_group_array(blocked_by)
@@ -96,7 +111,7 @@ pub struct NewTask {
     pub prefix: String,
     pub title: String,
     pub role: String,
-    pub priority: i32,
+    pub priority: Priority,
     pub blocked_by: Vec<String>,
     pub read: Vec<String>,
     pub touch: Vec<String>,
@@ -111,7 +126,7 @@ pub struct NewTask {
 pub struct TaskEdit {
     pub title: Option<String>,
     pub role: Option<String>,
-    pub priority: Option<i32>,
+    pub priority: Option<Priority>,
     pub blocked_by: Option<Vec<String>>,
     pub read: Option<Vec<String>>,
     pub touch: Option<Vec<String>>,
@@ -248,7 +263,7 @@ impl Store {
                 id,
                 new.title,
                 new.role,
-                new.priority,
+                new.priority.rank(),
                 serde_json::to_string(&new.read)?,
                 serde_json::to_string(&new.touch)?,
                 new.r#do,
@@ -327,7 +342,7 @@ impl Store {
             params![
                 task.title,
                 task.role,
-                task.priority,
+                task.priority.rank(),
                 serde_json::to_string(&task.read)?,
                 serde_json::to_string(&task.touch)?,
                 task.r#do,
@@ -643,7 +658,7 @@ impl Store {
                     t.title,
                     t.role,
                     state.as_str(),
-                    t.priority,
+                    t.priority.rank(),
                     serde_json::to_string(&t.read)?,
                     serde_json::to_string(&t.touch)?,
                     t.r#do,
@@ -919,13 +934,25 @@ fn enum_column<T: serde::de::DeserializeOwned>(row: &Row<'_>, idx: usize) -> rus
     })
 }
 
+/// Reads a priority rank, rejecting values outside 0 to 3.
+fn priority_column(row: &Row<'_>, idx: usize) -> rusqlite::Result<Priority> {
+    let rank: i64 = row.get(idx)?;
+    Priority::from_rank(rank).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            idx,
+            rusqlite::types::Type::Integer,
+            format!("priority rank {rank} is outside 0 to 3").into(),
+        )
+    })
+}
+
 fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
     Ok(Task {
         id: row.get(0)?,
         title: row.get(1)?,
         role: row.get(2)?,
         state: enum_column(row, 3)?,
-        priority: row.get(4)?,
+        priority: priority_column(row, 4)?,
         blocked_by: json_column(row, 5)?,
         read: json_column(row, 6)?,
         touch: json_column(row, 7)?,

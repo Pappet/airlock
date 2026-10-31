@@ -62,7 +62,7 @@ pub fn plan(snapshot: &Snapshot) -> String {
                 out,
                 "- **Status:** {} · **Priority:** {}",
                 status.as_str(),
-                task.priority
+                task.priority.as_str()
             );
             if !task.blocked_by.is_empty() {
                 let _ = writeln!(out, "- **Blocked by:** {}", task.blocked_by.join(", "));

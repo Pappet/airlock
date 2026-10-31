@@ -329,7 +329,7 @@ fn create_list_show_task() {
         "/api/tasks",
         Some(serde_json::json!({
             "title": "Alpha", "role": "engine", "do": "Do it",
-            "verify": "cargo test", "touch": ["src/a.rs"], "priority": 3
+            "verify": "cargo test", "touch": ["src/a.rs"], "priority": "high"
         })),
     );
     assert_eq!(created.status, 201, "{}", created.body);
@@ -346,7 +346,7 @@ fn create_list_show_task() {
 
     let list = s.api("GET", "/api/tasks", None).json();
     assert_eq!(list.as_array().unwrap().len(), 2);
-    assert_eq!(list[0]["priority"], 3);
+    assert_eq!(list[0]["priority"], "high");
     assert_eq!(list[1]["status"], "blocked");
     let blocked = s.api("GET", "/api/tasks?status=blocked", None).json();
     assert_eq!(blocked.as_array().unwrap().len(), 1);
@@ -372,7 +372,9 @@ fn create_with_invalid_input_is_400() {
     bad_prereq["blocked_by"] = serde_json::json!(["Z"]);
     let mut own_id = base.clone();
     own_id["id"] = "E-7".into();
-    for body in [unknown_role, missing, bad_prereq, own_id] {
+    let mut numeric_priority = base.clone();
+    numeric_priority["priority"] = 3.into();
+    for body in [unknown_role, missing, bad_prereq, own_id, numeric_priority] {
         let r = s.api("POST", "/api/tasks", Some(body.clone()));
         assert_eq!(r.status, 400, "{body}: {}", r.body);
         assert!(r.json()["error"].is_string());

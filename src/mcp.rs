@@ -6,7 +6,7 @@
 
 use crate::app::{TaskView, claim, done_ids, ensure_role, next_ready, project_root, unix_now};
 use crate::briefing::{self, Briefing, Via, WorkPackage};
-use crate::core::{QuestionStatus, Task, dependents};
+use crate::core::{Priority, QuestionStatus, Task, dependents};
 use crate::hub::{Hub, Project};
 use crate::store::{NewTask, Store, TaskEdit};
 use crate::sync;
@@ -302,7 +302,7 @@ impl Server {
                     prefix: self.project.config.task_prefix(&role)?,
                     title: str_arg(args, "title")?,
                     role,
-                    priority: opt_i32(args, "priority")?.unwrap_or(0),
+                    priority: opt_priority(args, "priority")?.unwrap_or_default(),
                     blocked_by: str_list(args, "blocked_by")?,
                     read: str_list(args, "read")?,
                     touch: str_list(args, "touch")?,
@@ -321,7 +321,7 @@ impl Server {
                 let edit = TaskEdit {
                     title: opt_str(args, "title")?,
                     role: opt_str(args, "role")?,
-                    priority: opt_i32(args, "priority")?,
+                    priority: opt_priority(args, "priority")?,
                     blocked_by: opt_str_list(args, "blocked_by")?,
                     read: opt_str_list(args, "read")?,
                     touch: opt_str_list(args, "touch")?,
@@ -518,7 +518,7 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
                 "read": strings,
                 "touch": strings,
                 "blocked_by": strings,
-                "priority": { "type": "integer" },
+                "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
             }),
             &["title", "role", "do", "verify"],
         ),
@@ -534,7 +534,7 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
                 "read": strings,
                 "touch": strings,
                 "blocked_by": strings,
-                "priority": { "type": "integer" },
+                "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
                 "force": { "type": "boolean", "description": "Edit a task that is in progress, in review, or done" },
             }),
             &["task_id"],
@@ -624,10 +624,14 @@ fn opt_i64(args: &Map<String, Value>, key: &str) -> Result<Option<i64>> {
     }
 }
 
-fn opt_i32(args: &Map<String, Value>, key: &str) -> Result<Option<i32>> {
-    opt_i64(args, key)?
-        .map(|v| i32::try_from(v).with_context(|| format!("argument `{key}` is out of range")))
-        .transpose()
+/// A priority level by name; anything else, numbers included, is rejected
+/// with the message listing the four levels.
+fn opt_priority(args: &Map<String, Value>, key: &str) -> Result<Option<Priority>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.parse()?)),
+        Some(other) => Ok(Some(other.to_string().parse()?)),
+    }
 }
 
 fn opt_u32(args: &Map<String, Value>, key: &str) -> Result<Option<u32>> {

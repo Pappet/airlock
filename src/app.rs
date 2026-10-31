@@ -767,7 +767,7 @@ fn task_table(views: &[TaskView]) -> String {
                 v.task.id.clone(),
                 v.status.as_str().to_string(),
                 v.task.role.clone(),
-                v.task.priority.to_string(),
+                v.task.priority.as_str().to_string(),
                 v.task.claimed_by.clone().unwrap_or_default(),
                 v.task.title.clone(),
             ]
@@ -809,7 +809,7 @@ fn work_package(view: &TaskView) -> String {
             "role: {} · status: {} · priority: {}",
             t.role,
             view.status.as_str(),
-            t.priority
+            t.priority.as_str()
         ),
     ];
     if let Some(session) = &t.claimed_by {

@@ -168,9 +168,9 @@ fn task_flow_with_json_output() {
         &env,
         &project,
         "E-1",
-        &["--blocked-by", "L-1", "--priority", "1"],
+        &["--blocked-by", "L-1", "--priority", "low"],
     );
-    add(&env, &project, "E-2", &["--priority", "5"]);
+    add(&env, &project, "E-2", &["--priority", "normal"]);
 
     let list = env.json(&project, &["task", "list", "--status", "blocked"]);
     assert_eq!(list[0]["id"], "E-1");
@@ -257,7 +257,7 @@ fn overlapping_work_is_handed_out_last_and_claims_ask_the_lead() {
         &env,
         &project,
         "E-2",
-        &["--touch", "./src/sim.rs", "--priority", "9"],
+        &["--touch", "./src/sim.rs", "--priority", "high"],
     );
     add(&env, &project, "E-3", &["--touch", "src/other.rs"]);
     env.ok(&project, &["--session", "engine-2", "task", "claim", "E-1"]);

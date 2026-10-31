@@ -5,7 +5,7 @@
 //! changes the exported file.
 
 use crate::config::{ProjectConfig, RoleConfig};
-use crate::core::{GraphError, Question, Task, TaskState, check_dependencies};
+use crate::core::{GraphError, Priority, Question, Task, TaskState, check_dependencies};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -35,7 +35,7 @@ pub struct TaskRecord {
     pub role: String,
     /// Never `in_progress`: claims are session state and export as `open`
     pub state: TaskState,
-    pub priority: i32,
+    pub priority: Priority,
     /// Sorted and deduplicated
     pub blocked_by: Vec<String>,
     pub read: Vec<String>,

@@ -207,7 +207,7 @@ fn stage<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::TaskState;
+    use crate::core::{Priority, TaskState};
 
     fn task(id: &str, state: TaskState, blocked_by: &[&str], touch: &[&str]) -> Task {
         Task {
@@ -215,7 +215,7 @@ mod tests {
             title: format!("Task {id}"),
             role: "engine".to_string(),
             state,
-            priority: 0,
+            priority: Priority::Normal,
             blocked_by: blocked_by.iter().map(|s| s.to_string()).collect(),
             read: Vec::new(),
             touch: touch.iter().map(|s| s.to_string()).collect(),

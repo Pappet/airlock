@@ -1,6 +1,6 @@
 //! Hub store: transitions, leases, validation, concurrency (Spec 01 §2, §3.2).
 
-use airlock::core::{QuestionStatus, TaskState};
+use airlock::core::{Priority, QuestionStatus, TaskState};
 use airlock::store::{NewTask, NotFound, Store, TaskEdit};
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
@@ -18,7 +18,7 @@ fn new_task(blocked_by: &[&str]) -> NewTask {
         prefix: "T".to_string(),
         title: "Task".to_string(),
         role: "engine".to_string(),
-        priority: 0,
+        priority: Priority::Normal,
         blocked_by: blocked_by.iter().map(|s| s.to_string()).collect(),
         read: vec!["docs/spec/a.md".to_string()],
         touch: vec!["src/a.rs".to_string()],
@@ -222,7 +222,7 @@ fn tasks_round_trip_through_the_database() {
     store.add_task(new_task(&[]), 0).unwrap();
     store.add_task(new_task(&[]), 0).unwrap();
     let mut spec = new_task(&["T-2", "T-1"]);
-    spec.priority = -3;
+    spec.priority = Priority::Low;
     let added = store.add_task(spec, 42).unwrap();
     drop(store);
 
@@ -232,7 +232,10 @@ fn tasks_round_trip_through_the_database() {
     let c = store.task("T-3", 42).unwrap();
     assert_eq!(c, added);
     assert_eq!(c.blocked_by, ["T-2", "T-1"], "authored order preserved");
-    assert_eq!((c.priority, c.created_at, c.updated_at), (-3, 42, 42));
+    assert_eq!(
+        (c.priority, c.created_at, c.updated_at),
+        (Priority::Low, 42, 42)
+    );
 }
 
 #[test]
@@ -301,16 +304,129 @@ fn concurrent_claims_from_separate_connections_have_one_winner() {
     assert_eq!(winners, 1);
 }
 
+/// The version 1 layout (tasks, task_deps, questions), as it was released.
+const LEGACY_V1: &str = "
+CREATE TABLE tasks (
+    id               TEXT PRIMARY KEY,
+    title            TEXT NOT NULL,
+    role             TEXT NOT NULL,
+    state            TEXT NOT NULL CHECK (state IN ('open', 'in_progress', 'in_review', 'done')),
+    priority         INTEGER NOT NULL DEFAULT 0,
+    read             TEXT NOT NULL,
+    touch            TEXT NOT NULL,
+    do               TEXT NOT NULL,
+    verify           TEXT NOT NULL,
+    notes            TEXT,
+    claimed_by       TEXT,
+    lease_expires_at INTEGER,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+) STRICT;
+CREATE TABLE task_deps (
+    task_id    TEXT NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+    blocked_by TEXT NOT NULL REFERENCES tasks (id),
+    PRIMARY KEY (task_id, blocked_by)
+) STRICT;
+CREATE TABLE questions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic       TEXT NOT NULL,
+    asked_by    TEXT NOT NULL,
+    question    TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('open', 'answered', 'resolved')),
+    answer      TEXT,
+    answered_by TEXT,
+    spec_file   TEXT,
+    created_at  INTEGER NOT NULL,
+    answered_at INTEGER
+) STRICT;
+";
+
+const LEGACY_V2_V3: &str = "
+CREATE TABLE exports (
+    sha256      TEXT PRIMARY KEY,
+    recorded_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE bindings (
+    root    TEXT PRIMARY KEY,
+    role    TEXT NOT NULL,
+    session TEXT NOT NULL,
+    locked  INTEGER NOT NULL DEFAULT 0
+) STRICT;
+";
+
+/// Builds a database at `version` (1 or 3) holding one task per entry of
+/// `priorities`, ids `T-1`, `T-2`, ...
+fn legacy_db(path: &std::path::Path, version: i64, priorities: &[i64]) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(LEGACY_V1).unwrap();
+    if version >= 3 {
+        conn.execute_batch(LEGACY_V2_V3).unwrap();
+    }
+    for (i, p) in priorities.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, created_at, updated_at)
+             VALUES (?1, 't', 'engine', 'open', ?2, '[]', '[]', 'd', 'v', 0, 0)",
+            rusqlite::params![format!("T-{}", i + 1), p],
+        )
+        .unwrap();
+    }
+    conn.pragma_update(None, "user_version", version).unwrap();
+}
+
+#[test]
+fn version_3_priorities_are_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    legacy_db(&path, 3, &[40, 22, 5, -1]);
+
+    let store = Store::open(&path).unwrap();
+    let tasks = store.tasks(0).unwrap();
+    let priorities: Vec<Priority> = tasks.iter().map(|t| t.priority).collect();
+    assert_eq!(
+        priorities,
+        [
+            Priority::High,
+            Priority::Normal,
+            Priority::Low,
+            Priority::Low
+        ]
+    );
+    drop(store);
+
+    // The migration also created the track storage Task 2 builds on.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let tracks: i64 = conn
+        .query_row("SELECT count(*) FROM tracks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tracks, 0);
+    let unset: i64 = conn
+        .query_row("SELECT count(*) FROM tasks WHERE track IS NULL", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(unset, 4, "migrated tasks have no track");
+}
+
+#[test]
+fn out_of_range_priority_fails_to_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    let mut store = Store::open(&path).unwrap();
+    store.add_task(new_task(&[]), 0).unwrap();
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("UPDATE tasks SET priority = 9", []).unwrap();
+    drop(conn);
+
+    let store = Store::open(&path).unwrap();
+    assert!(store.tasks(0).is_err());
+}
+
 #[test]
 fn version_1_databases_are_migrated() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("airlock.db");
-    Store::open(&path).unwrap();
-    // Roll back to the version 1 layout.
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("DROP TABLE exports; DROP TABLE bindings; PRAGMA user_version = 1;")
-        .unwrap();
-    drop(conn);
+    legacy_db(&path, 1, &[]);
 
     let mut store = Store::open(&path).unwrap();
     store.record_export("abc", 1).unwrap();
@@ -391,7 +507,7 @@ fn edit_changes_only_given_fields() {
             "T-2",
             TaskEdit {
                 title: Some("New title".into()),
-                priority: Some(7),
+                priority: Some(Priority::High),
                 touch: Some(vec!["src/b.rs".into(), "src/c.rs".into()]),
                 blocked_by: Some(vec!["T-1".into(), "T-1".into()]),
                 ..TaskEdit::default()
@@ -401,7 +517,7 @@ fn edit_changes_only_given_fields() {
         )
         .unwrap();
     assert_eq!(edited.title, "New title");
-    assert_eq!(edited.priority, 7);
+    assert_eq!(edited.priority, Priority::High);
     assert_eq!(edited.touch, ["src/b.rs", "src/c.rs"]);
     assert_eq!(edited.blocked_by, ["T-1"], "duplicates dropped");
     assert_eq!(edited.updated_at, 5);

@@ -1,7 +1,7 @@
 //! CLI surface (Spec 02): documented invocations must parse.
 
 use airlock::cli::{Cli, Command, QuestionCommand, TaskCommand};
-use airlock::core::TaskStatus;
+use airlock::core::{Priority, TaskStatus};
 use clap::{CommandFactory, Parser};
 
 fn parse(args: &[&str]) -> Cli {
@@ -35,7 +35,7 @@ fn task_add_accepts_repeated_and_comma_separated_lists() {
         "--blocked-by",
         "L-1,L-2",
         "--priority",
-        "-1",
+        "low",
     ]);
     let Command::Task(TaskCommand::Add(spec)) = cli.command else {
         panic!("wrong command");
@@ -44,7 +44,43 @@ fn task_add_accepts_repeated_and_comma_separated_lists() {
     assert_eq!(spec.read, ["docs/spec/missiles.md", "docs/spec/combat.md"]);
     assert_eq!(spec.blocked_by, ["L-1", "L-2"]);
     assert_eq!(spec.r#do, "Implement shot clock");
-    assert_eq!(spec.priority, -1);
+    assert_eq!(spec.priority, Priority::Low);
+}
+
+#[test]
+fn task_add_priority_takes_a_level_not_a_number() {
+    let cli = parse(&[
+        "task",
+        "add",
+        "T",
+        "--role",
+        "engine",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+        "--priority",
+        "high",
+    ]);
+    let Command::Task(TaskCommand::Add(spec)) = cli.command else {
+        panic!("wrong command");
+    };
+    assert_eq!(spec.priority, Priority::High);
+    let numeric = Cli::try_parse_from([
+        "airlock",
+        "task",
+        "add",
+        "T",
+        "--role",
+        "engine",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+        "--priority",
+        "5",
+    ]);
+    assert!(numeric.is_err(), "numeric priorities are rejected");
 }
 
 #[test]
@@ -81,7 +117,7 @@ fn task_edit_takes_optional_fields_and_clear_flags() {
         "L-1,L-2",
         "--clear-read",
         "--priority",
-        "-2",
+        "critical",
         "--force",
     ]);
     let Command::Task(TaskCommand::Edit(edit)) = cli.command else {
@@ -92,7 +128,7 @@ fn task_edit_takes_optional_fields_and_clear_flags() {
     assert_eq!(edit.touch, ["src/a.rs", "src/b.rs"]);
     assert_eq!(edit.blocked_by, ["L-1", "L-2"]);
     assert!(edit.clear_read && !edit.clear_touch && !edit.clear_blocked_by);
-    assert_eq!(edit.priority, Some(-2));
+    assert_eq!(edit.priority, Some(Priority::Critical));
     assert_eq!(edit.role, None);
     assert!(edit.force);
 

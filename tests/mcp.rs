@@ -236,7 +236,7 @@ fn unbound_session_runs_the_full_workflow() {
                 3,
                 "task_create",
                 json!({ "title": "More", "role": "engine", "do": "d", "verify": "v",
-                        "blocked_by": ["S-1"], "read": ["docs/spec/a.md"], "priority": 3 }),
+                        "blocked_by": ["S-1"], "read": ["docs/spec/a.md"], "priority": "high" }),
             ),
             call(4, "task_claim", json!({ "task_id": "S-1", "lease_minutes": 5 })),
             call(5, "task_heartbeat", json!({ "task_id": "S-1" })),
@@ -254,17 +254,27 @@ fn unbound_session_runs_the_full_workflow() {
                 "task_create",
                 json!({ "id": "E-7", "title": "Own id", "role": "engine", "do": "d", "verify": "v" }),
             ),
+            call(
+                16,
+                "task_create",
+                json!({ "title": "Numeric", "role": "engine", "do": "d", "verify": "v", "priority": 22 }),
+            ),
         ],
     );
     assert_eq!(s.tool_names(1).len(), 14);
     let own_id = s.tool_error(15);
     assert!(own_id.contains("ids are assigned by Airlock"), "{own_id}");
+    let numeric = s.tool_error(16);
+    assert!(
+        numeric.contains("critical, high, normal, or low"),
+        "{numeric}"
+    );
     assert!(s.tool_error(2).contains("missing required argument `role`"));
     assert_eq!(s.ok(3)["id"], "E-2", "the result carries the new id");
     assert_eq!(s.ok(3)["status"], "blocked");
     assert!(s.ok(4)["lease_expires_at"].is_i64());
     assert_eq!(s.ok(6)["now_ready"], json!(["E-2"]));
-    assert_eq!(s.ok(7)["task"]["id"], "E-2", "priority 3 beats E-1");
+    assert_eq!(s.ok(7)["task"]["id"], "E-2", "a high priority beats E-1");
     assert_eq!(s.ok(7)["task"]["read"], json!(["docs/spec/a.md"]));
     let l1 = s.ok(8);
     assert_eq!(
@@ -290,7 +300,7 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
                 1,
                 "task_update",
                 json!({ "task_id": "E-1", "title": "Renamed", "touch": ["src/e.rs"],
-                        "blocked_by": ["S-1"], "priority": 2 }),
+                        "blocked_by": ["S-1"], "priority": "high" }),
             ),
             call(
                 2,
@@ -331,9 +341,9 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
         (
             edited["title"].as_str(),
             edited["status"].as_str(),
-            edited["priority"].as_i64()
+            edited["priority"].as_str()
         ),
-        (Some("Renamed"), Some("blocked"), Some(2))
+        (Some("Renamed"), Some("blocked"), Some("high"))
     );
     assert_eq!(edited["touch"], json!(["src/e.rs"]));
     assert_eq!(edited["do"], "Build", "omitted fields are kept");
@@ -351,8 +361,8 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
 #[test]
 fn overlapping_work_warns_and_asks_the_lead() {
     let env = Env::new();
-    // Added after E-1: E-2 (priority 0) and E-3 (priority 9).
-    for priority in ["0", "9"] {
+    // Added after E-1: E-2 (normal) and E-3 (high).
+    for priority in ["normal", "high"] {
         env.cli(&[
             "task",
             "add",

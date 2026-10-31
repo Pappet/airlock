@@ -9,7 +9,7 @@
 //! and turns changes into server-sent events.
 
 use crate::app::{TaskView, done_ids, ensure_role, unix_now};
-use crate::core::{QuestionStatus, TaskStatus, dependents};
+use crate::core::{Priority, QuestionStatus, TaskStatus, dependents};
 use crate::hub::Project;
 use crate::overlap;
 use crate::store::{NewTask, NotFound, Store, TaskEdit};
@@ -346,7 +346,7 @@ struct CreateTask {
     title: String,
     role: String,
     #[serde(default)]
-    priority: i32,
+    priority: Priority,
     #[serde(default)]
     blocked_by: Vec<String>,
     #[serde(default)]
@@ -410,7 +410,7 @@ async fn show_task(State(state): State<Shared>, Path(id): Path<String>) -> ApiRe
 struct EditTask {
     title: Option<String>,
     role: Option<String>,
-    priority: Option<i32>,
+    priority: Option<Priority>,
     blocked_by: Option<Vec<String>>,
     read: Option<Vec<String>>,
     touch: Option<Vec<String>>,
