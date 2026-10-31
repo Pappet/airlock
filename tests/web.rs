@@ -178,6 +178,21 @@ fn dashboard_assets_know_tracks() {
 }
 
 #[test]
+fn dashboard_has_tracks_tab() {
+    let s = Server::start();
+    let js = s.raw("GET", "/app.js", &[("Host", &s.host())], "");
+    assert_eq!(js.status, 200);
+    assert!(
+        js.body.contains("courseWarnings"),
+        "app.js must compute course warnings"
+    );
+    assert!(
+        js.body.contains("\"tracks\", \"Tracks\""),
+        "Tracks must be a tab"
+    );
+}
+
+#[test]
 fn rejects_foreign_host() {
     let s = Server::start();
     for host in ["evil.example", "127.0.0.1:9999", "localhost"] {
