@@ -233,7 +233,10 @@ impl Server {
             "task_next" => {
                 let role = self.role_arg(args)?;
                 let tasks = self.store.tasks(now)?;
-                Ok(json!({ "task": next_ready(&tasks, &role).map(|v| WorkPackage::from(&v)) }))
+                let tracks = self.store.tracks()?;
+                Ok(
+                    json!({ "task": next_ready(&tasks, &tracks, &role).map(|v| WorkPackage::from(&v)) }),
+                )
             }
             "task_get" => {
                 let id = str_arg(args, "task_id")?;

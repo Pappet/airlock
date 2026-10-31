@@ -112,8 +112,11 @@ pub fn build(
             lease_minutes_left: t.lease_minutes_left(now),
         })
         .collect();
+    let tracks = store.tracks()?;
     let next = match role {
-        Some(role) if claimed.is_empty() => next_ready(&tasks, role).map(|v| WorkPackage::from(&v)),
+        Some(role) if claimed.is_empty() => {
+            next_ready(&tasks, &tracks, role).map(|v| WorkPackage::from(&v))
+        }
         _ => None,
     };
     let others = tasks
