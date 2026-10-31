@@ -7,8 +7,8 @@
 //! seconds) so behavior is testable without a clock.
 
 use crate::core::{
-    Question, QuestionStatus, Task, TaskState, TaskStatus, check_dependencies, check_task_id,
-    dependents,
+    Question, QuestionStatus, Task, TaskState, TaskStatus, check_dependencies, check_task_prefix,
+    dependents, task_number,
 };
 use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
@@ -88,10 +88,12 @@ const SELECT_QUESTIONS: &str = "
 SELECT id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at
   FROM questions";
 
-/// Fields of a task to be created.
+/// Fields of a task to be created. The store assigns the id
+/// `<prefix>-<n>`, continuing after the highest number used with `prefix`.
 #[derive(Debug, Clone)]
 pub struct NewTask {
-    pub id: String,
+    /// Id prefix, normally the role's (`ProjectConfig::task_prefix`)
+    pub prefix: String,
     pub title: String,
     pub role: String,
     pub priority: i32,
@@ -222,13 +224,10 @@ impl Store {
     }
 
     pub fn add_task(&mut self, new: NewTask, now: i64) -> Result<Task> {
-        check_task_id(&new.id).map_err(anyhow::Error::msg)?;
+        check_task_prefix(&new.prefix).map_err(anyhow::Error::msg)?;
         let tx = self.write(now)?;
-        ensure!(
-            !task_exists(&tx, &new.id)?,
-            "task `{}` already exists",
-            new.id
-        );
+        // Numbered inside the write transaction, so concurrent adds never collide.
+        let id = format!("{}-{}", new.prefix, next_task_number(&tx, &new.prefix)?);
         let mut seen = HashSet::new();
         let blocked_by: Vec<String> = new
             .blocked_by
@@ -246,7 +245,7 @@ impl Store {
             "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, created_at, updated_at)
              VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             params![
-                new.id,
+                id,
                 new.title,
                 new.role,
                 new.priority,
@@ -260,10 +259,10 @@ impl Store {
         for dep in &blocked_by {
             tx.execute(
                 "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",
-                params![new.id, dep],
+                params![id, dep],
             )?;
         }
-        let task = load_task(&tx, &new.id)?;
+        let task = load_task(&tx, &id)?;
         tx.commit()?;
         Ok(task)
     }
@@ -755,6 +754,19 @@ impl Store {
         )?;
         Ok(tx)
     }
+}
+
+/// One past the highest `<prefix>-<n>` among all tasks, done ones included.
+fn next_task_number(conn: &Connection, prefix: &str) -> Result<u64> {
+    let mut stmt = conn.prepare("SELECT id FROM tasks")?;
+    let ids = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut highest = 0;
+    for id in ids {
+        if let Some(n) = task_number(&id?, prefix) {
+            highest = highest.max(n);
+        }
+    }
+    Ok(highest + 1)
 }
 
 fn task_exists(conn: &Connection, id: &str) -> Result<bool> {

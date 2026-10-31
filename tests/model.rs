@@ -152,3 +152,83 @@ fn project_ids_must_be_canonical_uuids() {
         assert!(!is_project_id(bad), "{bad} accepted");
     }
 }
+
+#[test]
+fn task_prefix_defaults_to_the_upper_cased_first_letter_of_the_role() {
+    let config = ProjectConfig::default();
+    assert_eq!(config.task_prefix("engine").unwrap(), "E");
+    assert_eq!(config.task_prefix("lead").unwrap(), "L");
+    assert_eq!(config.task_prefix("spec").unwrap(), "S");
+    assert!(
+        config
+            .task_prefix("qa")
+            .unwrap_err()
+            .to_string()
+            .contains("unknown role `qa`")
+    );
+}
+
+#[test]
+fn task_prefix_uses_the_configured_prefix() {
+    let mut config = ProjectConfig::default();
+    config.roles.get_mut("engine").unwrap().prefix = Some("ENG".to_string());
+    assert_eq!(config.task_prefix("engine").unwrap(), "ENG");
+    config.check_prefixes().unwrap();
+}
+
+#[test]
+fn roles_sharing_a_prefix_are_rejected() {
+    let mut config = ProjectConfig::default();
+    config
+        .roles
+        .insert("simulation".to_string(), Default::default());
+    let shared = "roles `simulation` and `spec` share the task prefix `S`";
+    assert!(
+        config
+            .check_prefixes()
+            .unwrap_err()
+            .to_string()
+            .contains(shared)
+    );
+    assert!(
+        config
+            .task_prefix("engine")
+            .unwrap_err()
+            .to_string()
+            .contains(shared),
+        "no task gets an id while prefixes collide"
+    );
+
+    config.roles.get_mut("simulation").unwrap().prefix = Some("SIM".to_string());
+    config.check_prefixes().unwrap();
+    assert_eq!(config.task_prefix("simulation").unwrap(), "SIM");
+}
+
+#[test]
+fn invalid_or_underivable_prefixes_are_rejected() {
+    let mut config = ProjectConfig::default();
+    config.roles.get_mut("engine").unwrap().prefix = Some("E-".to_string());
+    assert!(
+        config
+            .check_prefixes()
+            .unwrap_err()
+            .to_string()
+            .contains("invalid task prefix `E-`")
+    );
+
+    let mut config = ProjectConfig::default();
+    config.roles.insert("_x".to_string(), Default::default());
+    assert_eq!(
+        config.task_prefix("_x").unwrap(),
+        "X",
+        "first letter or digit"
+    );
+    config.roles.insert("__".to_string(), Default::default());
+    assert!(
+        config
+            .check_prefixes()
+            .unwrap_err()
+            .to_string()
+            .contains("role `__` needs a task prefix")
+    );
+}

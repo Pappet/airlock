@@ -246,7 +246,11 @@ fn role(
                 .iter()
                 .map(|(name, r)| {
                     let mut line = format!(
-                        "{name}{}  {}",
+                        "{name}{}{}  {}",
+                        r.prefix
+                            .as_ref()
+                            .map(|p| format!(" (prefix {p})"))
+                            .unwrap_or_default(),
                         if r.clean_room { " (clean-room)" } else { "" },
                         r.description
                     );
@@ -271,6 +275,7 @@ fn role(
             instructions,
             read,
             clear_read,
+            prefix,
         } => {
             ensure!(
                 !name.is_empty()
@@ -294,7 +299,11 @@ fn role(
             } else if !read.is_empty() {
                 role.read = read;
             }
+            if let Some(prefix) = prefix {
+                role.prefix = Some(prefix).filter(|p| !p.is_empty());
+            }
             let role = role.clone();
+            config.check_prefixes()?;
             hub.save_config(&project.id, &config)?;
             out.print(&role, || format!("Saved role {name}"))
         }
@@ -384,8 +393,8 @@ fn task(
             out.print(&view, || work_package(&view))
         }
         TaskCommand::Add(spec) => {
-            ensure_role(project, &spec.role)?;
-            let task = store.add_task(new_task(spec), now)?;
+            let prefix = project.config.task_prefix(&spec.role)?;
+            let task = store.add_task(new_task(spec, prefix), now)?;
             let tasks = store.tasks(now)?;
             let view = TaskView::new(&task, &done_ids(&tasks));
             out.print(&view, || {
@@ -556,9 +565,9 @@ fn print_completion(out: &Output, completion: &Completion) -> Result<()> {
     )
 }
 
-fn new_task(spec: TaskSpec) -> NewTask {
+fn new_task(spec: TaskSpec, prefix: String) -> NewTask {
     NewTask {
-        id: spec.id,
+        prefix,
         title: spec.title,
         role: spec.role,
         priority: spec.priority,

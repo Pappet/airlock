@@ -293,10 +293,15 @@ impl Server {
                 )
             }
             "task_create" => {
+                ensure!(
+                    !args.contains_key("id"),
+                    "task ids are assigned by Airlock; omit `id` (the result carries the new id)"
+                );
+                let role = str_arg(args, "role")?;
                 let new = NewTask {
-                    id: str_arg(args, "id")?,
+                    prefix: self.project.config.task_prefix(&role)?,
                     title: str_arg(args, "title")?,
-                    role: str_arg(args, "role")?,
+                    role,
                     priority: opt_i32(args, "priority")?.unwrap_or(0),
                     blocked_by: str_list(args, "blocked_by")?,
                     read: str_list(args, "read")?,
@@ -304,7 +309,6 @@ impl Server {
                     r#do: str_arg(args, "do")?,
                     verify: str_arg(args, "verify")?,
                 };
-                ensure_role(&self.project, &new.role)?;
                 let task = self.store.add_task(new, now)?;
                 let tasks = self.store.tasks(now)?;
                 Ok(serde_json::to_value(TaskView::new(
@@ -505,9 +509,8 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
         ),
         tool(
             "task_create",
-            "Create a work package. Prerequisites in blocked_by must already exist.",
+            "Create a work package; Airlock assigns its id (role prefix + next number) and returns it. Prerequisites in blocked_by must already exist.",
             json!({
-                "id": { "type": "string" },
                 "title": { "type": "string" },
                 "role": { "type": "string" },
                 "do": { "type": "string", "description": "Concrete behavioral instructions" },
@@ -517,7 +520,7 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
                 "blocked_by": strings,
                 "priority": { "type": "integer" },
             }),
-            &["id", "title", "role", "do", "verify"],
+            &["title", "role", "do", "verify"],
         ),
         tool(
             "task_update",

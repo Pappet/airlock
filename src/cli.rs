@@ -191,8 +191,7 @@ pub enum TaskCommand {
 /// Fields of a new work package.
 #[derive(Debug, Args)]
 pub struct TaskSpec {
-    /// Unique task id (e.g. "E-6d")
-    pub id: String,
+    /// The id is assigned: the role's prefix and the next free number (e.g. "E-7")
     pub title: String,
     #[arg(long)]
     pub role: String,
@@ -282,6 +281,9 @@ pub enum RoleCommand {
         /// Empty the reading list
         #[arg(long, conflicts_with = "read")]
         clear_read: bool,
+        /// Task id prefix, e.g. "E" for E-1, E-2, … [default: the name's first letter, upper-cased]; "" resets it
+        #[arg(long)]
+        prefix: Option<String>,
     },
     /// Remove a role no task or binding uses
     Remove { name: String },

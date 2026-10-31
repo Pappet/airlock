@@ -67,12 +67,19 @@ impl Env {
     }
 }
 
+/// Adds a task for the role behind `id`'s prefix and checks it got `id`.
 fn add(env: &Env, cwd: &Path, id: &str, extra: &[&str]) {
+    let role = match id.split('-').next() {
+        Some("E") => "engine",
+        Some("L") => "lead",
+        Some("S") => "spec",
+        other => panic!("no role for prefix {other:?}"),
+    };
     let mut args = vec![
-        "task", "add", id, "Title", "--role", "engine", "--do", "x", "--verify", "y",
+        "task", "add", "Title", "--role", role, "--do", "x", "--verify", "y",
     ];
     args.extend_from_slice(extra);
-    env.ok(cwd, &args);
+    assert_eq!(env.json(cwd, &args)["id"], id);
 }
 
 #[test]

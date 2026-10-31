@@ -27,12 +27,11 @@ impl Env {
         };
         env.cli(&["init"]);
         env.cli(&[
-            "task", "add", "L-1", "Spec", "--role", "spec", "--do", "x", "--verify", "y",
+            "task", "add", "Spec", "--role", "spec", "--do", "x", "--verify", "y",
         ]);
         env.cli(&[
             "task",
             "add",
-            "E-1",
             "Engine",
             "--role",
             "engine",
@@ -236,24 +235,32 @@ fn unbound_session_runs_the_full_workflow() {
             call(
                 3,
                 "task_create",
-                json!({ "id": "E-2", "title": "More", "role": "engine", "do": "d", "verify": "v",
-                        "blocked_by": ["L-1"], "read": ["docs/spec/a.md"], "priority": 3 }),
+                json!({ "title": "More", "role": "engine", "do": "d", "verify": "v",
+                        "blocked_by": ["S-1"], "read": ["docs/spec/a.md"], "priority": 3 }),
             ),
-            call(4, "task_claim", json!({ "task_id": "L-1", "lease_minutes": 5 })),
-            call(5, "task_heartbeat", json!({ "task_id": "L-1" })),
-            call(6, "task_complete", json!({ "task_id": "L-1", "notes": "spec written" })),
+            call(4, "task_claim", json!({ "task_id": "S-1", "lease_minutes": 5 })),
+            call(5, "task_heartbeat", json!({ "task_id": "S-1" })),
+            call(6, "task_complete", json!({ "task_id": "S-1", "notes": "spec written" })),
             call(7, "task_next", json!({ "role": "engine" })),
-            call(8, "task_get", json!({ "task_id": "L-1" })),
+            call(8, "task_get", json!({ "task_id": "S-1" })),
             call(9, "question_ask", json!({ "topic": "melee.md", "question": "Arc?" })),
             call(10, "question_answer", json!({ "question_id": 1, "answer": "Truncated.", "spec_file": "docs/spec/melee.md" })),
             call(11, "question_resolve", json!({ "question_id": 1 })),
             call(12, "question_list", json!({ "status": "resolved" })),
             call(13, "doc_sync", json!({})),
             call(14, "task_claim", json!({ "task_id": "nope" })),
+            call(
+                15,
+                "task_create",
+                json!({ "id": "E-7", "title": "Own id", "role": "engine", "do": "d", "verify": "v" }),
+            ),
         ],
     );
     assert_eq!(s.tool_names(1).len(), 14);
+    let own_id = s.tool_error(15);
+    assert!(own_id.contains("ids are assigned by Airlock"), "{own_id}");
     assert!(s.tool_error(2).contains("missing required argument `role`"));
+    assert_eq!(s.ok(3)["id"], "E-2", "the result carries the new id");
     assert_eq!(s.ok(3)["status"], "blocked");
     assert!(s.ok(4)["lease_expires_at"].is_i64());
     assert_eq!(s.ok(6)["now_ready"], json!(["E-2"]));
@@ -283,7 +290,7 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
                 1,
                 "task_update",
                 json!({ "task_id": "E-1", "title": "Renamed", "touch": ["src/e.rs"],
-                        "blocked_by": ["L-1"], "priority": 2 }),
+                        "blocked_by": ["S-1"], "priority": 2 }),
             ),
             call(
                 2,
@@ -299,18 +306,18 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
             call(
                 5,
                 "task_update",
-                json!({ "task_id": "L-1", "blocked_by": ["L-1"] }),
+                json!({ "task_id": "S-1", "blocked_by": ["S-1"] }),
             ),
-            call(6, "task_claim", json!({ "task_id": "L-1" })),
+            call(6, "task_claim", json!({ "task_id": "S-1" })),
             call(
                 7,
                 "task_update",
-                json!({ "task_id": "L-1", "do": "Changed" }),
+                json!({ "task_id": "S-1", "do": "Changed" }),
             ),
             call(
                 8,
                 "task_update",
-                json!({ "task_id": "L-1", "do": "Changed", "force": true }),
+                json!({ "task_id": "S-1", "do": "Changed", "force": true }),
             ),
             call(
                 9,
@@ -344,11 +351,11 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
 #[test]
 fn overlapping_work_warns_and_asks_the_lead() {
     let env = Env::new();
-    for (id, priority) in [("E-5", "0"), ("E-6", "9")] {
+    // Added after E-1: E-2 (priority 0) and E-3 (priority 9).
+    for priority in ["0", "9"] {
         env.cli(&[
             "task",
             "add",
-            id,
             "Sim",
             "--role",
             "engine",
@@ -362,9 +369,9 @@ fn overlapping_work_warns_and_asks_the_lead() {
             priority,
         ]);
     }
-    env.cli(&["--session", "engine-2", "task", "claim", "E-5"]);
+    env.cli(&["--session", "engine-2", "task", "claim", "E-2"]);
 
-    // E-6 outranks E-1 but shares the occupied src/sim.rs; E-1 has no touch
+    // E-3 outranks E-1 but shares the occupied src/sim.rs; E-1 has no touch
     // data, so its overlap is unknown and it is not held back.
     let first = env.session(
         &["--role", "engine", "--session", "engine-1"],
@@ -379,23 +386,23 @@ fn overlapping_work_warns_and_asks_the_lead() {
         &[
             call(1, "session_start", json!({})),
             call(2, "task_next", json!({})),
-            call(3, "task_claim", json!({ "task_id": "E-6" })),
+            call(3, "task_claim", json!({ "task_id": "E-3" })),
             call(4, "question_list", json!({})),
         ],
     );
     let brief = &s.get(1)["result"];
     assert_eq!(
         brief["structuredContent"]["next"]["overlaps"][0]["id"],
-        "E-5"
+        "E-2"
     );
     let text = brief["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("src/sim.rs with E-5"), "{text}");
+    assert!(text.contains("src/sim.rs with E-2"), "{text}");
     let next = &s.ok(2)["task"];
-    assert_eq!(next["id"], "E-6", "nothing clean left: E-6 anyway");
+    assert_eq!(next["id"], "E-3", "nothing clean left: E-3 anyway");
     assert_eq!(next["overlaps"][0]["paths"], json!(["src/sim.rs"]));
 
     let claimed = s.ok(3);
-    assert_eq!(claimed["overlaps"][0]["id"], "E-5");
+    assert_eq!(claimed["overlaps"][0]["id"], "E-2");
     let question_id = claimed["question_id"].as_u64().unwrap();
     let questions = s.ok(4)["questions"].as_array().unwrap().clone();
     assert_eq!(
@@ -404,7 +411,7 @@ fn overlapping_work_warns_and_asks_the_lead() {
         "the clean-room session sees its overlap question"
     );
     assert_eq!(questions[0]["id"].as_u64(), Some(question_id));
-    assert_eq!(questions[0]["topic"], "overlap:E-6");
+    assert_eq!(questions[0]["topic"], "overlap:E-3");
 }
 
 #[test]
@@ -423,8 +430,8 @@ fn clean_room_session_gets_a_restricted_tool_set() {
             request(1, "tools/list", json!({})),
             call(2, "task_next", json!({})),
             call(3, "task_next", json!({ "role": "spec" })),
-            call(4, "task_get", json!({ "task_id": "L-1" })),
-            call(5, "task_claim", json!({ "task_id": "L-1" })),
+            call(4, "task_get", json!({ "task_id": "S-1" })),
+            call(5, "task_claim", json!({ "task_id": "S-1" })),
             call(
                 6,
                 "question_answer",
@@ -482,7 +489,7 @@ fn clean_room_session_gets_a_restricted_tool_set() {
 fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
     let env = Env::new();
     env.cli(&[
-        "task", "add", "L-2", "Plan", "--role", "lead", "--do", "x", "--verify", "y",
+        "task", "add", "Plan", "--role", "lead", "--do", "x", "--verify", "y",
     ]);
     let s = env.session(
         &["--role", "lead"],
@@ -491,11 +498,11 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
             call(
                 2,
                 "task_create",
-                json!({ "id": "E-9", "title": "t", "role": "engine", "do": "d", "verify": "v" }),
+                json!({ "title": "t", "role": "engine", "do": "d", "verify": "v" }),
             ),
             call(3, "task_claim", json!({ "task_id": "E-1" })),
             call(4, "task_get", json!({ "task_id": "E-1" })),
-            call(5, "task_claim", json!({ "task_id": "L-2" })),
+            call(5, "task_claim", json!({ "task_id": "L-1" })),
         ],
     );
     assert_eq!(s.tool_names(1).len(), 14);
@@ -509,7 +516,7 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
     let lease = s.ok(5);
     assert!(lease["lease_expires_at"].is_i64());
     assert!(
-        env.cli(&["task", "show", "L-2"])
+        env.cli(&["task", "show", "L-1"])
             .contains("claimed by: mcp-"),
         "generated session id"
     );
