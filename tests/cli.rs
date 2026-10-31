@@ -19,7 +19,6 @@ fn task_add_accepts_repeated_and_comma_separated_lists() {
     let cli = parse(&[
         "task",
         "add",
-        "E-6d",
         "Missiles implementation",
         "--role",
         "engine",
@@ -41,10 +40,29 @@ fn task_add_accepts_repeated_and_comma_separated_lists() {
     let Command::Task(TaskCommand::Add(spec)) = cli.command else {
         panic!("wrong command");
     };
+    assert_eq!(spec.title, "Missiles implementation");
     assert_eq!(spec.read, ["docs/spec/missiles.md", "docs/spec/combat.md"]);
     assert_eq!(spec.blocked_by, ["L-1", "L-2"]);
     assert_eq!(spec.r#do, "Implement shot clock");
     assert_eq!(spec.priority, -1);
+}
+
+#[test]
+fn task_add_takes_no_id() {
+    let own_id = Cli::try_parse_from([
+        "airlock", "task", "add", "E-6d", "Missiles", "--role", "engine", "--do", "x", "--verify",
+        "y",
+    ]);
+    assert!(own_id.is_err(), "ids are assigned by airlock");
+}
+
+#[test]
+fn role_set_takes_a_prefix() {
+    let cli = parse(&["role", "set", "simulation", "--prefix", "SIM"]);
+    let Command::Role(airlock::cli::RoleCommand::Set { prefix, .. }) = cli.command else {
+        panic!("wrong command");
+    };
+    assert_eq!(prefix.as_deref(), Some("SIM"));
 }
 
 #[test]

@@ -56,16 +56,22 @@ Shows the next ready task for the role (default: the worktree binding's role) (s
 #### `airlock task show <id>`
 Shows one task in full, including dependents and lease information.
 
-#### `airlock task add <id> "<title>" --role <role> --do "<instructions>" --verify "<command>" [options]`
+#### `airlock task add "<title>" --role <role> --do "<instructions>" --verify "<command>" [options]`
 ```bash
-airlock task add E-6d "Missiles implementation" --role engine \
+airlock task add "Missiles implementation" --role engine \
   --read docs/spec/missiles.md --read docs/spec/combat.md \
   --touch src/missiles.rs \
   --do "Implement shot clock and volley firing cycle" \
   --verify "cargo test missiles" \
   --blocked-by L-1,L-2 --priority 10
 ```
-`--read` and `--touch` are repeatable; `--blocked-by` takes a comma-separated list of **existing** task ids. Task ids consist of ASCII letters, digits, `-`, `_`, and `.`. Fails on an invalid or duplicate id, an unknown role, or an unknown prerequisite.
+Airlock assigns the id: the role's prefix and the next free number (Spec 01 §2.1, e.g. `Added E-7 (ready)`). `--read` and `--touch` are repeatable; `--blocked-by` takes a comma-separated list of **existing** task ids. Fails on an unknown role, an unknown prerequisite, or roles sharing a prefix.
+
+A script that adds dependent tasks reads each new id from the JSON output:
+```bash
+spec=$(airlock --json task add "Write missiles spec" --role spec --do "…" --verify "…" | jq -r .id)
+airlock task add "Missiles implementation" --role engine --blocked-by "$spec" --do "…" --verify "…"
+```
 
 #### `airlock task edit <id> [--title <t>] [--role <r>] [--priority <n>] [--do <i>] [--verify <v>] [--read <f>…] [--touch <f>…] [--blocked-by <ids>] [--force]`
 ```bash

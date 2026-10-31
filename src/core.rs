@@ -142,6 +142,26 @@ pub fn check_task_id(id: &str) -> Result<(), String> {
     }
 }
 
+/// Checks a task id prefix: one or more ASCII letters or digits.
+pub fn check_task_prefix(prefix: &str) -> Result<(), String> {
+    if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphanumeric()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid task prefix `{prefix}`: use one or more letters or digits"
+        ))
+    }
+}
+
+/// The sequence number of `id` under `prefix`: `Some(n)` for `<prefix>-<n>`.
+pub fn task_number(id: &str, prefix: &str) -> Option<u64> {
+    let digits = id.strip_prefix(prefix)?.strip_prefix('-')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// Ids of the tasks that list `id` as a prerequisite (the inverse of `blocked_by`).
 pub fn dependents<'a>(tasks: &'a [Task], id: &str) -> Vec<&'a str> {
     tasks

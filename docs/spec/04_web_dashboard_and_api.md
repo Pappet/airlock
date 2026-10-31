@@ -64,7 +64,7 @@ All endpoints exchange JSON and require the bearer token (§2). Request bodies u
 |---|---|---|
 | `GET` | `/api/project` | Project id, name, roles (`name`, `description`, `clean_room`), `lease_minutes`, dashboard `session`, Airlock `version` |
 | `GET` | `/api/tasks?role=&status=` | List tasks (with effective `status`) |
-| `POST` | `/api/tasks` | Create a task (`201`; invalid fields, unknown role or prerequisite, duplicate id: `400`) |
+| `POST` | `/api/tasks` | Create a task with the `task_create` parameters; the response carries the assigned id (`201`; invalid or unknown fields including `id`, unknown role or prerequisite, roles sharing a prefix: `400`) |
 | `GET` | `/api/tasks/{id}` | Task details |
 | `PATCH` | `/api/tasks/{id}` | Edit task content with the `task_update` parameters (no field, unknown role or field: `400`; task past `open` without `force`, unknown prerequisite, cycle: `409`) |
 | `POST` | `/api/tasks/{id}/release` | Force-release a lease |

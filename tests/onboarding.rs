@@ -100,13 +100,13 @@ impl Env {
         serde_json::from_str(&self.ok(cwd, &args)).unwrap()
     }
 
+    /// Adds an engine task and checks it got `id`.
     fn add_engine_task(&self, id: &str) {
-        self.ok(
+        let task = self.json(
             &self.main,
             &[
                 "task",
                 "add",
-                id,
                 "Engine work",
                 "--role",
                 "engine",
@@ -116,6 +116,7 @@ impl Env {
                 "cargo test",
             ],
         );
+        assert_eq!(task["id"], id);
     }
 }
 
@@ -202,6 +203,66 @@ fn dash_c_runs_as_if_started_in_the_directory() {
 }
 
 #[test]
+fn role_prefixes_number_tasks_and_must_be_unique() {
+    let env = Env::new();
+    env.add_engine_task("E-1");
+    let clash = env.fail(
+        &env.main,
+        &["role", "set", "simulation", "--description", "Sim"],
+    );
+    assert!(
+        clash.contains("roles `simulation` and `spec` share the task prefix `S`"),
+        "{clash}"
+    );
+    assert!(env.json(&env.main, &["role", "list"])["simulation"].is_null());
+
+    let role = env.json(&env.main, &["role", "set", "simulation", "--prefix", "SIM"]);
+    assert_eq!(role["prefix"], "SIM");
+    let task = env.json(
+        &env.main,
+        &[
+            "task",
+            "add",
+            "Run",
+            "--role",
+            "simulation",
+            "--do",
+            "x",
+            "--verify",
+            "y",
+        ],
+    );
+    assert_eq!(task["id"], "SIM-1");
+    env.add_engine_task("E-2");
+
+    let taken = env.fail(&env.main, &["role", "set", "simulation", "--prefix", "E"]);
+    assert!(taken.contains("share the task prefix `E`"), "{taken}");
+    let bad = env.fail(&env.main, &["role", "set", "simulation", "--prefix", "S-"]);
+    assert!(bad.contains("invalid task prefix `S-`"), "{bad}");
+    assert_eq!(
+        env.json(&env.main, &["role", "list"])["simulation"]["prefix"],
+        "SIM",
+        "refused changes are not saved"
+    );
+    assert!(
+        env.ok(&env.main, &["role", "list"])
+            .contains("simulation (prefix SIM)")
+    );
+
+    // `--prefix ""` returns to the default: `R` for `runner`.
+    env.ok(&env.main, &["role", "set", "runner", "--prefix", "RUN"]);
+    let reset = env.json(&env.main, &["role", "set", "runner", "--prefix", ""]);
+    assert!(reset.get("prefix").is_none(), "{reset}");
+    let task = env.json(
+        &env.main,
+        &[
+            "task", "add", "Go", "--role", "runner", "--do", "x", "--verify", "y",
+        ],
+    );
+    assert_eq!(task["id"], "R-1");
+}
+
+#[test]
 fn roles_are_managed_from_the_cli() {
     let env = Env::new();
     let qa = env.json(
@@ -234,7 +295,7 @@ fn roles_are_managed_from_the_cli() {
     env.ok(
         &env.main,
         &[
-            "task", "add", "Q-1", "Check", "--role", "qa", "--do", "x", "--verify", "y",
+            "task", "add", "Check", "--role", "qa", "--do", "x", "--verify", "y",
         ],
     );
     assert!(
@@ -635,7 +696,6 @@ fn start_takes_a_second_role_in_a_shared_checkout() {
         &[
             "task",
             "add",
-            "L-1",
             "Lead work",
             "--role",
             "lead",

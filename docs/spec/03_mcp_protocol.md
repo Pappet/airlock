@@ -83,8 +83,8 @@ Returns the next ready task for a role (Spec 01 §2.1 selection order) without c
 - **Returns:** `{ task_id, state, now_ready: [task ids] }`. Only the lease holder can complete via MCP.
 
 ### 3.7 `task_create`
-- **Parameters:** `id`, `title`, `role`, `do`, `verify` (strings, required); `read`, `touch`, `blocked_by` (string arrays, optional); `priority` (integer, optional)
-- **Returns:** the created task.
+- **Parameters:** `title`, `role`, `do`, `verify` (strings, required); `read`, `touch`, `blocked_by` (string arrays, optional); `priority` (integer, optional). There is no `id` parameter: Airlock assigns it (Spec 01 §2.1), and a call that passes `id` fails with a message saying so.
+- **Returns:** the created task, including its new `id`.
 
 ### 3.8 `task_update`
 - **Parameters:** `task_id` (string, required); `title`, `role`, `do`, `verify` (strings, optional); `read`, `touch`, `blocked_by` (string arrays, optional; replace the list, `[]` empties it); `priority` (integer, optional); `force` (boolean, optional; default `false`)

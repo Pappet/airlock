@@ -85,13 +85,14 @@ Roles gain two optional fields, carried in `project.json` and in the snapshot (b
 |---|---|
 | `instructions` | Short rules for sessions of this role, shown in the briefing |
 | `read` | Files every session of this role reads first (e.g. `CLAUDE.md`, `docs/PROCESS.md`) |
+| `prefix` | Task id prefix: tasks of the role are numbered `<prefix>-1`, `<prefix>-2`, … (Spec 01 §2.1). Letters and digits; default: the role name's first letter or digit, upper-cased. Unique across roles |
 
 ```bash
 airlock role list
-airlock role set <name> [--description <text>] [--clean-room <true|false>] [--instructions <text>] [--read <file>]...
+airlock role set <name> [--description <text>] [--clean-room <true|false>] [--instructions <text>] [--read <file>]... [--prefix <P>]
 airlock role remove <name>
 ```
-`role set` creates the role if missing; given `--read` options replace the list, `--clear-read` empties it, and `--instructions ""` removes the instructions. `role remove` refuses while tasks or bindings use the role.
+`role set` creates the role if missing; given `--read` options replace the list, `--clear-read` empties it, `--instructions ""` removes the instructions, and `--prefix ""` returns to the default prefix. A change that leaves two roles with the same prefix is refused (e.g. adding `simulation` next to `spec` needs `--prefix SIM`). A new prefix applies to tasks created afterwards; existing tasks keep their ids (Spec 01 §2.1). `role remove` refuses while tasks or bindings use the role.
 
 ---
 

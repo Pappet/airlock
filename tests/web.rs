@@ -255,17 +255,20 @@ fn post_requires_json() {
 #[test]
 fn patch_requires_json() {
     let s = Server::start();
-    add_task(&s, "A", &[]);
+    add_task(&s, "E-1", &[]);
     let auth = format!("Bearer {}", s.token);
     let host = s.host();
     let r = s.raw(
         "PATCH",
-        "/api/tasks/A",
+        "/api/tasks/E-1",
         &[("Host", &host), ("Authorization", &auth)],
         r#"{"title":"x"}"#,
     );
     assert_eq!(r.status, 415);
-    assert_eq!(s.api("GET", "/api/tasks/A", None).json()["title"], "Title");
+    assert_eq!(
+        s.api("GET", "/api/tasks/E-1", None).json()["title"],
+        "Title"
+    );
 }
 
 #[test]
@@ -291,11 +294,12 @@ fn port_in_use_fails() {
     assert!(stderr.contains(&s.port.to_string()), "{stderr}");
 }
 
+/// Adds an engine task and checks it got the expected id.
 fn add_task(s: &Server, id: &str, touch: &[&str]) {
     let mut args = vec![
+        "--json",
         "task",
         "add",
-        id,
         "Title",
         "--role",
         "engine",
@@ -307,7 +311,9 @@ fn add_task(s: &Server, id: &str, touch: &[&str]) {
     for path in touch {
         args.extend(["--touch", path]);
     }
-    s.cli(&args);
+    let out = s.cli(&args);
+    let task: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(task["id"], id);
 }
 
 fn submit_for_review(s: &Server, id: &str) {
@@ -322,18 +328,19 @@ fn create_list_show_task() {
         "POST",
         "/api/tasks",
         Some(serde_json::json!({
-            "id": "A", "title": "Alpha", "role": "engine", "do": "Do it",
+            "title": "Alpha", "role": "engine", "do": "Do it",
             "verify": "cargo test", "touch": ["src/a.rs"], "priority": 3
         })),
     );
     assert_eq!(created.status, 201, "{}", created.body);
+    assert_eq!(created.json()["id"], "E-1", "airlock assigns the id");
     assert_eq!(created.json()["status"], "ready");
     s.api(
         "POST",
         "/api/tasks",
         Some(serde_json::json!({
-            "id": "B", "title": "Beta", "role": "engine", "do": "x", "verify": "y",
-            "blocked_by": ["A"]
+            "title": "Beta", "role": "engine", "do": "x", "verify": "y",
+            "blocked_by": ["E-1"]
         })),
     );
 
@@ -346,16 +353,16 @@ fn create_list_show_task() {
     let lead = s.api("GET", "/api/tasks?role=lead", None).json();
     assert!(lead.as_array().unwrap().is_empty());
 
-    let shown = s.api("GET", "/api/tasks/A", None);
+    let shown = s.api("GET", "/api/tasks/E-1", None);
     assert_eq!(shown.status, 200);
-    assert_eq!(shown.json()["dependents"], serde_json::json!(["B"]));
+    assert_eq!(shown.json()["dependents"], serde_json::json!(["E-2"]));
 }
 
 #[test]
 fn create_with_invalid_input_is_400() {
     let s = Server::start();
     let base = serde_json::json!({
-        "id": "A", "title": "Alpha", "role": "engine", "do": "x", "verify": "y"
+        "title": "Alpha", "role": "engine", "do": "x", "verify": "y"
     });
     let mut unknown_role = base.clone();
     unknown_role["role"] = "nope".into();
@@ -363,7 +370,9 @@ fn create_with_invalid_input_is_400() {
     missing.as_object_mut().unwrap().remove("title");
     let mut bad_prereq = base.clone();
     bad_prereq["blocked_by"] = serde_json::json!(["Z"]);
-    for body in [unknown_role, missing, bad_prereq] {
+    let mut own_id = base.clone();
+    own_id["id"] = "E-7".into();
+    for body in [unknown_role, missing, bad_prereq, own_id] {
         let r = s.api("POST", "/api/tasks", Some(body.clone()));
         assert_eq!(r.status, 400, "{body}: {}", r.body);
         assert!(r.json()["error"].is_string());
@@ -407,16 +416,16 @@ fn unknown_ids_are_404() {
 #[test]
 fn approve_and_reject_flow() {
     let s = Server::start();
-    add_task(&s, "A", &[]);
-    add_task(&s, "B", &[]);
-    submit_for_review(&s, "A");
-    submit_for_review(&s, "B");
+    add_task(&s, "E-1", &[]);
+    add_task(&s, "E-2", &[]);
+    submit_for_review(&s, "E-1");
+    submit_for_review(&s, "E-2");
     let review = s.api("GET", "/api/tasks?status=in_review", None).json();
     assert_eq!(review.as_array().unwrap().len(), 2);
 
     let approved = s.api(
         "POST",
-        "/api/tasks/A/approve",
+        "/api/tasks/E-1/approve",
         Some(serde_json::json!({ "notes": "looks good" })),
     );
     assert_eq!(approved.status, 200, "{}", approved.body);
@@ -425,7 +434,7 @@ fn approve_and_reject_flow() {
 
     let rejected = s.api(
         "POST",
-        "/api/tasks/B/reject",
+        "/api/tasks/E-2/reject",
         Some(serde_json::json!({ "notes": "missing test" })),
     );
     assert_eq!(rejected.status, 200, "{}", rejected.body);
@@ -436,12 +445,12 @@ fn approve_and_reject_flow() {
 #[test]
 fn patch_edits_task_content() {
     let s = Server::start();
-    add_task(&s, "A", &["src/a.rs"]);
-    add_task(&s, "B", &[]);
+    add_task(&s, "E-1", &["src/a.rs"]);
+    add_task(&s, "E-2", &[]);
     let r = s.api(
         "PATCH",
-        "/api/tasks/B",
-        Some(serde_json::json!({ "title": "Beta", "blocked_by": ["A"], "touch": ["src/b.rs"] })),
+        "/api/tasks/E-2",
+        Some(serde_json::json!({ "title": "Beta", "blocked_by": ["E-1"], "touch": ["src/b.rs"] })),
     );
     assert_eq!(r.status, 200, "{}", r.body);
     let b = r.json();
@@ -457,13 +466,13 @@ fn patch_edits_task_content() {
         serde_json::json!({ "role": "nope" }),
         serde_json::json!({ "state": "done" }),
     ] {
-        let r = s.api("PATCH", "/api/tasks/B", Some(body.clone()));
+        let r = s.api("PATCH", "/api/tasks/E-2", Some(body.clone()));
         assert_eq!(r.status, 400, "{body}: {}", r.body);
     }
     let cycle = s.api(
         "PATCH",
-        "/api/tasks/A",
-        Some(serde_json::json!({ "blocked_by": ["B"] })),
+        "/api/tasks/E-1",
+        Some(serde_json::json!({ "blocked_by": ["E-2"] })),
     );
     assert_eq!(cycle.status, 409, "{}", cycle.body);
     assert!(
@@ -479,16 +488,16 @@ fn patch_edits_task_content() {
     );
     assert_eq!(missing.status, 404);
 
-    s.cli(&["--session", "s1", "task", "claim", "A"]);
+    s.cli(&["--session", "s1", "task", "claim", "E-1"]);
     let started = s.api(
         "PATCH",
-        "/api/tasks/A",
+        "/api/tasks/E-1",
         Some(serde_json::json!({ "title": "x" })),
     );
     assert_eq!(started.status, 409, "{}", started.body);
     let forced = s.api(
         "PATCH",
-        "/api/tasks/A",
+        "/api/tasks/E-1",
         Some(serde_json::json!({ "title": "x", "force": true })),
     );
     assert_eq!(forced.status, 200, "{}", forced.body);
@@ -498,10 +507,10 @@ fn patch_edits_task_content() {
 #[test]
 fn reject_without_notes_is_400() {
     let s = Server::start();
-    add_task(&s, "A", &[]);
-    submit_for_review(&s, "A");
+    add_task(&s, "E-1", &[]);
+    submit_for_review(&s, "E-1");
     for body in [serde_json::json!({}), serde_json::json!({ "notes": "  " })] {
-        let r = s.api("POST", "/api/tasks/A/reject", Some(body));
+        let r = s.api("POST", "/api/tasks/E-1/reject", Some(body));
         assert_eq!(r.status, 400, "{}", r.body);
     }
 }
@@ -509,19 +518,31 @@ fn reject_without_notes_is_400() {
 #[test]
 fn invalid_transitions_are_409() {
     let s = Server::start();
-    add_task(&s, "A", &[]);
-    let r = s.api("POST", "/api/tasks/A/approve", Some(serde_json::json!({})));
+    add_task(&s, "E-1", &[]);
+    let r = s.api(
+        "POST",
+        "/api/tasks/E-1/approve",
+        Some(serde_json::json!({})),
+    );
     assert_eq!(r.status, 409, "{}", r.body);
-    let r = s.api("POST", "/api/tasks/A/release", Some(serde_json::json!({})));
+    let r = s.api(
+        "POST",
+        "/api/tasks/E-1/release",
+        Some(serde_json::json!({})),
+    );
     assert_eq!(r.status, 409, "{}", r.body);
 }
 
 #[test]
 fn force_release_frees_lease() {
     let s = Server::start();
-    add_task(&s, "A", &[]);
-    s.cli(&["--session", "s1", "task", "claim", "A"]);
-    let r = s.api("POST", "/api/tasks/A/release", Some(serde_json::json!({})));
+    add_task(&s, "E-1", &[]);
+    s.cli(&["--session", "s1", "task", "claim", "E-1"]);
+    let r = s.api(
+        "POST",
+        "/api/tasks/E-1/release",
+        Some(serde_json::json!({})),
+    );
     assert_eq!(r.status, 200, "{}", r.body);
     assert_eq!(r.json()["status"], "ready");
     assert!(r.json()["claimed_by"].is_null());
@@ -580,20 +601,23 @@ fn project_and_overlaps_endpoints() {
             .any(|r| r["name"] == "engine")
     );
 
-    add_task(&s, "A", &["src/sim.rs", "src/a.rs"]);
-    add_task(&s, "B", &["./src/sim.rs"]);
-    add_task(&s, "C", &[]);
-    s.cli(&["--session", "s1", "task", "claim", "A"]);
+    add_task(&s, "E-1", &["src/sim.rs", "src/a.rs"]);
+    add_task(&s, "E-2", &["./src/sim.rs"]);
+    add_task(&s, "E-3", &[]);
+    s.cli(&["--session", "s1", "task", "claim", "E-1"]);
     let overlaps = s.api("GET", "/api/overlaps", None).json();
     assert_eq!(overlaps["files"][0]["path"], "src/sim.rs");
-    assert_eq!(overlaps["files"][0]["tasks"], serde_json::json!(["A", "B"]));
+    assert_eq!(
+        overlaps["files"][0]["tasks"],
+        serde_json::json!(["E-1", "E-2"])
+    );
     assert_eq!(
         overlaps["files"][0]["occupied_by"],
-        serde_json::json!(["A"])
+        serde_json::json!(["E-1"])
     );
-    assert_eq!(overlaps["no_touch"], serde_json::json!(["C"]));
+    assert_eq!(overlaps["no_touch"], serde_json::json!(["E-3"]));
     let b = &overlaps["tasks"][1];
-    assert_eq!(b["id"], "B");
+    assert_eq!(b["id"], "E-2");
     assert_eq!(b["overlaps"][0]["occupied"], true);
     assert_eq!(b["stage"], 1);
 }
@@ -604,11 +628,11 @@ fn verify_is_never_executed() {
     let marker = s.project.join("verify-ran");
     let verify = format!("touch {}", marker.display());
     s.cli(&[
-        "task", "add", "A", "Title", "--role", "engine", "--do", "x", "--verify", &verify,
+        "task", "add", "Title", "--role", "engine", "--do", "x", "--verify", &verify,
     ]);
     for path in [
         "/api/tasks",
-        "/api/tasks/A",
+        "/api/tasks/E-1",
         "/api/overlaps",
         "/api/project",
     ] {
@@ -620,7 +644,7 @@ fn verify_is_never_executed() {
 #[test]
 fn events_report_task_and_question_changes() {
     let s = Server::start();
-    add_task(&s, "A", &[]);
+    add_task(&s, "E-1", &[]);
     let mut stream = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_millis(200)))
@@ -645,8 +669,8 @@ fn events_report_task_and_question_changes() {
     };
     read_until("text/event-stream", &mut seen);
 
-    s.cli(&["--session", "s1", "task", "claim", "A"]);
-    read_until("event: task_changed\ndata: {\"id\":\"A\"}", &mut seen);
+    s.cli(&["--session", "s1", "task", "claim", "E-1"]);
+    read_until("event: task_changed\ndata: {\"id\":\"E-1\"}", &mut seen);
     s.cli(&["question", "ask", "Why?", "--topic", "melee.md"]);
     read_until("event: question_changed\ndata: {\"id\":1}", &mut seen);
 }

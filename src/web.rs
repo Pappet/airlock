@@ -343,7 +343,6 @@ async fn list_tasks(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateTask {
-    id: String,
     title: String,
     role: String,
     #[serde(default)]
@@ -364,10 +363,9 @@ async fn create_task(State(state): State<Shared>, bytes: Bytes) -> Result<Respon
         &state,
         StatusCode::BAD_REQUEST,
         move |store, project, now| {
-            ensure_role(project, &new.role)?;
             let task = store.add_task(
                 NewTask {
-                    id: new.id,
+                    prefix: project.config.task_prefix(&new.role)?,
                     title: new.title,
                     role: new.role,
                     priority: new.priority,

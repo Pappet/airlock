@@ -49,15 +49,15 @@ cargo build --release
 ```bash
 airlock init --template clean-room --yes      # register, commit layout, create ../<dir>-engine, bind roles
 
-airlock task add E-6d "Missiles implementation" --role engine \
+airlock task add "Missiles implementation" --role engine \
   --read docs/spec/missiles.md --touch src/missiles.rs \
   --do "Implement shot clock and volley firing cycle" \
-  --verify "cargo test missiles"
+  --verify "cargo test missiles"            # prints "Added E-1 (ready)": ids are assigned
 
 export AIRLOCK_SESSION=engine-agent-01
 airlock task next --role engine               # show next ready work package
-airlock task claim E-6d                       # take it under a lease
-airlock task done E-6d --notes "All unit tests passing."
+airlock task claim E-1                        # take it under a lease
+airlock task done E-1 --notes "All unit tests passing."
 
 airlock question ask "How does blast radius degrade?" --topic missiles.md
 airlock sync                                  # export snapshot and views for git

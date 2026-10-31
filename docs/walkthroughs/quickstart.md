@@ -59,20 +59,20 @@ airlock role set engine --instructions "Work only from docs/spec; never read dec
 ## 3. Creating Work Packages
 
 ```bash
-airlock task add L-1 "Write setup spec" --role spec \
+spec=$(airlock --json task add "Write setup spec" --role spec \
   --touch docs/spec/setup.md \
   --do "Describe window size, title, and event loop behavior" \
-  --verify "Spec reviewed by lead"
+  --verify "Spec reviewed by lead" | jq -r .id)     # S-1
 
-airlock task add E-1 "Initial setup" --role engine \
+airlock task add "Initial setup" --role engine \
   --read docs/spec/setup.md \
   --touch src/main.rs \
   --do "Initialize game window and event loop" \
   --verify "cargo test setup" \
-  --blocked-by L-1
+  --blocked-by "$spec"                               # Added E-1 (blocked)
 ```
 
-Prerequisites must exist before a task can reference them. `E-1` stays `blocked` until `L-1` is `done`.
+Airlock assigns ids: the role's prefix (`S` for spec, `E` for engine, set with `airlock role set <role> --prefix <P>`) and the next free number. Prerequisites must exist before a task can reference them. `E-1` stays `blocked` until `S-1` is `done`.
 
 ---
 
