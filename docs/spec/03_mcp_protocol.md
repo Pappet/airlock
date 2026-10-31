@@ -60,7 +60,7 @@ The session briefing (Spec 06 §3): role, rules, reading list, claimed work, nex
 ### 3.1 `task_next`
 Returns the next ready task for a role (Spec 01 §2.1 selection order) without claiming it.
 - **Parameters:** `role` (string; required unless bound)
-- **Returns:** `{ task: { id, title, blocked_by, read, touch, do, verify, notes? } }`, or `{ task: null }` if none is ready. `notes` appears when present, e.g. review feedback after a rejection. Kept compact — the work package is meant to replace reading the whole plan.
+- **Returns:** `{ task: { id, title, blocked_by, read, touch, do, verify, notes?, overlaps? } }`, or `{ task: null }` if none is ready. `notes` appears when present, e.g. review feedback after a rejection. `overlaps` (`[{ id, occupied, paths }]`) appears when no ready task is free of overlap with running work and this one is handed out anyway. Kept compact — the work package is meant to replace reading the whole plan.
 
 ### 3.2 `task_get`
 - **Parameters:** `task_id` (string)
@@ -68,7 +68,7 @@ Returns the next ready task for a role (Spec 01 §2.1 selection order) without c
 
 ### 3.3 `task_claim`
 - **Parameters:** `task_id` (string), `lease_minutes` (integer, optional; default from project config)
-- **Returns:** `{ task_id, lease_expires_at }`
+- **Returns:** `{ task_id, lease_expires_at }`, plus `overlaps` and `question_id` when the task shares files with running work. The claim is not refused; the question for the lead is the session's own, so clean-room sessions see its answer in `question_list` and the briefing (Spec 01 §2.1).
 
 ### 3.4 `task_heartbeat`
 - **Parameters:** `task_id` (string), `lease_minutes` (integer, optional)

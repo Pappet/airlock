@@ -61,7 +61,7 @@ A briefing is computed from the live store for one session and role:
 - project name, session id, role, whether the role is clean-room;
 - the role's description, instructions, and reading list (§4);
 - the session's claimed tasks with their work packages and remaining lease time;
-- otherwise the next ready work package of the role (Spec 01 §2.1);
+- otherwise the next ready work package of the role (Spec 01 §2.1), with an overlap note when it shares files with running work;
 - tasks of the same role held by *other* sessions, with session and remaining lease time, so a session can tell live work from a lease about to expire;
 - the session's own questions that have been answered but not resolved;
 - a fixed workflow reminder: claim before starting, heartbeat during long work, complete when *Verify* passes, ask instead of guessing.

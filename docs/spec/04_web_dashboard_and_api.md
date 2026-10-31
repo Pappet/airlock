@@ -43,7 +43,7 @@ Two open tasks (effective status other than `done`) **overlap** when their `touc
 - A task that is `in_progress` or `in_review` **occupies** its paths: its work is not merged yet. Overlaps with an occupying task are emphasized.
 - Kanban cards and the task details carry an overlap badge naming the overlapping tasks and shared paths.
 
-The analysis is a pure function of the task list (`src/overlap.rs`); the API serves it as `GET /api/overlaps`, and a later claim-time warning reuses it.
+The analysis is a pure function of the task list (`src/overlap.rs`); the API serves it as `GET /api/overlaps`, and `task next` and `task claim` reuse it for the claim-time warning (Spec 01 §2.1).
 
 ### 3.6 Stages View
 Open tasks in columns by dependency stage: stage 1 holds every open task without open prerequisites (ready, in progress, in review); a blocked task sits in stage `1 + max(stage of its open prerequisites)`. Done prerequisites are ignored. `blocked_by` edges are drawn as arrows. Selecting a task highlights every task it overlaps with and lists the shared paths; selecting it again or pressing Escape clears the selection. The role filter applies.
