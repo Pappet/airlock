@@ -67,6 +67,13 @@ airlock task add E-6d "Missiles implementation" --role engine \
 ```
 `--read` and `--touch` are repeatable; `--blocked-by` takes a comma-separated list of **existing** task ids. Task ids consist of ASCII letters, digits, `-`, `_`, and `.`. Fails on an invalid or duplicate id, an unknown role, or an unknown prerequisite.
 
+#### `airlock task edit <id> [--title <t>] [--role <r>] [--priority <n>] [--do <i>] [--verify <v>] [--read <f>…] [--touch <f>…] [--blocked-by <ids>] [--force]`
+```bash
+airlock task edit E-6d --touch src/missiles.rs --touch src/combat.rs --blocked-by L-1
+airlock task edit E-6d --clear-blocked-by --priority 5
+```
+Changes the content of a task; omitted fields keep their values, at least one field must be given. `--read`, `--touch`, and `--blocked-by` replace their whole list; `--clear-read`, `--clear-touch`, and `--clear-blocked-by` empty it. The id, state, claim, lease, and notes cannot be edited. A task that is `in_progress`, `in_review`, or `done` needs `--force`; the claim and lease survive the edit. Fails on an unknown role, an unknown prerequisite, or a dependency cycle (the whole graph is checked, Spec 01 §2.1).
+
 #### `airlock task claim <id> [--lease <minutes>]`
 Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked.
 

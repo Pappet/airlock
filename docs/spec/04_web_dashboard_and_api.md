@@ -15,7 +15,7 @@ The API can mutate project state and exposes every question and answer, so it mu
 - **Loopback only.** Bind `127.0.0.1` (and `::1` where the host has IPv6); there is no option to bind other interfaces.
 - **Access token.** On startup the server generates a random 256-bit token (64 hex digits) and prints the dashboard URL as `http://127.0.0.1:<port>/#token=<token>`. Every `/api/*` request must carry `Authorization: Bearer <token>`, else `401`. The dashboard reads the token from the URL fragment (which browsers never send to servers), keeps it in `sessionStorage`, and removes it from the address bar. A restarted server has a new token: opening its new URL in the same tab reloads the dashboard, and a rejected token is shown as such instead of being retried.
 - **DNS-rebinding defense.** Requests whose `Host` header is not `127.0.0.1:<port>`, `localhost:<port>`, or `[::1]:<port>` are rejected with `403` — for every path, including the dashboard assets.
-- **CSRF defense.** `POST` requests must have `Content-Type: application/json`, else `415`; requests with an `Origin` header other than `http://<Host>` are rejected with `403`. No CORS headers are sent. Assets carry a `Content-Security-Policy` of `default-src 'self'`.
+- **CSRF defense.** Requests with any method but `GET` and `HEAD` must have `Content-Type: application/json`, else `415`; requests with an `Origin` header other than `http://<Host>` are rejected with `403`. No CORS headers are sent. Assets carry a `Content-Security-Policy` of `default-src 'self'`.
 - **No command execution.** The `verify` field is displayed, never executed — neither by the server nor by the dashboard. This holds for all of Airlock.
 
 ---
@@ -66,6 +66,7 @@ All endpoints exchange JSON and require the bearer token (§2). Request bodies u
 | `GET` | `/api/tasks?role=&status=` | List tasks (with effective `status`) |
 | `POST` | `/api/tasks` | Create a task (`201`; invalid fields, unknown role or prerequisite, duplicate id: `400`) |
 | `GET` | `/api/tasks/{id}` | Task details |
+| `PATCH` | `/api/tasks/{id}` | Edit task content with the `task_update` parameters (no field, unknown role or field: `400`; task past `open` without `force`, unknown prerequisite, cycle: `409`) |
 | `POST` | `/api/tasks/{id}/release` | Force-release a lease |
 | `POST` | `/api/tasks/{id}/approve` | Approve a task under review |
 | `POST` | `/api/tasks/{id}/reject` | Reject a task under review (`notes` required) |
