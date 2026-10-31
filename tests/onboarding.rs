@@ -248,6 +248,18 @@ fn role_prefixes_number_tasks_and_must_be_unique() {
         env.ok(&env.main, &["role", "list"])
             .contains("simulation (prefix SIM)")
     );
+
+    // `--prefix ""` returns to the default: `R` for `runner`.
+    env.ok(&env.main, &["role", "set", "runner", "--prefix", "RUN"]);
+    let reset = env.json(&env.main, &["role", "set", "runner", "--prefix", ""]);
+    assert!(reset.get("prefix").is_none(), "{reset}");
+    let task = env.json(
+        &env.main,
+        &[
+            "task", "add", "Go", "--role", "runner", "--do", "x", "--verify", "y",
+        ],
+    );
+    assert_eq!(task["id"], "R-1");
 }
 
 #[test]

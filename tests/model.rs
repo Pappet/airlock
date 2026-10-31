@@ -3,7 +3,9 @@
 mod common;
 
 use airlock::config::ProjectConfig;
-use airlock::core::{GraphError, TaskState, TaskStatus, check_dependencies, dependents};
+use airlock::core::{
+    GraphError, TaskState, TaskStatus, check_dependencies, dependents, task_number,
+};
 use common::task;
 
 #[test]
@@ -231,4 +233,24 @@ fn invalid_or_underivable_prefixes_are_rejected() {
             .to_string()
             .contains("role `__` needs a task prefix")
     );
+}
+
+#[test]
+fn task_number_reads_only_prefix_dash_digits() {
+    assert_eq!(task_number("E-7", "E"), Some(7));
+    assert_eq!(task_number("E-007", "E"), Some(7));
+    assert_eq!(task_number("SIM-12", "SIM"), Some(12));
+    for (id, prefix) in [
+        ("E-6d", "E"),
+        ("e-7", "E"),
+        ("E", "E"),
+        ("E-", "E"),
+        ("E--7", "E"),
+        ("E-+7", "E"),
+        ("EX-7", "E"),
+        ("SIM-12", "S"),
+        ("E-99999999999999999999999", "E"),
+    ] {
+        assert_eq!(task_number(id, prefix), None, "{id} under {prefix}");
+    }
 }
