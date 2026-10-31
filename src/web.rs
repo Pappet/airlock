@@ -8,7 +8,7 @@
 //! invocation. A watcher thread polls `PRAGMA data_version` once per second
 //! and turns changes into server-sent events.
 
-use crate::app::{TaskView, done_ids, ensure_role, unix_now};
+use crate::app::{TaskView, TrackView, done_ids, ensure_role, unix_now};
 use crate::core::{Priority, QuestionStatus, TaskStatus, dependents};
 use crate::hub::Project;
 use crate::overlap;
@@ -23,8 +23,8 @@ use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Error as _};
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -118,6 +118,7 @@ fn router(state: Shared) -> Router {
         .route("/api/tasks/{id}/release", post(release_task))
         .route("/api/tasks/{id}/approve", post(approve_task))
         .route("/api/tasks/{id}/reject", post(reject_task))
+        .route("/api/tracks", get(list_tracks))
         .route("/api/questions", get(list_questions))
         .route("/api/questions/{id}/answer", post(answer_question))
         .route("/api/questions/{id}/resolve", post(resolve_question))
@@ -314,10 +315,36 @@ async fn show_project(State(state): State<Shared>) -> ApiResult {
     })))
 }
 
+/// Query of `GET /api/tasks`. `track=` with an empty value selects tasks
+/// without a track; `priority` selects tasks at that level or above.
 #[derive(Deserialize)]
 struct TaskFilter {
     role: Option<String>,
     status: Option<TaskStatus>,
+    track: Option<String>,
+    priority: Option<String>,
+}
+
+/// A priority level from JSON. Goes through `FromStr` so that a number or any
+/// other wrong value is refused with the message that lists the four levels.
+fn level<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Priority>, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Null => Ok(None),
+        Value::String(s) => s.parse().map(Some).map_err(D::Error::custom),
+        other => other
+            .to_string()
+            .parse()
+            .map(Some)
+            .map_err(D::Error::custom),
+    }
+}
+
+/// `Option<Option<String>>` from JSON: absent keeps (via `default`), `null`
+/// clears, a string sets.
+fn clearable<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 async fn list_tasks(
@@ -325,6 +352,12 @@ async fn list_tasks(
     filter: Result<Query<TaskFilter>, QueryRejection>,
 ) -> ApiResult {
     let filter = query(filter)?;
+    let at_least = filter
+        .priority
+        .as_deref()
+        .map(str::parse::<Priority>)
+        .transpose()
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     with_store(&state, StatusCode::BAD_REQUEST, move |store, _, now| {
         let tasks = store.tasks(now)?;
         let done = done_ids(&tasks);
@@ -333,6 +366,12 @@ async fn list_tasks(
             .map(|t| TaskView::new(t, &done))
             .filter(|v| filter.role.as_ref().is_none_or(|r| &v.task.role == r))
             .filter(|v| filter.status.is_none_or(|s| v.status == s))
+            .filter(|v| match filter.track.as_deref() {
+                None => true,
+                Some("") => v.task.track.is_none(),
+                Some(name) => v.task.track.as_deref() == Some(name),
+            })
+            .filter(|v| at_least.is_none_or(|p| v.task.priority >= p))
             .collect();
         Ok(serde_json::to_value(views)?)
     })
@@ -345,8 +384,10 @@ async fn list_tasks(
 struct CreateTask {
     title: String,
     role: String,
+    #[serde(default, deserialize_with = "level")]
+    priority: Option<Priority>,
     #[serde(default)]
-    priority: Priority,
+    track: Option<String>,
     #[serde(default)]
     blocked_by: Vec<String>,
     #[serde(default)]
@@ -368,8 +409,8 @@ async fn create_task(State(state): State<Shared>, bytes: Bytes) -> Result<Respon
                     prefix: project.config.task_prefix(&new.role)?,
                     title: new.title,
                     role: new.role,
-                    priority: new.priority,
-                    track: None,
+                    priority: new.priority.unwrap_or_default(),
+                    track: new.track,
                     blocked_by: new.blocked_by,
                     read: new.read,
                     touch: new.touch,
@@ -387,6 +428,14 @@ async fn create_task(State(state): State<Shared>, bytes: Bytes) -> Result<Respon
     )
     .await?;
     Ok((StatusCode::CREATED, task).into_response())
+}
+
+async fn list_tracks(State(state): State<Shared>) -> ApiResult {
+    with_store(&state, StatusCode::BAD_REQUEST, move |store, _, now| {
+        let views = TrackView::list(&store.tracks()?, &store.tasks(now)?);
+        Ok(serde_json::to_value(views)?)
+    })
+    .await
 }
 
 async fn show_task(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {
@@ -411,7 +460,10 @@ async fn show_task(State(state): State<Shared>, Path(id): Path<String>) -> ApiRe
 struct EditTask {
     title: Option<String>,
     role: Option<String>,
+    #[serde(default, deserialize_with = "level")]
     priority: Option<Priority>,
+    #[serde(default, deserialize_with = "clearable")]
+    track: Option<Option<String>>,
     blocked_by: Option<Vec<String>>,
     read: Option<Vec<String>>,
     touch: Option<Vec<String>>,
@@ -427,7 +479,7 @@ async fn edit_task(State(state): State<Shared>, Path(id): Path<String>, bytes: B
         title: body.title,
         role: body.role,
         priority: body.priority,
-        track: None,
+        track: body.track,
         blocked_by: body.blocked_by,
         read: body.read,
         touch: body.touch,
@@ -608,6 +660,7 @@ async fn events(
 struct Digest {
     tasks: BTreeMap<String, String>,
     questions: BTreeMap<u64, String>,
+    tracks: BTreeMap<String, String>,
     /// Earliest lease expiry: leases run out without a write to the store
     next_expiry: Option<i64>,
 }
@@ -625,6 +678,11 @@ impl Digest {
                 .questions()?
                 .iter()
                 .map(|q| Ok((q.id, serde_json::to_string(q)?)))
+                .collect::<Result<_>>()?,
+            tracks: store
+                .tracks()?
+                .iter()
+                .map(|t| Ok((t.name.clone(), serde_json::to_string(t)?)))
                 .collect::<Result<_>>()?,
         })
     }
@@ -672,6 +730,12 @@ fn watch(project: &Project, events: &broadcast::Sender<Change>) {
             let _ = events.send(Change {
                 kind: "question_changed",
                 id: id.into(),
+            });
+        }
+        for name in changed(&digest.tracks, &next.tracks) {
+            let _ = events.send(Change {
+                kind: "track_changed",
+                id: name.into(),
             });
         }
         digest = next;
