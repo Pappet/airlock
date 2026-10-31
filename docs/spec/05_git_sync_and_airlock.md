@@ -35,7 +35,7 @@ When work is split across worktrees (e.g. `~/Projects/game` on `main` and `~/Pro
 - A database inside the repository is **not** shared: each worktree owns its own working-tree copy, so a repo-local database would silently fork the task store per worktree.
 
 ### 2.2 Hub Store and Marker
-1. **Hub store (single source of truth):** all task and question state lives in the per-project SQLite database in the hub, outside every repository (Spec 01 §3.1). Every session on the machine reads and writes the same database.
+1. **Hub store (single source of truth):** all task, track, and question state lives in the per-project SQLite database in the hub, outside every repository (Spec 01 §3.1). Every session on the machine reads and writes the same database.
 2. **Marker:** `airlock init` writes `.airlock` (`{"project_id": "<uuid>"}`) into the project root. It is committed, so every worktree and clone carries it, and it never changes after creation — it cannot conflict. Because the marker is repository content, its id is untrusted input: Airlock accepts only a canonical lowercase hyphenated UUID and rejects anything else before building hub paths from it.
 3. **No registered path:** the hub does not record where the project lives. Each invocation's project root is the directory of the marker it found (Spec 02 §2.2), so `airlock sync` in a worktree writes into *that* worktree.
 
@@ -57,7 +57,7 @@ One `airlock sync` run writes, relative to the invoking project root (paths conf
 | Artifact | Default path | Role |
 |---|---|---|
 | State snapshot | `docs/.airlock-state.json` | **Canonical**: lossless semantic state; the only `airlock import` source |
-| Plan view | `docs/PLAN.md` | Generated human-readable plan (optional) |
+| Plan view | `docs/PLAN.md` | Generated human-readable plan, grouped by role; each task line shows its `**Track:**` (when set) and `**Priority:**` (optional) |
 | Question log | `docs/spec/QUESTIONS.md` | Generated question/answer log — the clean-room audit trail (optional) |
 
 ### 3.2 Snapshot Content
@@ -96,7 +96,7 @@ The snapshot (`src/snapshot.rs`) contains semantic project state only. **Session
 ### 3.3 Deterministic Serialization
 Re-running `airlock sync` on unchanged state must produce a zero diff:
 - Object fields in fixed declaration order; maps sorted by key (`BTreeMap`).
-- `tasks` sorted by `id` (byte order), `questions` by `id`.
+- `tracks` sorted by `name` (byte order), `tasks` by `id` (byte order), `questions` by `id`.
 - Enums in `snake_case`.
 - UTF-8, LF line endings, 2-space indent, exactly one trailing newline.
 

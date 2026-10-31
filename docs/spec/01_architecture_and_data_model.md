@@ -27,7 +27,8 @@ pub struct Task {
     pub title: String,
     pub role: String,                  // must name a role from the project config
     pub state: TaskState,              // persisted: Open, InProgress, InReview, Done
-    pub priority: i32,                 // higher first; default 0
+    pub priority: Priority,            // Critical, High, Normal, Low; default Normal
+    pub track: Option<String>,         // name of an existing track (§2.5); None = no track
     pub blocked_by: Vec<String>,       // prerequisite task ids
     pub read: Vec<String>,             // documentation / spec files to consult
     pub touch: Vec<String>,            // files the task may create or modify
@@ -86,7 +87,7 @@ stateDiagram-v2
 | approve | `task approve` | — | human / lead (CLI, dashboard) |
 | reject | `task reject --notes` | — | human / lead (CLI, dashboard) |
 
-Editing changes only the content fields (`title`, `role`, `priority`, `blocked_by`, `read`, `touch`, `do`, `verify`) and is not a transition: state, claim, lease, and `notes` stay as they are, and the id never changes. A task that is `in_progress`, `in_review`, or `done` is edited only with `--force`, since a session may be working from the old content.
+Editing changes only the content fields (`title`, `role`, `priority`, `track`, `blocked_by`, `read`, `touch`, `do`, `verify`) and is not a transition: state, claim, lease, and `notes` stay as they are, and the id never changes. A task that is `in_progress`, `in_review`, or `done` is edited only with `--force`, since a session may be working from the old content.
 
 Leaving `in_progress` always clears `claimed_by` and `lease_expires_at`. `done` is terminal; there is no reopen in v0.x — create a follow-up task instead.
 
@@ -98,7 +99,14 @@ Leaving `in_progress` always clears `claimed_by` and `lease_expires_at`. `done` 
 
 #### Selection Order for `task next`
 
-Among tasks of the requested role with effective status `ready`: highest `priority` first, then oldest `created_at`, then `id` (byte order). The order is deterministic.
+Among tasks of the requested role with effective status `ready`:
+
+1. highest **track priority** first (a task without a track, or with a track that is unknown, counts as `normal`),
+2. then highest task `priority`,
+3. then oldest `created_at`,
+4. then `id` (byte order).
+
+The order is deterministic.
 
 A ready task whose `touch` shares a path with an **occupying** task (`in_progress` or `in_review`; path rules in Spec 04 §3.5) is skipped in favor of the next task in this order. A task without `touch` data is never skipped, since its overlap is unknown. When every ready task overlaps, the first in order is returned anyway, together with its `overlaps`, so no session runs dry.
 
@@ -143,6 +151,44 @@ Session ids are **self-declared and not authenticated**. They identify cooperati
 - `task heartbeat` sets the lease to expire `--lease` minutes (default `lease_minutes`) from *now*.
 - There is no daemon. Expiry is evaluated lazily: reads treat a task whose `lease_expires_at <= now` as expired, and every write transaction first resets expired leases to `open` (clearing `claimed_by`). A claim on an expired task therefore succeeds.
 
+### 2.5 Priority and Track
+
+**Priority** is one fixed scale for tasks and tracks, serialized in lowercase on every surface (CLI, MCP, REST, snapshot):
+
+| Level | Meaning |
+|---|---|
+| `critical` | handed out before everything else |
+| `high` | handed out before normal work |
+| `normal` | the default for new tasks and tracks |
+| `low` | handed out last |
+
+Levels are ordered `critical` > `high` > `normal` > `low`. No interface accepts a number; a number given as priority is an error that lists the four levels. Internally the store keeps the rank (`low` 0 … `critical` 3) in an `INTEGER` column; nothing outside the store sees it.
+
+**Track:** a named line of work with its own priority, created on the fly by the lead (CLI or MCP). Tracks span roles: a task belongs to at most one track, and tasks without a track stay valid.
+
+```rust
+pub struct Track {
+    pub name: String,         // primary key; letters, digits, `-`, `_`; case preserved, unique exactly
+    pub priority: Priority,   // default Normal
+    pub description: String,  // free text, may be empty
+    pub created_at: i64,      // unix seconds
+    pub updated_at: i64,      // unix seconds
+}
+```
+
+| Operation | CLI | MCP | Who |
+|---|---|---|---|
+| list | `track list` | `track_list` | any session |
+| create | `track add` | `track_create` | any non-clean-room session |
+| change | `track edit` | `track_update` | any non-clean-room session |
+| remove | `track remove` | `track_remove` | any non-clean-room session |
+
+- `list` is sorted by priority (highest first), then name, and carries per track the number of its tasks per effective status (`blocked`, `ready`, `in_progress`, `in_review`, `done`).
+- `create` fails on an existing or invalid name.
+- `change` can rename; the rename updates every task referencing the track in the same transaction and leaves the tasks' `updated_at` untouched.
+- `remove` is refused while any task, in any state, uses the track.
+- A task names an existing track on `task add` / `task_create` and on edit; an unknown track is an error that names the defined tracks. Editing the track of a task that is `in_progress`, `in_review`, or `done` needs `--force` like every content edit (§2.1).
+
 ---
 
 ## 3. Storage Architecture
@@ -152,7 +198,7 @@ Session ids are **self-declared and not authenticated**. They identify cooperati
 All live state lives in a per-project SQLite database outside every repository:
 
 ```
-<hub>/projects/<project-uuid>/airlock.db     # tasks, questions (WAL mode)
+<hub>/projects/<project-uuid>/airlock.db     # tasks, tracks, questions (WAL mode)
 <hub>/projects/<project-uuid>/project.json   # ProjectConfig (src/config.rs)
 ```
 
@@ -180,3 +226,11 @@ WAL mode allows many readers and one writer at a time. Correctness under concurr
 ### 3.3 Export Layer
 
 `airlock sync` exports the store into a canonical JSON snapshot plus generated Markdown views inside the invoking project root. See Spec 05 §3.
+
+### 3.4 Schema Migration
+
+The store carries a schema version and upgrades older databases in place on first open. Version 4 adds tracks and the priority scale:
+
+- creates the `tracks` table and the nullable `tasks.track` column;
+- converts the integer priorities of existing tasks in place: `>= 30` becomes `high`, `10..=29` becomes `normal`, `< 10` (negatives included) becomes `low`. Nothing becomes `critical`: that stays a deliberate choice;
+- assigns no track; the lead assigns existing tasks afterwards.
