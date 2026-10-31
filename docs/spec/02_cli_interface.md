@@ -48,10 +48,10 @@ Templates, the layout file, commits, and worktree creation are specified in Spec
 ### 3.2 Task Operations
 
 #### `airlock task list [--role <role>] [--status <status>] [--track <name> | --no-track] [--priority <level>]`
-Lists tasks as a table (id, status, role, priority, track, claimed by, title). `<status>` is one of `blocked`, `ready`, `in_progress`, `in_review`, `done` (effective status, Spec 01 §2.1). `--track` keeps the tasks of one track, `--no-track` those without a track (the two exclude each other). `--priority` means "at least this level": `--priority high` lists `high` and `critical` tasks.
+Lists tasks as a table (id, status, role, priority, track, claimed by, title). `<status>` is one of `blocked`, `ready`, `in_progress`, `in_review`, `done` (effective status, Spec 01 §2.1). `--track` keeps the tasks of one track (an unknown track is an error that names the defined tracks), `--no-track` those without a track (the two exclude each other). `--priority` means "at least this level": `--priority high` lists `high` and `critical` tasks.
 
 #### `airlock task next [--role <role>]`
-Shows the next ready task for the role (default: the worktree binding's role) (selection order, track priority first: Spec 01 §2.1) as a compact work package: id, title, track and priority, prerequisites, **Read**, **Touch**, **Do**, **Verify**. Does not claim it. Exits `1` with a clear message if no task is ready. Tasks sharing files with running work are handed out last (Spec 01 §2.1); if one is returned anyway, a warning naming the shared paths goes to stderr and `--json` carries `overlaps: [{ id, occupied, paths }]`.
+Shows the next ready task for the role (default: the worktree binding's role) (selection order, track priority first: Spec 01 §2.1) as a compact work package: id, title, track (when set) and priority, prerequisites, **Read**, **Touch**, **Do**, **Verify**. Does not claim it. With `--json` it prints the task with its `track` (the track name, `null` when the task has none) and `priority` (`critical`, `high`, `normal`, or `low`). Exits `1` with a clear message if no task is ready. Tasks sharing files with running work are handed out last (Spec 01 §2.1); if one is returned anyway, a warning naming the shared paths goes to stderr and `--json` carries `overlaps: [{ id, occupied, paths }]`.
 
 #### `airlock task show <id>`
 Shows one task in full, including dependents and lease information.

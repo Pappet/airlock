@@ -317,11 +317,10 @@ function tracksView() {
     if (!rows.some((r) => r.name === name)) rows.push({ name, priority: "normal", description: "" });
   }
   rows.sort(byTrackOrder);
-  const shown = rows.filter((r) => r.name || tasks.some((t) => !t.track));
-  if (!shown.length) return empty("No tracks", "Create tracks with `airlock track add` or over MCP.");
+  if (!rows.length) return empty("No tracks", "Create tracks with `airlock track add` or over MCP.");
   const warnings = courseWarnings(tasks, state.tracks);
 
-  return h("div", { class: "tracks" }, shown.map((row) => {
+  return h("div", { class: "tracks" }, rows.map((row) => {
     const own = tasks.filter((t) => (t.track || "") === row.name);
     const count = (status) => own.filter((t) => t.status === status).length;
     const running = own.filter((t) => t.status === "in_progress");

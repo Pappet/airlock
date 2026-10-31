@@ -57,7 +57,7 @@ One `airlock sync` run writes, relative to the invoking project root (paths conf
 | Artifact | Default path | Role |
 |---|---|---|
 | State snapshot | `docs/.airlock-state.json` | **Canonical**: lossless semantic state; the only `airlock import` source |
-| Plan view | `docs/PLAN.md` | Generated human-readable plan, grouped by role; each task line shows its `**Track:**` (when set) and `**Priority:**` (optional) |
+| Plan view | `docs/PLAN.md` | Generated human-readable plan, grouped by role; each task's status line carries its track and priority (`- **Status:** … · **Track:** … · **Priority:** …`; the track only when set) (optional) |
 | Question log | `docs/spec/QUESTIONS.md` | Generated question/answer log — the clean-room audit trail (optional) |
 
 ### 3.2 Snapshot Content

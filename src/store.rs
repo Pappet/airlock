@@ -272,6 +272,11 @@ impl Store {
         load_question(&self.conn, id)
     }
 
+    /// Fails with the defined track names unless `name` is a track.
+    pub fn ensure_track(&self, name: &str) -> Result<()> {
+        ensure_track(&self.conn, name)
+    }
+
     /// All tracks, highest priority first, then by name.
     pub fn tracks(&self) -> Result<Vec<Track>> {
         let mut stmt = self

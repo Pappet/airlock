@@ -566,7 +566,13 @@ fn snapshot_moves_state_to_another_machine() {
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("pass --yes"));
 
-    assert!(run2(&["import", "--yes"]).status.success());
+    let imported = run2(&["import", "--yes"]);
+    assert!(imported.status.success());
+    let summary = String::from_utf8_lossy(&imported.stdout).into_owned();
+    assert!(
+        summary.contains("Imported 2 tasks, 0 tracks, and"),
+        "{summary}"
+    );
     let tasks: Value = serde_json::from_slice(&run2(&["task", "list", "--json"]).stdout).unwrap();
     assert_eq!(tasks.as_array().unwrap().len(), 2);
     let questions: Value =
@@ -802,6 +808,11 @@ fn tracks_from_the_cli() {
     assert_eq!(comfort.as_array().unwrap().len(), 1);
     let none = env.json(&project, &["task", "list", "--no-track"]);
     assert_eq!(none.as_array().unwrap().len(), 2);
+    let unknown = env.fail(&project, &["task", "list", "--track", "nope"]);
+    assert!(
+        unknown.contains("no track `nope`; defined tracks: comfort, core"),
+        "{unknown}"
+    );
 
     assert!(
         env.fail(&project, &["track", "remove", "comfort"])

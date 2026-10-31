@@ -150,19 +150,35 @@ pub fn run(cli: Cli) -> Result<()> {
             };
             let loaded = sync::load_snapshot(&path)?;
             sync::check_import(&loaded.snapshot, &project.id)?;
-            let (tasks, questions) = (store.tasks(now)?.len(), store.questions()?.len());
+            let (tasks, tracks, questions) = (
+                store.tasks(now)?.len(),
+                store.tracks()?.len(),
+                store.questions()?.len(),
+            );
             let prompt = format!(
-                "Replace {tasks} tasks and {questions} questions of project {} with {} tasks and {} questions from {}?",
+                "Replace {tasks} tasks, {tracks} tracks, and {questions} questions of project {} with {} tasks, {} tracks, and {} questions from {}?",
                 project.config.name,
                 loaded.snapshot.tasks.len(),
+                loaded.snapshot.tracks.len(),
                 loaded.snapshot.questions.len(),
                 path.display()
             );
             ensure!(yes || confirm(&prompt)?, "import cancelled");
             sync::import(&mut store, &hub, &project, &loaded, now)?;
             out.print(
-                &json!({ "tasks": loaded.snapshot.tasks.len(), "questions": loaded.snapshot.questions.len() }),
-                || format!("Imported {} tasks and {} questions", loaded.snapshot.tasks.len(), loaded.snapshot.questions.len()),
+                &json!({
+                    "tasks": loaded.snapshot.tasks.len(),
+                    "tracks": loaded.snapshot.tracks.len(),
+                    "questions": loaded.snapshot.questions.len()
+                }),
+                || {
+                    format!(
+                        "Imported {} tasks, {} tracks, and {} questions",
+                        loaded.snapshot.tasks.len(),
+                        loaded.snapshot.tracks.len(),
+                        loaded.snapshot.questions.len()
+                    )
+                },
             )
         }
     }
@@ -356,6 +372,9 @@ fn task(
             no_track,
             priority,
         } => {
+            if let Some(track) = &track {
+                store.ensure_track(track)?;
+            }
             let tasks = store.tasks(now)?;
             let done = done_ids(&tasks);
             let views: Vec<TaskView> = tasks

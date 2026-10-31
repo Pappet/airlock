@@ -178,10 +178,10 @@ pub struct Track {
 
 | Operation | CLI | MCP | Who |
 |---|---|---|---|
-| list | `track list` | `track_list` | any session |
-| create | `track add` | `track_create` | any non-clean-room session |
-| change | `track edit` | `track_update` | any non-clean-room session |
-| remove | `track remove` | `track_remove` | any non-clean-room session |
+| list | `track list` | `track_list` | any session on the CLI; not in the clean-room MCP set (Spec 03 §2.1) |
+| create | `track add` | `track_create` | any session; clean-room MCP sessions cannot |
+| change | `track edit` | `track_update` | any session; clean-room MCP sessions cannot |
+| remove | `track remove` | `track_remove` | any session; clean-room MCP sessions cannot |
 
 - `list` is sorted by priority (highest first), then name, and carries per track the number of its tasks per effective status (`blocked`, `ready`, `in_progress`, `in_review`, `done`).
 - `create` fails on an existing or invalid name.
