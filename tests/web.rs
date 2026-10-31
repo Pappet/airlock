@@ -165,6 +165,19 @@ fn serves_dashboard_with_allowed_host() {
 }
 
 #[test]
+fn dashboard_assets_know_tracks() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let js = get("/app.js");
+    assert_eq!(js.status, 200);
+    assert!(js.body.contains("/api/tracks"), "app.js must load tracks");
+    assert!(js.body.contains("airlock-group-by-track"));
+    let css = get("/style.css");
+    assert_eq!(css.status, 200);
+    assert!(css.body.contains(".p-critical"));
+}
+
+#[test]
 fn rejects_foreign_host() {
     let s = Server::start();
     for host in ["evil.example", "127.0.0.1:9999", "localhost"] {
