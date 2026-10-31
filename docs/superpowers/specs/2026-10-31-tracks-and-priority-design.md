@@ -49,7 +49,7 @@ This change makes the direction of work explicit and visible:
 
 `Priority` enum: `critical`, `high`, `normal`, `low` (serialized lowercase in every JSON surface; ordered `critical` highest). Default for new tasks and tracks: `normal`.
 
-Stored in SQLite as `TEXT` with a `CHECK` constraint.
+Stored in SQLite as its rank (`low` 0, `normal` 1, `high` 2, `critical` 3) in the existing `INTEGER` column, so the migration converts values in place instead of rebuilding the `STRICT` tasks table; every surface outside the store sees only the names.
 
 ### Track (new entity, in the hub store)
 
