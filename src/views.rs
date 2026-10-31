@@ -58,12 +58,11 @@ pub fn plan(snapshot: &Snapshot) -> String {
                 inline(&task.id),
                 inline(&task.title)
             );
-            let _ = writeln!(
-                out,
-                "- **Status:** {} · **Priority:** {}",
-                status.as_str(),
-                task.priority.as_str()
-            );
+            let _ = write!(out, "- **Status:** {}", status.as_str());
+            if let Some(track) = &task.track {
+                let _ = write!(out, " · **Track:** {}", inline(track));
+            }
+            let _ = writeln!(out, " · **Priority:** {}", task.priority.as_str());
             if !task.blocked_by.is_empty() {
                 let _ = writeln!(out, "- **Blocked by:** {}", task.blocked_by.join(", "));
             }

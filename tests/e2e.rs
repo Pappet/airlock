@@ -585,6 +585,64 @@ fn snapshot_moves_state_to_another_machine() {
 }
 
 #[test]
+fn import_accepts_a_version_1_snapshot_and_the_next_sync_writes_format_2() {
+    let env = Env::new();
+    let project = env.dir("project");
+    let id = env.json(&project, &["init"])["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A snapshot as committed before tracks: integer priorities, no tracks.
+    let task = |n: u32, priority: i64| {
+        format!(
+            r#"{{"id": "L-{n}", "title": "t", "role": "lead", "state": "open", "priority": {priority},
+            "blocked_by": [], "read": [], "touch": [], "do": "d", "verify": "v",
+            "notes": null, "created_at": 1700000000}}"#
+        )
+    };
+    let tasks: Vec<String> = [40, 30, 29, 10, 9, 5]
+        .iter()
+        .enumerate()
+        .map(|(i, p)| task(i as u32 + 1, *p))
+        .collect();
+    let v1 = format!(
+        r#"{{"format_version": 1, "project_id": "{id}",
+        "roles": {{"lead": {{"description": "l", "clean_room": false}}}},
+        "tasks": [{}], "questions": []}}"#,
+        tasks.join(",")
+    );
+    let state_path = project.join("docs/.airlock-state.json");
+    std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    std::fs::write(&state_path, v1).unwrap();
+
+    env.ok(&project, &["import", "--yes"]);
+    let listed = env.json(&project, &["task", "list"]);
+    let priorities: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["priority"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        priorities,
+        ["high", "high", "normal", "normal", "low", "low"]
+    );
+    assert!(
+        env.json(&project, &["track", "list"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    env.ok(&project, &["sync"]);
+    let exported: Value = serde_json::from_str(&read(&state_path)).unwrap();
+    assert_eq!(exported["format_version"], 2);
+    assert_eq!(exported["tracks"], serde_json::json!([]));
+    assert_eq!(exported["tasks"][0]["priority"], "high");
+}
+
+#[test]
 fn import_rejects_invalid_snapshots() {
     let env = Env::new();
     let project = project_with_tasks(&env);

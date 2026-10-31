@@ -158,7 +158,7 @@ fn add_continues_after_the_highest_number_including_done_tasks() {
     let mut lower = tasks[0].clone();
     lower.id = "t-50".to_string();
     tasks.push(lower);
-    let snapshot = Snapshot::new("id", &ProjectConfig::default(), &tasks, &[]);
+    let snapshot = Snapshot::new("id", &ProjectConfig::default(), &tasks, &[], &[]);
 
     let (_dir, mut store) = open();
     store.replace_all(&snapshot, "hash", 3).unwrap();
@@ -378,7 +378,7 @@ fn legacy_db(path: &std::path::Path, version: i64, priorities: &[i64]) {
 fn version_3_priorities_are_migrated() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("airlock.db");
-    legacy_db(&path, 3, &[40, 22, 5, -1]);
+    legacy_db(&path, 3, &[40, 30, 29, 22, 10, 9, 5, -1]);
 
     let store = Store::open(&path).unwrap();
     let tasks = store.tasks(0).unwrap();
@@ -387,7 +387,11 @@ fn version_3_priorities_are_migrated() {
         priorities,
         [
             Priority::High,
+            Priority::High,
             Priority::Normal,
+            Priority::Normal,
+            Priority::Normal,
+            Priority::Low,
             Priority::Low,
             Priority::Low
         ]
@@ -405,7 +409,7 @@ fn version_3_priorities_are_migrated() {
             r.get(0)
         })
         .unwrap();
-    assert_eq!(unset, 4, "migrated tasks have no track");
+    assert_eq!(unset, 8, "migrated tasks have no track");
 
     let mut store = Store::open(&path).unwrap();
     let track = store.add_track("core", Priority::High, "", 0).unwrap();
@@ -460,6 +464,7 @@ fn replace_all_swaps_state_and_never_reuses_question_ids() {
         "id",
         &ProjectConfig::default(),
         &source.tasks(3).unwrap(),
+        &[],
         &source.questions().unwrap(),
     );
 

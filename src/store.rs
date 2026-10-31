@@ -747,7 +747,7 @@ impl Store {
         Ok(())
     }
 
-    /// Replaces all tasks and questions with the snapshot's content and records
+    /// Replaces all tasks, tracks, and questions with the snapshot's content and records
     /// the snapshot's hash (`sha256`) as known, in one transaction. The caller
     /// validates the snapshot first. Question ids are kept; new questions
     /// continue after the highest id this store ever used.
@@ -757,21 +757,38 @@ impl Store {
             "INSERT OR IGNORE INTO exports (sha256, recorded_at) VALUES (?1, ?2)",
             params![sha256, now],
         )?;
-        tx.execute_batch("DELETE FROM task_deps; DELETE FROM tasks; DELETE FROM questions;")?;
+        // Tasks reference tracks, so tasks go first and come back last.
+        tx.execute_batch(
+            "DELETE FROM task_deps; DELETE FROM tasks; DELETE FROM tracks; DELETE FROM questions;",
+        )?;
+        for track in &snapshot.tracks {
+            tx.execute(
+                "INSERT INTO tracks (name, priority, description, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    track.name,
+                    track.priority.rank(),
+                    track.description,
+                    track.created_at,
+                    now
+                ],
+            )?;
+        }
         for t in &snapshot.tasks {
             let state = match t.state {
                 TaskState::InProgress => TaskState::Open,
                 state => state,
             };
             tx.execute(
-                "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, notes, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO tasks (id, title, role, state, priority, track, read, touch, do, verify, notes, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     t.id,
                     t.title,
                     t.role,
                     state.as_str(),
                     t.priority.rank(),
+                    t.track,
                     serde_json::to_string(&t.read)?,
                     serde_json::to_string(&t.touch)?,
                     t.r#do,

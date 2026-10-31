@@ -5,12 +5,16 @@
 //! changes the exported file.
 
 use crate::config::{ProjectConfig, RoleConfig};
-use crate::core::{GraphError, Priority, Question, Task, TaskState, check_dependencies};
+use crate::core::{GraphError, Priority, Question, Task, TaskState, Track, check_dependencies};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Current snapshot format version.
-pub const FORMAT_VERSION: u32 = 1;
+/// Current snapshot format version. Version 2 added tracks and named priorities.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// Format versions `airlock import` reads. Version 1 (integer priorities, no
+/// tracks) is converted on load.
+pub const SUPPORTED_VERSIONS: [u32; 2] = [1, FORMAT_VERSION];
 
 /// The canonical, lossless export of one project's state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,10 +25,32 @@ pub struct Snapshot {
     pub project_id: String,
     /// Role definitions
     pub roles: BTreeMap<String, RoleConfig>,
+    /// Tracks, sorted by name
+    pub tracks: Vec<TrackRecord>,
     /// Tasks, sorted by id
     pub tasks: Vec<TaskRecord>,
     /// Questions, sorted by id
     pub questions: Vec<Question>,
+}
+
+/// Exported form of a [`Track`], without `updated_at` (write noise).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrackRecord {
+    pub name: String,
+    pub priority: Priority,
+    pub description: String,
+    pub created_at: i64,
+}
+
+impl From<&Track> for TrackRecord {
+    fn from(track: &Track) -> Self {
+        Self {
+            name: track.name.clone(),
+            priority: track.priority,
+            description: track.description.clone(),
+            created_at: track.created_at,
+        }
+    }
 }
 
 /// Exported form of a [`Task`], without session state.
@@ -36,6 +62,8 @@ pub struct TaskRecord {
     /// Never `in_progress`: claims are session state and export as `open`
     pub state: TaskState,
     pub priority: Priority,
+    /// Name of a track in the snapshot's `tracks`; `null` when untracked
+    pub track: Option<String>,
     /// Sorted and deduplicated
     pub blocked_by: Vec<String>,
     pub read: Vec<String>,
@@ -60,6 +88,7 @@ impl From<&Task> for TaskRecord {
                 state => state,
             },
             priority: task.priority,
+            track: task.track.clone(),
             blocked_by,
             read: task.read.clone(),
             touch: task.touch.clone(),
@@ -77,10 +106,13 @@ impl Snapshot {
         project_id: &str,
         config: &ProjectConfig,
         tasks: &[Task],
+        tracks: &[Track],
         questions: &[Question],
     ) -> Self {
         let mut tasks: Vec<TaskRecord> = tasks.iter().map(TaskRecord::from).collect();
         tasks.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut tracks: Vec<TrackRecord> = tracks.iter().map(TrackRecord::from).collect();
+        tracks.sort_by(|a, b| a.name.cmp(&b.name));
         let mut questions = questions.to_vec();
         questions.sort_by_key(|q| q.id);
 
@@ -88,6 +120,7 @@ impl Snapshot {
             format_version: FORMAT_VERSION,
             project_id: project_id.to_string(),
             roles: config.roles.clone(),
+            tracks,
             tasks,
             questions,
         }
