@@ -53,6 +53,7 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 - [x] Server-Sent Events driven by `PRAGMA data_version` polling.
 - [x] Task editing: `airlock task edit`, MCP `task_update`, `PATCH /api/tasks/{id}` with whole-graph validation; tasks past `open` only with `--force`.
 - [x] Overlap warning at claim time: `task next` (CLI, MCP, briefing) hands out tasks sharing files with occupying tasks last, with a warning; `task claim` never refuses but warns and records an `overlap:<id>` question for the lead. Reuses `overlap::analyze`.
+- [x] Assigned task ids: `task add` / `task_create` / `POST /api/tasks` take no id; Airlock numbers tasks `<prefix>-<n>` per role (`role set --prefix`, default: first letter), inside the write transaction. Prevents agents from picking ids that already exist.
 
 ---
 

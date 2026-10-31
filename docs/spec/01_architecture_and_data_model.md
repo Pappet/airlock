@@ -23,7 +23,7 @@ An atomic, self-contained unit of work, sized for a single agent session:
 
 ```rust
 pub struct Task {
-    pub id: String,                    // e.g. "E-6d", "L-12", "FEAT-42"; unique per project
+    pub id: String,                    // assigned on creation, e.g. "E-7", "L-12"; unique per project
     pub title: String,
     pub role: String,                  // must name a role from the project config
     pub state: TaskState,              // persisted: Open, InProgress, InReview, Done
@@ -42,6 +42,10 @@ pub struct Task {
 ```
 
 `touch` is advisory: it tells the agent where to work and is shown to reviewers. Airlock does not enforce it.
+
+#### Task Ids
+
+Airlock assigns the id when a task is created; no interface accepts one. The id is `<prefix>-<n>`: the role's task prefix (Spec 06 §4; default: the role name's first letter or digit, upper-cased) and one more than the highest number used with that prefix among all tasks, done ones included. Ids that do not have the form `<prefix>-<digits>` (e.g. `E-6d` from before automatic numbering) are kept as they are and do not count. The number is chosen in the same write transaction as the insert, so concurrent creations never collide. Roles must not share a prefix: `role set` refuses such a change, and task creation fails while a hand-edited configuration has a clash. Ids never change; `task edit` cannot rename a task.
 
 #### Persisted State vs. Effective Status
 
