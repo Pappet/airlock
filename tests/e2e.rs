@@ -183,6 +183,64 @@ fn task_flow_with_json_output() {
 }
 
 #[test]
+fn task_edit_changes_content_and_guards_started_tasks() {
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    add(&env, &project, "L-1", &[]);
+    add(&env, &project, "E-1", &["--touch", "src/old.rs"]);
+
+    let edited = env.json(
+        &project,
+        &[
+            "task",
+            "edit",
+            "E-1",
+            "--title",
+            "Renamed",
+            "--touch",
+            "src/new.rs",
+            "--blocked-by",
+            "L-1",
+        ],
+    );
+    assert_eq!(edited["title"], "Renamed");
+    assert_eq!(edited["touch"], serde_json::json!(["src/new.rs"]));
+    assert_eq!(edited["status"], "blocked");
+    assert!(
+        env.fail(&project, &["task", "edit", "L-1", "--blocked-by", "E-1"])
+            .contains("dependency cycle")
+    );
+    assert!(
+        env.ok(&project, &["task", "edit", "E-1", "--clear-blocked-by"])
+            .contains("Edited E-1")
+    );
+    assert_eq!(
+        env.json(&project, &["task", "show", "E-1"])["status"],
+        "ready"
+    );
+
+    assert!(
+        env.fail(&project, &["task", "edit", "E-1"])
+            .contains("nothing to change")
+    );
+    assert!(
+        env.fail(&project, &["task", "edit", "E-1", "--role", "nope"])
+            .contains("unknown role")
+    );
+
+    env.ok(&project, &["--session", "s1", "task", "claim", "E-1"]);
+    assert!(
+        env.fail(&project, &["task", "edit", "E-1", "--title", "x"])
+            .contains("--force")
+    );
+    env.ok(
+        &project,
+        &["task", "edit", "E-1", "--title", "x", "--force"],
+    );
+}
+
+#[test]
 fn session_defaults_to_environment() {
     let env = Env::new();
     let project = env.dir("project");

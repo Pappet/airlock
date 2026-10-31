@@ -252,7 +252,7 @@ fn unbound_session_runs_the_full_workflow() {
             call(14, "task_claim", json!({ "task_id": "nope" })),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 13);
+    assert_eq!(s.tool_names(1).len(), 14);
     assert!(s.tool_error(2).contains("missing required argument `role`"));
     assert_eq!(s.ok(3)["status"], "blocked");
     assert!(s.ok(4)["lease_expires_at"].is_i64());
@@ -271,6 +271,74 @@ fn unbound_session_runs_the_full_workflow() {
     assert_eq!(s.ok(13)["written"].as_array().unwrap().len(), 3);
     assert!(env.project.join("docs/PLAN.md").is_file());
     assert!(s.tool_error(14).contains("no task `nope`"));
+}
+
+#[test]
+fn task_update_edits_content_and_needs_force_for_started_tasks() {
+    let env = Env::new();
+    let s = env.session(
+        &["--session", "lead-1"],
+        &[
+            call(
+                1,
+                "task_update",
+                json!({ "task_id": "E-1", "title": "Renamed", "touch": ["src/e.rs"],
+                        "blocked_by": ["L-1"], "priority": 2 }),
+            ),
+            call(
+                2,
+                "task_update",
+                json!({ "task_id": "E-1", "blocked_by": [] }),
+            ),
+            call(3, "task_update", json!({ "task_id": "E-1" })),
+            call(
+                4,
+                "task_update",
+                json!({ "task_id": "E-1", "role": "nope" }),
+            ),
+            call(
+                5,
+                "task_update",
+                json!({ "task_id": "L-1", "blocked_by": ["L-1"] }),
+            ),
+            call(6, "task_claim", json!({ "task_id": "L-1" })),
+            call(
+                7,
+                "task_update",
+                json!({ "task_id": "L-1", "do": "Changed" }),
+            ),
+            call(
+                8,
+                "task_update",
+                json!({ "task_id": "L-1", "do": "Changed", "force": true }),
+            ),
+            call(
+                9,
+                "task_update",
+                json!({ "task_id": "E-1", "read": "a.md" }),
+            ),
+        ],
+    );
+    let edited = s.ok(1);
+    assert_eq!(
+        (
+            edited["title"].as_str(),
+            edited["status"].as_str(),
+            edited["priority"].as_i64()
+        ),
+        (Some("Renamed"), Some("blocked"), Some(2))
+    );
+    assert_eq!(edited["touch"], json!(["src/e.rs"]));
+    assert_eq!(edited["do"], "Build", "omitted fields are kept");
+    assert_eq!(s.ok(2)["blocked_by"], json!([]), "an empty list clears");
+    assert_eq!(s.ok(2)["status"], "ready");
+    assert!(s.tool_error(3).contains("nothing to change"));
+    assert!(s.tool_error(4).contains("unknown role"));
+    assert!(s.tool_error(5).contains("dependency cycle"));
+    assert!(s.tool_error(7).contains("force"));
+    assert_eq!(s.ok(8)["do"], "Changed");
+    assert_eq!(s.ok(8)["claimed_by"], "lead-1", "the claim survives");
+    assert!(s.tool_error(9).contains("array of strings"));
 }
 
 #[test]
@@ -297,6 +365,7 @@ fn clean_room_session_gets_a_restricted_tool_set() {
                 json!({ "question_id": 1, "answer": "x" }),
             ),
             call(7, "task_create", json!({})),
+            call(11, "task_update", json!({ "task_id": "E-1", "title": "x" })),
             call(
                 8,
                 "question_ask",
@@ -330,7 +399,7 @@ fn clean_room_session_gets_a_restricted_tool_set() {
             "foreign role not revealed: {error}"
         );
     }
-    for id in [6, 7] {
+    for id in [6, 7, 11] {
         assert_eq!(
             s.get(id)["error"]["code"],
             -32602,
@@ -363,7 +432,7 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
             call(5, "task_claim", json!({ "task_id": "L-2" })),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 13);
+    assert_eq!(s.tool_names(1).len(), 14);
     assert_eq!(
         s.ok(2)["role"],
         "engine",

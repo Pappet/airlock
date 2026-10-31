@@ -1,7 +1,7 @@
 //! Hub store: transitions, leases, validation, concurrency (Spec 01 §2, §3.2).
 
 use airlock::core::{QuestionStatus, TaskState};
-use airlock::store::{NewTask, NotFound, Store};
+use airlock::store::{NewTask, NotFound, Store, TaskEdit};
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
@@ -292,7 +292,130 @@ fn unknown_ids_are_not_found() {
     assert!(not_found(store.release("nope", "s", true, 0).unwrap_err()));
     assert!(not_found(store.claim("nope", "s", MIN, 0).unwrap_err()));
     assert!(not_found(store.question(99).unwrap_err()));
+    let retitle = TaskEdit {
+        title: Some("x".into()),
+        ..TaskEdit::default()
+    };
+    assert!(not_found(
+        store.edit_task("nope", retitle, false, 0).unwrap_err()
+    ));
     assert_eq!(err(store.task("nope", 0)), "no task `nope`");
     // A failed transition on an existing task is not a lookup failure.
     assert!(!not_found(store.claim("B", "s", MIN, 0).unwrap_err()));
+}
+
+#[test]
+fn edit_changes_only_given_fields() {
+    let (_dir, mut store) = open();
+    store.add_task(new_task("A", &[]), 0).unwrap();
+    store.add_task(new_task("B", &[]), 0).unwrap();
+    let before = store.task("B", 0).unwrap();
+
+    let edited = store
+        .edit_task(
+            "B",
+            TaskEdit {
+                title: Some("New title".into()),
+                priority: Some(7),
+                touch: Some(vec!["src/b.rs".into(), "src/c.rs".into()]),
+                blocked_by: Some(vec!["A".into(), "A".into()]),
+                ..TaskEdit::default()
+            },
+            false,
+            5,
+        )
+        .unwrap();
+    assert_eq!(edited.title, "New title");
+    assert_eq!(edited.priority, 7);
+    assert_eq!(edited.touch, ["src/b.rs", "src/c.rs"]);
+    assert_eq!(edited.blocked_by, ["A"], "duplicates dropped");
+    assert_eq!(edited.updated_at, 5);
+    assert_eq!(
+        (
+            &edited.role,
+            &edited.read,
+            &edited.r#do,
+            &edited.verify,
+            edited.created_at
+        ),
+        (
+            &before.role,
+            &before.read,
+            &before.r#do,
+            &before.verify,
+            before.created_at
+        ),
+        "untouched fields keep their values"
+    );
+    assert_eq!(store.task("B", 5).unwrap(), edited, "persisted");
+
+    let cleared = store
+        .edit_task(
+            "B",
+            TaskEdit {
+                blocked_by: Some(vec![]),
+                read: Some(vec![]),
+                ..TaskEdit::default()
+            },
+            false,
+            6,
+        )
+        .unwrap();
+    assert!(cleared.blocked_by.is_empty() && cleared.read.is_empty());
+}
+
+#[test]
+fn edit_validates_the_dependency_graph() {
+    let (_dir, mut store) = open();
+    store.add_task(new_task("A", &[]), 0).unwrap();
+    store.add_task(new_task("B", &["A"]), 0).unwrap();
+    let deps = |ids: &[&str]| TaskEdit {
+        blocked_by: Some(ids.iter().map(|s| s.to_string()).collect()),
+        ..TaskEdit::default()
+    };
+
+    assert!(
+        err(store.edit_task("A", deps(&["B"]), false, 1)).contains("dependency cycle: A -> B -> A")
+    );
+    assert!(err(store.edit_task("A", deps(&["A"]), false, 1)).contains("dependency cycle"));
+    assert!(err(store.edit_task("A", deps(&["Z"]), false, 1)).contains("unknown task `Z`"));
+    assert!(err(store.edit_task("A", TaskEdit::default(), false, 1)).contains("nothing to change"));
+    assert!(
+        store.task("A", 1).unwrap().blocked_by.is_empty(),
+        "refused edits change nothing"
+    );
+}
+
+#[test]
+fn edit_of_started_tasks_needs_force() {
+    let (_dir, mut store) = open();
+    store.add_task(new_task("A", &[]), 0).unwrap();
+    store.add_task(new_task("B", &["A"]), 0).unwrap();
+    let retitle = || TaskEdit {
+        title: Some("Changed".into()),
+        ..TaskEdit::default()
+    };
+
+    // Blocked and ready tasks are open and editable.
+    store.edit_task("B", retitle(), false, 1).unwrap();
+    store.claim("A", "s1", 60 * MIN, 1).unwrap();
+    assert!(err(store.edit_task("A", retitle(), false, 2)).contains("in_progress; use --force"));
+    let forced = store.edit_task("A", retitle(), true, 2).unwrap();
+    assert_eq!(forced.title, "Changed");
+    assert_eq!(forced.state, TaskState::InProgress);
+    assert_eq!(
+        forced.claimed_by.as_deref(),
+        Some("s1"),
+        "claim and lease survive"
+    );
+    assert_eq!(forced.lease_expires_at, Some(1 + 60 * MIN));
+
+    store.complete("A", "s1", None, true, false, 3).unwrap();
+    assert!(err(store.edit_task("A", retitle(), false, 4)).contains("in_review"));
+    store.approve("A", None, 5).unwrap();
+    assert!(err(store.edit_task("A", retitle(), false, 6)).contains("done"));
+
+    // An expired lease counts as released.
+    store.claim("B", "s2", MIN, 7).unwrap();
+    store.edit_task("B", retitle(), false, 7 + 2 * MIN).unwrap();
 }
