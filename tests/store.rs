@@ -418,18 +418,98 @@ fn version_3_priorities_are_migrated() {
 }
 
 #[test]
-fn out_of_range_priority_fails_to_load() {
+fn out_of_range_priority_fails_to_load_and_names_the_task() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("airlock.db");
     let mut store = Store::open(&path).unwrap();
     store.add_task(new_task(&[]), 0).unwrap();
     drop(store);
     let conn = rusqlite::Connection::open(&path).unwrap();
+    // Only a database without the guard triggers can hold such a rank.
+    conn.execute_batch(
+        "DROP TRIGGER tasks_priority_rank_insert; DROP TRIGGER tasks_priority_rank_update;",
+    )
+    .unwrap();
     conn.execute("UPDATE tasks SET priority = 9", []).unwrap();
     drop(conn);
 
     let store = Store::open(&path).unwrap();
-    assert!(store.tasks(0).is_err());
+    let message = err(store.tasks(0));
+    assert!(message.contains("task `T-1`"), "{message}");
+    assert!(message.contains("rank 9"), "{message}");
+}
+
+#[test]
+fn old_processes_cannot_write_priorities_outside_the_scale() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    let mut store = Store::open(&path).unwrap();
+    store.add_task(new_task(&[]), 0).unwrap();
+    drop(store);
+
+    // What an airlock process from before the migration would still do.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let insert = conn
+        .execute(
+            "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, created_at, updated_at)
+             VALUES ('T-9', 't', 'engine', 'open', 25, '[]', '[]', 'd', 'v', 0, 0)",
+            [],
+        )
+        .expect_err("insert of rank 25 must be refused");
+    assert!(
+        insert.to_string().contains("restart old airlock processes"),
+        "{insert}"
+    );
+    let update = conn
+        .execute("UPDATE tasks SET priority = 25 WHERE id = 'T-1'", [])
+        .expect_err("update to rank 25 must be refused");
+    assert!(
+        update.to_string().contains("restart old airlock processes"),
+        "{update}"
+    );
+    // A valid rank still goes through.
+    conn.execute("UPDATE tasks SET priority = 3 WHERE id = 'T-1'", [])
+        .unwrap();
+    drop(conn);
+
+    let store = Store::open(&path).unwrap();
+    let tasks = store.tasks(0).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].priority, Priority::Critical);
+}
+
+#[test]
+fn renaming_a_track_after_a_v3_migration_carries_its_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    legacy_db(&path, 3, &[40, 10]);
+
+    let mut store = Store::open(&path).unwrap();
+    store.add_track("core", Priority::High, "", 0).unwrap();
+    store
+        .edit_task(
+            "T-1",
+            TaskEdit {
+                track: Some(Some("core".to_string())),
+                ..TaskEdit::default()
+            },
+            false,
+            1,
+        )
+        .unwrap();
+    store
+        .edit_track(
+            "core",
+            TrackEdit {
+                name: Some("engine-core".to_string()),
+                ..TrackEdit::default()
+            },
+            2,
+        )
+        .unwrap();
+    let tasks = store.tasks(3).unwrap();
+    assert_eq!(tasks[0].track.as_deref(), Some("engine-core"));
+    assert_eq!(tasks[1].track, None);
 }
 
 #[test]

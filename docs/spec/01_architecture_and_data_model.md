@@ -233,4 +233,5 @@ The store carries a schema version and upgrades older databases in place on firs
 
 - creates the `tracks` table and the nullable `tasks.track` column;
 - converts the integer priorities of existing tasks in place: `>= 30` becomes `high`, `10..=29` becomes `normal`, `< 10` (negatives included) becomes `low`. Nothing becomes `critical`: that stays a deliberate choice;
-- assigns no track; the lead assigns existing tasks afterwards.
+- assigns no track; the lead assigns existing tasks afterwards;
+- adds triggers on `tasks` that refuse a priority outside the ranks 0 to 3, on insert and on update. An airlock process from before the upgrade that is still running would otherwise write integer priorities the new version cannot read; its writes now fail with "restart old airlock processes" instead. Restart `airlock mcp` and `airlock serve` processes after upgrading.

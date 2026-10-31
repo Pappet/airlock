@@ -79,7 +79,9 @@ CREATE TABLE bindings (
 
 /// Priority becomes a four-level scale stored as a rank 0 to 3 (the old
 /// integers map by threshold, never to critical), and tasks may belong to a
-/// track.
+/// track. Triggers refuse any other priority on tasks, so an airlock process
+/// from before the migration, still running, cannot write integers the new
+/// binary could not read back.
 const SCHEMA_V4: &str = "
 UPDATE tasks SET priority = CASE WHEN priority >= 30 THEN 2 WHEN priority >= 10 THEN 1 ELSE 0 END;
 CREATE TABLE tracks (
@@ -90,6 +92,16 @@ CREATE TABLE tracks (
     updated_at  INTEGER NOT NULL
 ) STRICT;
 ALTER TABLE tasks ADD COLUMN track TEXT REFERENCES tracks (name) ON UPDATE CASCADE;
+CREATE TRIGGER tasks_priority_rank_insert BEFORE INSERT ON tasks
+WHEN NEW.priority NOT BETWEEN 0 AND 3
+BEGIN
+    SELECT RAISE(ABORT, 'priority must be a rank 0 to 3; restart old airlock processes');
+END;
+CREATE TRIGGER tasks_priority_rank_update BEFORE UPDATE OF priority ON tasks
+WHEN NEW.priority NOT BETWEEN 0 AND 3
+BEGIN
+    SELECT RAISE(ABORT, 'priority must be a rank 0 to 3; restart old airlock processes');
+END;
 ";
 
 const SELECT_TASKS: &str = "
@@ -1096,25 +1108,28 @@ fn enum_column<T: serde::de::DeserializeOwned>(row: &Row<'_>, idx: usize) -> rus
     })
 }
 
-/// Reads a priority rank, rejecting values outside 0 to 3.
-fn priority_column(row: &Row<'_>, idx: usize) -> rusqlite::Result<Priority> {
+/// Reads a priority rank, rejecting values outside 0 to 3; `owner` names the
+/// row in the error ("task `L-48`").
+fn priority_column(row: &Row<'_>, idx: usize, owner: &str) -> rusqlite::Result<Priority> {
     let rank: i64 = row.get(idx)?;
     Priority::from_rank(rank).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
             idx,
             rusqlite::types::Type::Integer,
-            format!("priority rank {rank} is outside 0 to 3").into(),
+            format!("{owner} has priority rank {rank}, outside 0 to 3").into(),
         )
     })
 }
 
 fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
+    let id: String = row.get(0)?;
+    let priority = priority_column(row, 4, &format!("task `{id}`"))?;
     Ok(Task {
-        id: row.get(0)?,
+        id,
         title: row.get(1)?,
         role: row.get(2)?,
         state: enum_column(row, 3)?,
-        priority: priority_column(row, 4)?,
+        priority,
         blocked_by: json_column(row, 5)?,
         read: json_column(row, 6)?,
         touch: json_column(row, 7)?,
@@ -1130,9 +1145,11 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
 }
 
 fn track_from_row(row: &Row<'_>) -> rusqlite::Result<Track> {
+    let name: String = row.get(0)?;
+    let priority = priority_column(row, 1, &format!("track `{name}`"))?;
     Ok(Track {
-        name: row.get(0)?,
-        priority: priority_column(row, 1)?,
+        name,
+        priority,
         description: row.get(2)?,
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
