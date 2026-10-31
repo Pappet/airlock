@@ -1,7 +1,7 @@
 //! Session briefing for `airlock start` and MCP `session_start` (Spec 06 §3).
 
 use crate::app::{TaskView, next_ready};
-use crate::core::{Question, QuestionStatus, Task, TaskState};
+use crate::core::{Priority, Question, QuestionStatus, Task, TaskState};
 use crate::hub::Project;
 use crate::overlap::{self, Overlap};
 use crate::store::Store;
@@ -14,6 +14,10 @@ use std::fmt::Write;
 pub struct WorkPackage {
     pub id: String,
     pub title: String,
+    /// The track the task belongs to, if any
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<String>,
+    pub priority: Priority,
     pub blocked_by: Vec<String>,
     pub read: Vec<String>,
     pub touch: Vec<String>,
@@ -32,6 +36,8 @@ impl From<&Task> for WorkPackage {
         Self {
             id: task.id.clone(),
             title: task.title.clone(),
+            track: task.track.clone(),
+            priority: task.priority,
             blocked_by: task.blocked_by.clone(),
             read: task.read.clone(),
             touch: task.touch.clone(),
@@ -311,6 +317,18 @@ fn package(out: &mut String, p: &WorkPackage, suffix: &str) {
         }
     };
     let _ = writeln!(out, "\n### {} — {}{suffix}\n", p.id, p.title);
+    match &p.track {
+        Some(track) => {
+            let _ = writeln!(
+                out,
+                "- **Track:** {track} · **Priority:** {}",
+                p.priority.as_str()
+            );
+        }
+        None => {
+            let _ = writeln!(out, "- **Priority:** {}", p.priority.as_str());
+        }
+    }
     if !p.blocked_by.is_empty() {
         let _ = writeln!(out, "- **Blocked by:** {}", p.blocked_by.join(", "));
     }

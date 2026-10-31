@@ -357,6 +357,47 @@ fn start_briefs_claims_next_work_and_answers() {
     assert!(unbound.contains("## No role"));
 }
 
+#[test]
+fn the_package_names_its_track_and_priority() {
+    let env = Env::new();
+    env.ok(
+        &env.main,
+        &["track", "add", "core", "--priority", "critical"],
+    );
+    env.ok(
+        &env.main,
+        &[
+            "task",
+            "add",
+            "Engine work",
+            "--role",
+            "engine",
+            "--do",
+            "Build",
+            "--verify",
+            "cargo test",
+            "--track",
+            "core",
+            "--priority",
+            "high",
+        ],
+    );
+    env.ok(&env.engine, &["use", "engine"]);
+    let text = env.ok(&env.engine, &["start"]);
+    assert!(
+        text.contains("**Track:** core · **Priority:** high"),
+        "{text}"
+    );
+    let brief = env.json(&env.engine, &["start"]);
+    assert_eq!(brief["next"]["track"], "core");
+    assert_eq!(brief["next"]["priority"], "high");
+
+    env.ok(&env.main, &["task", "edit", "E-1", "--clear-track"]);
+    let text = env.ok(&env.engine, &["start"]);
+    assert!(text.contains("- **Priority:** high"), "{text}");
+    assert!(!text.contains("**Track:**"), "{text}");
+}
+
 fn mcp_session(env: &Env, cwd: &Path, args: &[&str], lines: &[Value]) -> (Vec<Value>, Output) {
     let mut argv = vec!["mcp"];
     argv.extend_from_slice(args);

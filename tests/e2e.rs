@@ -677,3 +677,108 @@ fn sync_refuses_colliding_export_paths() {
     );
     assert!(!project.join("docs").exists(), "nothing written");
 }
+
+#[test]
+fn tracks_from_the_cli() {
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    env.ok(
+        &project,
+        &[
+            "track",
+            "add",
+            "core",
+            "--priority",
+            "critical",
+            "--description",
+            "The battle faithful to the tick",
+        ],
+    );
+    env.ok(&project, &["track", "add", "comfort", "--priority", "low"]);
+    assert!(
+        env.fail(&project, &["track", "add", "bad name"])
+            .contains("track name"),
+    );
+    assert!(
+        env.fail(&project, &["track", "add", "core"])
+            .contains("already exists")
+    );
+
+    add(&env, &project, "E-1", &["--track", "comfort"]);
+    let task = env.json(&project, &["task", "show", "E-1"]);
+    assert_eq!(task["track"], "comfort");
+    assert!(
+        env.fail(
+            &project,
+            &[
+                "task", "add", "T", "--role", "engine", "--do", "x", "--verify", "y", "--track",
+                "nope"
+            ]
+        )
+        .contains("core")
+    );
+
+    let tracks = env.json(&project, &["track", "list"]);
+    let names: Vec<&str> = tracks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["core", "comfort"], "most important first");
+    assert_eq!(tracks[0]["priority"], "critical");
+    assert_eq!(tracks[0]["counts"]["ready"], 0);
+    assert_eq!(tracks[1]["counts"]["ready"], 1);
+    assert_eq!(
+        tracks[1]["counts"],
+        serde_json::json!({ "blocked": 0, "ready": 1, "in_progress": 0, "in_review": 0, "done": 0 })
+    );
+
+    add(&env, &project, "E-2", &["--priority", "low"]);
+    add(&env, &project, "E-3", &["--priority", "high"]);
+    let high = env.json(&project, &["task", "list", "--priority", "high"]);
+    assert_eq!(high.as_array().unwrap().len(), 1, "at least high");
+    assert_eq!(high[0]["id"], "E-3");
+    let comfort = env.json(&project, &["task", "list", "--track", "comfort"]);
+    assert_eq!(comfort.as_array().unwrap().len(), 1);
+    let none = env.json(&project, &["task", "list", "--no-track"]);
+    assert_eq!(none.as_array().unwrap().len(), 2);
+
+    assert!(
+        env.fail(&project, &["track", "remove", "comfort"])
+            .contains("used by 1 task")
+    );
+    assert!(
+        env.fail(&project, &["track", "edit", "comfort"])
+            .contains("nothing to change")
+    );
+    env.ok(&project, &["track", "edit", "comfort", "--name", "polish"]);
+    assert_eq!(
+        env.json(&project, &["task", "show", "E-1"])["track"],
+        "polish"
+    );
+
+    env.ok(&project, &["task", "edit", "E-1", "--clear-track"]);
+    assert!(
+        env.json(&project, &["task", "show", "E-1"])
+            .get("track")
+            .is_none_or(Value::is_null)
+    );
+    env.ok(&project, &["task", "edit", "E-1", "--track", "core"]);
+    assert_eq!(
+        env.json(&project, &["task", "next", "--role", "engine"])["id"],
+        "E-1",
+        "the critical track goes first"
+    );
+    env.ok(&project, &["track", "remove", "polish"]);
+
+    let text = env.ok(&project, &["track", "list"]);
+    assert!(text.contains("critical  core"), "{text}");
+    assert!(text.contains("(1 ready)"), "{text}");
+    assert!(text.contains("The battle faithful to the tick"), "{text}");
+    let shown = env.ok(&project, &["task", "show", "E-1"]);
+    assert!(shown.contains("track: core"), "{shown}");
+    let table = env.ok(&project, &["task", "list"]);
+    assert!(table.contains("TRACK"), "{table}");
+}

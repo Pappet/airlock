@@ -163,6 +163,12 @@ pub struct TrackEdit {
     pub description: Option<String>,
 }
 
+impl TrackEdit {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.priority.is_none() && self.description.is_none()
+    }
+}
+
 /// Result of finishing a task.
 #[derive(Debug, Clone)]
 pub struct Completion {
@@ -291,10 +297,7 @@ impl Store {
     /// track's tasks along (`ON UPDATE CASCADE`) without touching their
     /// `updated_at`.
     pub fn edit_track(&mut self, name: &str, edit: TrackEdit, now: i64) -> Result<Track> {
-        ensure!(
-            edit.name.is_some() || edit.priority.is_some() || edit.description.is_some(),
-            "nothing to change for track `{name}`"
-        );
+        ensure!(!edit.is_empty(), "nothing to change for track `{name}`");
         if let Some(new_name) = &edit.name {
             check_track_name(new_name).map_err(anyhow::Error::msg)?;
         }

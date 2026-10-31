@@ -4,11 +4,13 @@
 //! optionally to one role. Sessions bound to a clean-room role see a reduced
 //! tool set restricted to their own role's tasks and their own questions.
 
-use crate::app::{TaskView, claim, done_ids, ensure_role, next_ready, project_root, unix_now};
+use crate::app::{
+    TaskView, TrackView, claim, done_ids, ensure_role, next_ready, project_root, unix_now,
+};
 use crate::briefing::{self, Briefing, Via, WorkPackage};
 use crate::core::{Priority, QuestionStatus, Task, dependents};
 use crate::hub::{Hub, Project};
-use crate::store::{NewTask, Store, TaskEdit};
+use crate::store::{NewTask, Store, TaskEdit, TrackEdit};
 use crate::sync;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value, json};
@@ -306,7 +308,7 @@ impl Server {
                     title: str_arg(args, "title")?,
                     role,
                     priority: opt_priority(args, "priority")?.unwrap_or_default(),
-                    track: None,
+                    track: opt_str(args, "track")?,
                     blocked_by: str_list(args, "blocked_by")?,
                     read: str_list(args, "read")?,
                     touch: str_list(args, "touch")?,
@@ -326,7 +328,7 @@ impl Server {
                     title: opt_str(args, "title")?,
                     role: opt_str(args, "role")?,
                     priority: opt_priority(args, "priority")?,
-                    track: None,
+                    track: opt_nullable_str(args, "track")?,
                     blocked_by: opt_str_list(args, "blocked_by")?,
                     read: opt_str_list(args, "read")?,
                     touch: opt_str_list(args, "touch")?,
@@ -343,6 +345,33 @@ impl Server {
                     &task,
                     &done_ids(&tasks),
                 ))?)
+            }
+            "track_list" => {
+                let views = TrackView::list(&self.store.tracks()?, &self.store.tasks(now)?);
+                Ok(json!({ "tracks": views }))
+            }
+            "track_create" => {
+                let name = str_arg(args, "name")?;
+                let priority = opt_priority(args, "priority")?.unwrap_or_default();
+                let description = opt_str(args, "description")?.unwrap_or_default();
+                let track = self.store.add_track(&name, priority, &description, now)?;
+                Ok(serde_json::to_value(track)?)
+            }
+            "track_update" => {
+                let name = str_arg(args, "name")?;
+                let edit = TrackEdit {
+                    name: opt_str(args, "new_name")?,
+                    priority: opt_priority(args, "priority")?,
+                    description: opt_str(args, "description")?,
+                };
+                Ok(serde_json::to_value(
+                    self.store.edit_track(&name, edit, now)?,
+                )?)
+            }
+            "track_remove" => {
+                let name = str_arg(args, "name")?;
+                self.store.remove_track(&name, now)?;
+                Ok(json!({ "removed": name }))
             }
             "question_ask" => {
                 let topic = str_arg(args, "topic")?;
@@ -524,6 +553,7 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
                 "touch": strings,
                 "blocked_by": strings,
                 "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
+                "track": { "type": "string", "description": "Track the task belongs to; create it first with track_create" },
             }),
             &["title", "role", "do", "verify"],
         ),
@@ -540,9 +570,43 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
                 "touch": strings,
                 "blocked_by": strings,
                 "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
+                "track": { "type": ["string", "null"], "description": "Track to move the task to; null takes it out of its track" },
                 "force": { "type": "boolean", "description": "Edit a task that is in progress, in review, or done" },
             }),
             &["task_id"],
+        ),
+        tool(
+            "track_list",
+            "List tracks, most important first, with the number of their tasks per status (blocked, ready, in_progress, in_review, done).",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "track_create",
+            "Create a track: a named line of work with its own priority. Ready tasks of more important tracks are handed out first.",
+            json!({
+                "name": { "type": "string", "description": "Letters, digits, `-`, `_`" },
+                "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
+                "description": { "type": "string" },
+            }),
+            &["name"],
+        ),
+        tool(
+            "track_update",
+            "Rename or change a track. Omitted fields are kept; the tasks of a renamed track follow it.",
+            json!({
+                "name": { "type": "string", "description": "Current name" },
+                "new_name": { "type": "string" },
+                "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
+                "description": { "type": "string" },
+            }),
+            &["name"],
+        ),
+        tool(
+            "track_remove",
+            "Remove a track no task belongs to.",
+            json!({ "name": { "type": "string" } }),
+            &["name"],
         ),
         tool(
             "question_ask",
@@ -608,6 +672,17 @@ fn opt_str(args: &Map<String, Value>, key: &str) -> Result<Option<String>> {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.clone())),
         Some(_) => bail!("argument `{key}` must be a string"),
+    }
+}
+
+/// A string that may be `null` on purpose: absent keeps (`None`), `null` clears
+/// (`Some(None)`), a string sets (`Some(Some(..))`).
+fn opt_nullable_str(args: &Map<String, Value>, key: &str) -> Result<Option<Option<String>>> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(s)) => Ok(Some(Some(s.clone()))),
+        Some(_) => bail!("argument `{key}` must be a string or null"),
     }
 }
 
