@@ -1,8 +1,9 @@
 //! Session briefing for `airlock start` and MCP `session_start` (Spec 06 §3).
 
-use crate::app::next_ready;
+use crate::app::{TaskView, next_ready};
 use crate::core::{Question, QuestionStatus, Task, TaskState};
 use crate::hub::Project;
+use crate::overlap::{self, Overlap};
 use crate::store::Store;
 use anyhow::Result;
 use serde::Serialize;
@@ -21,6 +22,9 @@ pub struct WorkPackage {
     /// Review feedback or earlier notes, if any
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Shared files with occupying tasks, when no task free of overlap is ready
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overlaps: Vec<Overlap>,
 }
 
 impl From<&Task> for WorkPackage {
@@ -34,6 +38,16 @@ impl From<&Task> for WorkPackage {
             r#do: task.r#do.clone(),
             verify: task.verify.clone(),
             notes: task.notes.clone(),
+            overlaps: Vec::new(),
+        }
+    }
+}
+
+impl From<&TaskView<'_>> for WorkPackage {
+    fn from(view: &TaskView<'_>) -> Self {
+        Self {
+            overlaps: view.overlaps.clone(),
+            ..Self::from(view.task)
         }
     }
 }
@@ -99,9 +113,7 @@ pub fn build(
         })
         .collect();
     let next = match role {
-        Some(role) if claimed.is_empty() => {
-            next_ready(&tasks, role).map(|v| WorkPackage::from(v.task))
-        }
+        Some(role) if claimed.is_empty() => next_ready(&tasks, role).map(|v| WorkPackage::from(&v)),
         _ => None,
     };
     let others = tasks
@@ -201,6 +213,13 @@ impl Briefing {
         } else if let Some(next) = &self.next {
             out.push_str("\n## Next work package\n");
             package(&mut out, next, "");
+            if !next.overlaps.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "\n**Overlap:** no ready task is free of unfinished work. This one shares {}. Claiming it records a question for the lead; keep working unless the answer says otherwise.",
+                    overlap::describe(&next.overlaps)
+                );
+            }
             let _ = writeln!(
                 out,
                 "\nClaim it with {} before you start.",

@@ -1,4 +1,5 @@
-//! File overlap and dependency stages of open tasks (dashboard views, Spec 04 §3.5–3.6).
+//! File overlap and dependency stages of open tasks (dashboard views, Spec 04
+//! §3.5–3.6; claim-time warnings, Spec 01 §2.1).
 //!
 //! Two open tasks overlap when their `touch` lists share a path. A task without
 //! `touch` data has unknown overlap and is reported as such, never as clean.
@@ -16,6 +17,27 @@ pub struct Analysis {
     pub files: Vec<FileUse>,
     /// Open tasks without `touch` data
     pub no_touch: Vec<String>,
+}
+
+impl Analysis {
+    /// Overlaps of task `id` with occupying tasks: shared files whose work is
+    /// not merged yet (claim-time warning, Spec 01 §2.1).
+    pub fn conflicts(&self, id: &str) -> Vec<Overlap> {
+        self.tasks
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.overlaps.iter().filter(|o| o.occupied).cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// Overlaps in one line: "src/a.rs, src/b.rs with E-1; src/c.rs with E-3".
+pub fn describe(overlaps: &[Overlap]) -> String {
+    overlaps
+        .iter()
+        .map(|o| format!("{} with {}", o.paths.join(", "), o.id))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Overlap and stage of one open task.
@@ -283,6 +305,27 @@ mod tests {
         assert!(is_occupying(TaskStatus::InReview));
         assert!(!is_occupying(TaskStatus::Ready));
         assert!(!is_occupying(TaskStatus::Blocked));
+    }
+
+    #[test]
+    fn conflicts_are_overlaps_with_occupying_tasks_only() {
+        let a = analyze(&[
+            task("A", TaskState::InProgress, &[], &["src/sim.rs"]),
+            task("B", TaskState::Open, &[], &["src/sim.rs", "src/b.rs"]),
+            task("C", TaskState::Open, &[], &["src/b.rs"]),
+        ]);
+        assert_eq!(
+            a.conflicts("B"),
+            [Overlap {
+                id: "A".to_string(),
+                occupied: true,
+                paths: vec!["src/sim.rs".to_string()],
+            }],
+            "C only overlaps, it does not occupy"
+        );
+        assert!(a.conflicts("C").is_empty());
+        assert!(a.conflicts("nope").is_empty());
+        assert_eq!(describe(&a.conflicts("B")), "src/sim.rs with A");
     }
 
     #[test]

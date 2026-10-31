@@ -51,7 +51,7 @@ Templates, the layout file, commits, and worktree creation are specified in Spec
 Lists tasks as a table (id, status, role, priority, claimed by, title). `<status>` is one of `blocked`, `ready`, `in_progress`, `in_review`, `done` (effective status, Spec 01 §2.1).
 
 #### `airlock task next [--role <role>]`
-Shows the next ready task for the role (default: the worktree binding's role) (selection order: Spec 01 §2.1) as a compact work package: id, title, prerequisites, **Read**, **Touch**, **Do**, **Verify**. Does not claim it. Exits `1` with a clear message if no task is ready.
+Shows the next ready task for the role (default: the worktree binding's role) (selection order: Spec 01 §2.1) as a compact work package: id, title, prerequisites, **Read**, **Touch**, **Do**, **Verify**. Does not claim it. Exits `1` with a clear message if no task is ready. Tasks sharing files with running work are handed out last (Spec 01 §2.1); if one is returned anyway, a warning naming the shared paths goes to stderr and `--json` carries `overlaps: [{ id, occupied, paths }]`.
 
 #### `airlock task show <id>`
 Shows one task in full, including dependents and lease information.
@@ -75,7 +75,7 @@ airlock task edit E-6d --clear-blocked-by --priority 5
 Changes the content of a task; omitted fields keep their values, at least one field must be given. `--read`, `--touch`, and `--blocked-by` replace their whole list; `--clear-read`, `--clear-touch`, and `--clear-blocked-by` empty it. The id, state, claim, lease, and notes cannot be edited. A task that is `in_progress`, `in_review`, or `done` needs `--force`; the claim and lease survive the edit. Fails on an unknown role, an unknown prerequisite, or a dependency cycle (the whole graph is checked, Spec 01 §2.1).
 
 #### `airlock task claim <id> [--lease <minutes>]`
-Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked.
+Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked. If the task shares files with an `in_progress` or `in_review` task, the claim still succeeds: a warning goes to stderr, an overlap question is recorded for the lead (Spec 01 §2.1), and `--json` adds `overlaps` and `question_id` (or `question_error` if the question could not be recorded).
 
 #### `airlock task heartbeat <id> [--lease <minutes>]`
 Extends the current session's lease from now. Fails if the session does not hold the lease.
