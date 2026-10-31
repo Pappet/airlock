@@ -103,6 +103,8 @@ pub struct NewTask {
 }
 
 /// Changes to an existing task; `None` keeps the field, a list replaces it.
+/// A new content field must also go into `cli::TaskEditSpec`, the MCP
+/// `task_update` tool, the REST `EditTask` body, and Specs 02–04.
 #[derive(Debug, Clone, Default)]
 pub struct TaskEdit {
     pub title: Option<String>,

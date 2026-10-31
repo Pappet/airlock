@@ -412,8 +412,12 @@ fn edit_of_started_tasks_needs_force() {
 
     store.complete("A", "s1", None, true, false, 3).unwrap();
     assert!(err(store.edit_task("A", retitle(), false, 4)).contains("in_review"));
+    let reviewed = store.edit_task("A", retitle(), true, 4).unwrap();
+    assert_eq!(reviewed.state, TaskState::InReview);
     store.approve("A", None, 5).unwrap();
     assert!(err(store.edit_task("A", retitle(), false, 6)).contains("done"));
+    let done = store.edit_task("A", retitle(), true, 6).unwrap();
+    assert_eq!((done.state, done.updated_at), (TaskState::Done, 6));
 
     // An expired lease counts as released.
     store.claim("B", "s2", MIN, 7).unwrap();
