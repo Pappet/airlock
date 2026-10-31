@@ -75,7 +75,7 @@ airlock task edit E-6d --clear-blocked-by --priority 5
 Changes the content of a task; omitted fields keep their values, at least one field must be given. `--read`, `--touch`, and `--blocked-by` replace their whole list; `--clear-read`, `--clear-touch`, and `--clear-blocked-by` empty it. The id, state, claim, lease, and notes cannot be edited. A task that is `in_progress`, `in_review`, or `done` needs `--force`; the claim and lease survive the edit. Fails on an unknown role, an unknown prerequisite, or a dependency cycle (the whole graph is checked, Spec 01 §2.1).
 
 #### `airlock task claim <id> [--lease <minutes>]`
-Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked. If the task shares files with an `in_progress` or `in_review` task, the claim still succeeds: a warning goes to stderr, an overlap question is recorded for the lead (Spec 01 §2.1), and `--json` adds `overlaps` and `question_id`.
+Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked. If the task shares files with an `in_progress` or `in_review` task, the claim still succeeds: a warning goes to stderr, an overlap question is recorded for the lead (Spec 01 §2.1), and `--json` adds `overlaps` and `question_id` (or `question_error` if the question could not be recorded).
 
 #### `airlock task heartbeat <id> [--lease <minutes>]`
 Extends the current session's lease from now. Fails if the session does not hold the lease.

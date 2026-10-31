@@ -273,6 +273,13 @@ fn overlapping_work_is_handed_out_last_and_claims_ask_the_lead() {
         warning.contains("warning: E-2") && warning.contains("src/sim.rs with E-1"),
         "{warning}"
     );
+    let fallback = env.json(&project, &["task", "next", "--role", "engine"]);
+    assert_eq!(fallback["id"], "E-2");
+    assert_eq!(fallback["overlaps"][0]["id"], "E-1");
+    assert_eq!(
+        fallback["overlaps"][0]["paths"],
+        serde_json::json!(["src/sim.rs"])
+    );
 
     let claimed = env.json(&project, &["--session", "engine-1", "task", "claim", "E-2"]);
     assert_eq!(claimed["overlaps"][0]["id"], "E-1");
@@ -315,6 +322,59 @@ fn overlapping_work_is_handed_out_last_and_claims_ask_the_lead() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[test]
+fn a_failed_overlap_question_does_not_hide_the_claim() {
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    add(&env, &project, "E-1", &["--touch", "src/sim.rs"]);
+    add(&env, &project, "E-2", &["--touch", "src/sim.rs"]);
+    env.ok(&project, &["--session", "engine-2", "task", "claim", "E-1"]);
+    let marker: Value = serde_json::from_str(&read(&project.join(".airlock"))).unwrap();
+    let db = env
+        .hub
+        .join("projects")
+        .join(marker["project_id"].as_str().unwrap())
+        .join("airlock.db");
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER no_questions BEFORE INSERT ON questions
+             BEGIN SELECT RAISE(ABORT, 'questions are read-only'); END;",
+        )
+        .unwrap();
+
+    let out = env.run(
+        &project,
+        &["--session", "engine-1", "task", "claim", "E-2", "--json"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let claimed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(claimed["task_id"], "E-2");
+    assert_eq!(claimed["overlaps"][0]["id"], "E-1");
+    assert!(claimed.get("question_id").is_none());
+    assert!(
+        claimed["question_error"]
+            .as_str()
+            .unwrap()
+            .contains("questions are read-only")
+    );
+    let warning = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        warning.contains("could not record the question for the lead")
+            && warning.contains("read-only"),
+        "{warning}"
+    );
+    assert_eq!(
+        env.json(&project, &["task", "show", "E-2"])["claimed_by"],
+        "engine-1"
     );
 }
 

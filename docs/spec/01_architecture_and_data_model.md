@@ -100,7 +100,7 @@ A ready task whose `touch` shares a path with an **occupying** task (`in_progres
 
 #### Overlap at Claim Time
 
-An overlap never blocks a claim. Claiming a task that shares paths with occupying tasks succeeds, returns the `overlaps`, and records a question for the lead from the claiming session: topic `overlap:<task id>`, naming the shared paths, the occupying tasks, their status and holder, and asking whether to continue or release. While that session has an open question on the topic, claiming again reuses it. The session keeps working; the lead answers in the question channel or releases the task.
+An overlap never blocks a claim. Claiming a task that shares paths with occupying tasks succeeds, returns the `overlaps`, and records a question for the lead from the claiming session: topic `overlap:<task id>`, naming the shared paths, the occupying tasks, their status and holder, and asking whether to continue or release. While that session has an open question on the topic, claiming again reuses it unchanged, so its text describes the first claim. The question is recorded after the claim is committed: if recording it fails, the claim still succeeds and reports the overlaps with a `question_error` instead of a `question_id`. The session keeps working; the lead answers in the question channel or releases the task.
 
 ### 2.2 Question (Airlock Communication)
 

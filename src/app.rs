@@ -8,7 +8,7 @@ use crate::store::{Completion, NewTask, Store, TaskEdit};
 use crate::{briefing, doctor, init, mcp, setup, sync, web};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -407,22 +407,12 @@ fn task(
         }
         TaskCommand::Claim { id, lease } => {
             let claimed = claim(store, &id, session, lease_secs(lease)?, now)?;
-            if let Some(question) = claimed.question_id {
-                eprintln!(
-                    "warning: {id} touches files of unfinished work: {}; recorded as question #{question} for the lead",
-                    overlap::describe(&claimed.overlaps)
-                );
+            if let Some(warning) = claimed.warning() {
+                eprintln!("{warning}");
             }
-            let task = &claimed.task;
-            let until = task
-                .lease_expires_at
-                .context("claimed task without lease")?;
-            let mut value = json!({ "task_id": task.id, "lease_expires_at": until });
-            if let Some(question) = claimed.question_id {
-                value["overlaps"] = serde_json::to_value(&claimed.overlaps)?;
-                value["question_id"] = question.into();
-            }
-            out.print(&value, || lease_text(task, "Claimed", now))
+            out.print(&claimed.to_json()?, || {
+                lease_text(&claimed.task, "Claimed", now)
+            })
         }
         TaskCommand::Heartbeat { id, lease } => {
             let task = store.heartbeat(&id, session, lease_secs(lease)?, now)?;
@@ -623,7 +613,7 @@ pub(crate) fn next_ready<'a>(tasks: &'a [Task], role: &str) -> Option<TaskView<'
         .iter()
         .position(|v| v.overlaps.is_empty())
         .unwrap_or(0);
-    (!ready.is_empty()).then(|| ready.swap_remove(clean))
+    ready.into_iter().nth(clean)
 }
 
 /// A claimed task and the files it shares with occupying tasks.
@@ -632,10 +622,51 @@ pub(crate) struct Claimed {
     pub overlaps: Vec<Overlap>,
     /// The open overlap question for the lead, if there is an overlap
     pub question_id: Option<u64>,
+    /// Why the overlap question could not be recorded; the claim stands
+    pub question_error: Option<String>,
+}
+
+impl Claimed {
+    /// The claim result of CLI `--json` and MCP `task_claim`.
+    pub fn to_json(&self) -> Result<Value> {
+        let mut value = json!({
+            "task_id": self.task.id,
+            "lease_expires_at": self.task.lease_expires_at,
+        });
+        if !self.overlaps.is_empty() {
+            value["overlaps"] = serde_json::to_value(&self.overlaps)?;
+        }
+        if let Some(id) = self.question_id {
+            value["question_id"] = id.into();
+        }
+        if let Some(error) = &self.question_error {
+            value["question_error"] = error.as_str().into();
+        }
+        Ok(value)
+    }
+
+    /// The stderr warning for an overlapping claim.
+    pub fn warning(&self) -> Option<String> {
+        if self.overlaps.is_empty() {
+            return None;
+        }
+        let shared = overlap::describe(&self.overlaps);
+        let id = &self.task.id;
+        Some(match (self.question_id, &self.question_error) {
+            (Some(question), _) => format!(
+                "warning: {id} touches files of unfinished work: {shared}; recorded as question #{question} for the lead"
+            ),
+            (None, error) => format!(
+                "warning: {id} touches files of unfinished work: {shared}; could not record the question for the lead: {}",
+                error.as_deref().unwrap_or("unknown error")
+            ),
+        })
+    }
 }
 
 /// Claims a task; an overlap with occupying tasks never blocks the claim but
-/// records a question so the lead can check it (Spec 01 §2.1).
+/// records a question so the lead can check it (Spec 01 §2.1). The claim is
+/// committed first, so a failed question is reported, not returned as error.
 pub(crate) fn claim(
     store: &mut Store,
     id: &str,
@@ -652,6 +683,7 @@ pub(crate) fn claim(
             task,
             overlaps,
             question_id: None,
+            question_error: None,
         });
     }
     let held: Vec<String> = overlaps
@@ -679,11 +711,16 @@ pub(crate) fn claim(
         ),
         session,
         now,
-    )?;
+    );
+    let (question_id, question_error) = match question {
+        Ok(q) => (Some(q.id), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
     Ok(Claimed {
         task,
         overlaps,
-        question_id: Some(question.id),
+        question_id,
+        question_error,
     })
 }
 

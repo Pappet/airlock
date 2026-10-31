@@ -267,16 +267,7 @@ impl Server {
                         json!({ "task_id": task.id, "lease_expires_at": task.lease_expires_at }),
                     );
                 }
-                let claimed = claim(&mut self.store, &id, &self.session, lease, now)?;
-                let mut result = json!({
-                    "task_id": claimed.task.id,
-                    "lease_expires_at": claimed.task.lease_expires_at,
-                });
-                if let Some(question) = claimed.question_id {
-                    result["overlaps"] = serde_json::to_value(&claimed.overlaps)?;
-                    result["question_id"] = question.into();
-                }
-                Ok(result)
+                claim(&mut self.store, &id, &self.session, lease, now)?.to_json()
             }
             "task_release" => {
                 let id = str_arg(args, "task_id")?;

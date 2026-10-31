@@ -68,7 +68,7 @@ Returns the next ready task for a role (Spec 01 §2.1 selection order) without c
 
 ### 3.3 `task_claim`
 - **Parameters:** `task_id` (string), `lease_minutes` (integer, optional; default from project config)
-- **Returns:** `{ task_id, lease_expires_at }`, plus `overlaps` and `question_id` when the task shares files with running work. The claim is not refused; the question for the lead is the session's own, so clean-room sessions see its answer in `question_list` and the briefing (Spec 01 §2.1).
+- **Returns:** `{ task_id, lease_expires_at }`, plus `overlaps` and `question_id` (or `question_error`) when the task shares files with running work. The claim is not refused; the question for the lead is the session's own, so clean-room sessions see its answer in `question_list` and the briefing (Spec 01 §2.1).
 
 ### 3.4 `task_heartbeat`
 - **Parameters:** `task_id` (string), `lease_minutes` (integer, optional)
