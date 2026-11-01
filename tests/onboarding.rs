@@ -1323,3 +1323,184 @@ fn a_correction_in_the_second_of_the_previous_briefing_is_shown() {
     assert!(build(Some(corrected_at + 1)).corrected_answers.is_empty());
     assert_eq!(build(None).corrected_answers.len(), 1);
 }
+
+/// Runs `airlock hook stop` in `dir` as Claude Code does: hook JSON on stdin.
+fn stop_hook(env: &Env, dir: &Path) -> (bool, String) {
+    use std::io::Write;
+    let mut child = env
+        .cmd(dir, &["hook", "stop"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"session_id":"abc","hook_event_name":"Stop","stop_hook_active":false}"#)
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), String::from_utf8(out.stdout).unwrap())
+}
+
+fn set_auto_continue_limit(env: &Env, limit: u32) {
+    let dir = std::fs::read_dir(env.hub.join("projects"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let path = dir.join("project.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config["auto_continue_limit"] = json!(limit);
+    std::fs::write(&path, config.to_string()).unwrap();
+}
+
+#[test]
+fn stop_hook_continues_once_per_news() {
+    let env = Env::new();
+    // An unbound directory: silence, exit 0.
+    assert_eq!(stop_hook(&env, &env.engine), (true, String::new()));
+    env.ok(&env.engine, &["use", "engine", "--lock"]);
+    // The briefing starts the session's inbox; nothing new yet.
+    env.ok(&env.engine, &["start"]);
+    assert_eq!(stop_hook(&env, &env.engine), (true, String::new()));
+
+    // The engine asks; the lead answers; the engine's session is sent back to work once.
+    env.ok(
+        &env.engine,
+        &["question", "ask", "Arc?", "--topic", "melee.md"],
+    );
+    env.ok(&env.main, &["question", "answer", "1", "Front 90°"]);
+    let (ok, out) = stop_hook(&env, &env.engine);
+    assert!(ok);
+    let decision: Value = serde_json::from_str(&out).expect("one JSON object");
+    assert_eq!(decision["decision"], "block");
+    let reason = decision["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("1 new for engine") && reason.contains("answer to #1"),
+        "{reason}"
+    );
+    assert!(!reason.contains("Front"), "references only: {reason}");
+    // The same news does not nudge again, read or not.
+    assert_eq!(stop_hook(&env, &env.engine), (true, String::new()));
+
+    // New news nudges again, until the hourly limit.
+    set_auto_continue_limit(&env, 2);
+    env.ok(
+        &env.main,
+        &[
+            "task",
+            "add",
+            "Hotfix",
+            "--role",
+            "engine",
+            "--priority",
+            "critical",
+            "--do",
+            "x",
+            "--verify",
+            "y",
+        ],
+    );
+    let (_, out) = stop_hook(&env, &env.engine);
+    assert!(out.contains("E-1 ready (critical)"), "{out}");
+    env.ok(
+        &env.main,
+        &[
+            "task", "add", "More", "--role", "engine", "--do", "x", "--verify", "y",
+        ],
+    );
+    assert_eq!(
+        stop_hook(&env, &env.engine),
+        (true, String::new()),
+        "limit of 2 reached"
+    );
+    set_auto_continue_limit(&env, 0);
+    env.ok(
+        &env.main,
+        &[
+            "task", "add", "Off", "--role", "engine", "--do", "x", "--verify", "y",
+        ],
+    );
+    assert_eq!(
+        stop_hook(&env, &env.engine),
+        (true, String::new()),
+        "0 turns it off"
+    );
+
+    // Nudges are logged as reads with the item count.
+    let log = env.ok(&env.main, &["activity", "--json"]);
+    let entries: Value = serde_json::from_str(&log).unwrap();
+    let hooks: Vec<&Value> = entries["entries"]
+        .as_array()
+        .or_else(|| entries.as_array())
+        .unwrap()
+        .iter()
+        .filter(|e| e["command"] == "hook stop")
+        .collect();
+    let outcomes: Vec<String> = hooks
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {}",
+                e["target"].as_str().unwrap(),
+                e["changed"][0].as_str().unwrap()
+            )
+        })
+        .collect();
+    // The engine never read its inbox, so the unread items add up.
+    assert_eq!(outcomes, ["3 limit", "2 nudge", "1 nudge"], "newest first");
+    assert!(hooks.iter().all(|e| e["write"] == false));
+
+    // A broken hub never traps a session: silence, exit 0.
+    std::fs::write(env.engine.join(".airlock"), "not json").unwrap();
+    assert_eq!(stop_hook(&env, &env.engine), (true, String::new()));
+}
+
+#[test]
+fn setup_adds_the_stop_hook_on_request_and_doctor_sees_it() {
+    let env = Env::new();
+    let refused = env.run(&env.engine, &["setup", "claude-hooks", "--auto-continue"]);
+    assert!(!refused.status.success(), "no binding, no auto-continue");
+    assert!(
+        env.run(&env.main, &["setup", "claude", "--auto-continue"])
+            .status
+            .code()
+            == Some(1)
+    );
+    env.ok(&env.engine, &["use", "engine", "--lock"]);
+    let settings: Value =
+        serde_json::from_str(&env.ok(&env.engine, &["setup", "claude-hooks", "--auto-continue"]))
+            .unwrap();
+    hook_command(&settings);
+    let stop = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(
+        stop.ends_with(" hook stop") && stop.contains(" -C "),
+        "{stop}"
+    );
+    let plain: Value =
+        serde_json::from_str(&env.ok(&env.engine, &["setup", "claude-hooks"])).unwrap();
+    assert!(plain["hooks"].get("Stop").is_none(), "opt-in only");
+
+    let dir = env.engine.join(".claude");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("settings.local.json"), plain.to_string()).unwrap();
+    let doctor = env.ok(&env.engine, &["doctor"]);
+    assert!(doctor.contains("auto-continue off"), "{doctor}");
+    std::fs::write(dir.join("settings.local.json"), settings.to_string()).unwrap();
+    let doctor = env.ok(&env.engine, &["doctor"]);
+    assert!(
+        doctor.contains("Stop hook") && doctor.contains("auto-continue on"),
+        "{doctor}"
+    );
+    assert!(!doctor.contains("auto-continue off"), "{doctor}");
+}

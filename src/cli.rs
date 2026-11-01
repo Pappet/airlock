@@ -37,6 +37,14 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// Harness hook events.
+#[derive(Subcommand, Debug)]
+pub enum HookEvent {
+    /// Claude Code `Stop`: block the stop when the inbox has news (reads the
+    /// hook JSON on stdin)
+    Stop,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Register this checkout as a project, apply a template, and create worktrees and bindings
@@ -98,7 +106,14 @@ pub enum Command {
         /// Role to configure [default: the worktree binding's]
         #[arg(long)]
         role: Option<String>,
+        /// With `claude-hooks`: also a Stop hook that sends the session back to
+        /// work when its inbox has news
+        #[arg(long)]
+        auto_continue: bool,
     },
+    /// Entry points for agent harness hooks; they never fail
+    #[command(subcommand, hide = true)]
+    Hook(HookEvent),
     /// Role management
     #[command(subcommand)]
     Role(RoleCommand),
@@ -440,6 +455,7 @@ impl Command {
             Self::Inbox { .. } => "inbox",
             Self::Doctor => "doctor",
             Self::Setup { .. } => "setup",
+            Self::Hook(HookEvent::Stop) => "hook stop",
             Self::Role(sub) => match sub {
                 RoleCommand::List => "role list",
                 RoleCommand::Set { .. } => "role set",

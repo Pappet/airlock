@@ -21,6 +21,10 @@ pub struct ProjectConfig {
     /// Default lease duration for task claims, in minutes
     #[serde(default = "default_lease_minutes")]
     pub lease_minutes: u32,
+    /// Most Stop-hook nudges per session and hour; `0` turns the nudges off
+    /// (Spec 06 §6)
+    #[serde(default = "default_auto_continue_limit")]
+    pub auto_continue_limit: u32,
     /// Export targets written by `airlock sync`
     #[serde(default)]
     pub export: ExportConfig,
@@ -106,6 +110,10 @@ fn default_lease_minutes() -> u32 {
     60
 }
 
+fn default_auto_continue_limit() -> u32 {
+    10
+}
+
 impl Default for ExportConfig {
     fn default() -> Self {
         Self {
@@ -143,6 +151,7 @@ impl Default for ProjectConfig {
             name: "default".to_string(),
             roles,
             lease_minutes: default_lease_minutes(),
+            auto_continue_limit: default_auto_continue_limit(),
             export: ExportConfig::default(),
         }
     }

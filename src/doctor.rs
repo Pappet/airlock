@@ -535,6 +535,7 @@ fn check_claude_hooks(
     let here = binding_key(worktree).ok();
     let binding = here.as_ref().and_then(|k| bindings.get(k));
     let mut found = false;
+    let mut auto_continue = false;
     for name in ["settings.json", "settings.local.json"] {
         let path = worktree.join(".claude").join(name);
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -554,6 +555,55 @@ fn check_claude_hooks(
                 continue;
             }
         };
+        let stops = json
+            .pointer("/hooks/Stop")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|group| group.get("hooks")?.as_array())
+            .flatten()
+            .filter_map(|hook| hook.get("command")?.as_str())
+            .filter(|command| command.contains("airlock"));
+        for command in stops {
+            auto_continue = true;
+            let words = crate::setup::shell_words(command);
+            let label = format!("Claude Code Stop hook in {}", path.display());
+            let program = words.first().map(String::as_str).unwrap_or_default();
+            let dir = words
+                .iter()
+                .position(|w| w == "-C")
+                .and_then(|i| words.get(i + 1));
+            let mut warnings = Vec::new();
+            if !Path::new(program).is_file() {
+                warnings.push(format!("command {program} not found"));
+            }
+            if let Some(dir) = dir {
+                if binding_key(Path::new(dir)).ok() != here {
+                    warnings.push(format!(
+                        "-C {dir} is not this worktree; the hook reads another worktree's inbox"
+                    ));
+                }
+            }
+            if binding.is_none() {
+                warnings.push(
+                    "this worktree has no binding, so the hook never continues a session"
+                        .to_string(),
+                );
+            }
+            if warnings.is_empty() {
+                report.add(
+                    Level::Ok,
+                    "harness",
+                    format!("{label}: auto-continue on ({command})"),
+                );
+            } else {
+                report.add(
+                    Level::Warn,
+                    "harness",
+                    format!("{label}: {}", warnings.join("; ")),
+                );
+            }
+        }
         let commands = json
             .pointer("/hooks/SessionStart")
             .and_then(Value::as_array)
@@ -619,6 +669,17 @@ fn check_claude_hooks(
                 );
             }
         }
+    }
+    if found && !auto_continue {
+        report.add(
+            Level::Ok,
+            "harness",
+            format!(
+                "{}: auto-continue off (optional); `airlock setup claude-hooks --auto-continue` \
+                 adds a Stop hook that sends the session back to work when Airlock has news",
+                worktree.display()
+            ),
+        );
     }
     if has_mcp && !found {
         report.add(

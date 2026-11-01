@@ -52,6 +52,7 @@ const READ_COMMANDS: &[&str] = &[
     "session_start",
     "prompt start",
     "inbox",
+    "hook stop",
     "task_next",
     "task_get",
     "question_list",
@@ -711,6 +712,7 @@ pub fn summarize_cli(command: &Command) -> (Option<String>, Vec<String>) {
         Command::Init { .. }
         | Command::Doctor
         | Command::Setup { .. }
+        | Command::Hook(_)
         | Command::Activity { .. }
         | Command::Mcp { .. }
         | Command::Serve { .. } => None,
