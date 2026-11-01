@@ -48,11 +48,11 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 
 ## Phase 3c: Session Continuity
 Goal: a Claude Code session that runs out of context, crashes, or is compacted is replaced without manual re-initialization. Work orders with Read/Touch/Do/Verify in [`SESSION_CONTINUITY.md`](SESSION_CONTINUITY.md).
-- [ ] WO-1: `airlock setup claude-hooks` prints a SessionStart hook that runs `airlock start`; `doctor` checks it.
+- [x] WO-1: `airlock setup claude-hooks` prints a SessionStart hook that runs `airlock start`; `doctor` checks it.
 - [x] WO-2: progress notes on a lease (`task heartbeat --notes`, MCP `task_heartbeat.notes`), shown in the briefing, kept across release and expiry, not exported.
 - WO-3 (session instance presence): dropped; shared session ids are intended, and the activity log's process registry shows live instances.
 - [ ] WO-4: restart validation — e2e and MCP tests for a same-session restart; Scenario D (and B) run for real on OpenSHR and recorded.
-- [ ] WO-5: directory entries in `touch` lists count as overlap for the files beneath them.
+- [x] WO-5: directory entries in `touch` lists count as overlap for the files beneath them.
 - [ ] WO-6: documentation housekeeping (`PROJECT_OVERVIEW.md` dependencies and status, tool counts, phase markers).
 
 ---

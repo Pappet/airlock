@@ -1019,7 +1019,14 @@ function renderDrawer() {
     for (const p of o.paths) overlapping.set(p, [...(overlapping.get(p) || []), `${o.occupied ? "▶ " : ""}${o.id}`]);
   }
   const touchNorm = (p) => p.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^(\.\/)+/, "");
-  const touchMarks = new Map(task.touch.map((p) => [p, overlapping.get(touchNorm(p))]).filter(([, v]) => v));
+  // Same rule as the server (Spec 04 §3.5): a directory entry covers the paths beneath it.
+  const stem = (p) => p.replace(/\/$/, "");
+  const covers = (a, b) => stem(a) === stem(b) || stem(b).startsWith(`${stem(a)}/`);
+  const touchMarks = new Map(task.touch.map((p) => {
+    const entry = touchNorm(p);
+    const ids = [...overlapping].filter(([path]) => covers(entry, path) || covers(path, entry)).flatMap(([, v]) => v);
+    return [p, ids.length ? [...new Set(ids)] : null];
+  }).filter(([, v]) => v));
   const dependents = state.tasks.filter((t) => t.blocked_by.includes(task.id)).map((t) => t.id);
   const minutes = minutesLeft(task);
 

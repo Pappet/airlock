@@ -77,6 +77,7 @@ Without a role, the briefing omits the role parts and the next package and says 
 - **CLI:** `airlock start [--role <role>]` prints the briefing as Markdown (`--json`: the structured form). Shell-only agents are told to run it first.
 - **MCP tool `session_start`** (no parameters): `structuredContent` holds the structured briefing; the text content holds the Markdown. Part of the clean-room tool set.
 - **MCP prompt `start`:** the server advertises the `prompts` capability with one prompt, `start`, whose single user message is the Markdown briefing followed by "Begin with the claimed or next work package." Clients that map MCP prompts to commands (Claude Code: `/mcp__airlock__start`) make the kickoff a single command.
+- **Claude Code SessionStart hook** (optional, from `airlock setup claude-hooks`, §6): Claude Code runs `<bin> -C <root> start` when a session starts, resumes, is cleared, or is compacted, and adds its standard output (the Markdown briefing) to the model's context. The agent no longer has to remember to call `session_start`, and after a compaction the role, rules, and claimed work are back in context without a new session. The hook's `airlock start` is an ordinary CLI call: it is recorded in the activity log as `start` from an agent shell and counts as a briefing for the "Answer changed" section (§3.1), which is intended — the briefing text reaches the model each time.
 
 With this, the agent-facing instruction files of a project (`CLAUDE.md`, `AGENTS.md`, …) no longer need Airlock *setup* knowledge — MCP configuration per role, fixed session ids, `AIRLOCK_SESSION`, kickoff prompts. They keep the project's own rules (process, clean-room boundaries, conventions) and gain a short Airlock section telling agents to start with the briefing and follow the claim/heartbeat/complete workflow; the quickstart provides a ready-made one. Role-specific rules and reading lists move into the role configuration (§4), so the briefing can point each session at them.
 
@@ -118,16 +119,18 @@ Checks an installation and prints one line per finding (`ok`, `warn`, `error`; `
    - configuration files that are not valid JSON;
    - a server defined in both a worktree's `.mcp.json` and Claude Code's local scope (Claude Code reports conflicting scopes);
    - session ids used by several entries. DSH profiles are YAML patches and are only listed, not parsed; `dsh --profile <name> --dump-config` shows the composed result.
+7. **Claude Code SessionStart hooks** (§3.2) in each worktree's `.claude/settings.json` and `.claude/settings.local.json` whose command mentions `airlock`. The command is split like a POSIX shell line. Reports a bare command name instead of an absolute path (warn, with the path to use), a command that does not exist (warn), a `-C` pointing at a directory that is not this worktree (warn), `--role` contradicting a locked binding (error), and a settings file that is not valid JSON (error: Claude Code then ignores the file). A worktree with an Airlock `.mcp.json` but no such hook gets an `ok` line naming `airlock setup claude-hooks`: the hook is optional.
 
 Airlock calls `git` here only to inspect the setup; it still never uses git to locate state (Spec 05 §2.2).
 
 ---
 
-## 6. `airlock setup <claude|antigravity|dsh>`
+## 6. `airlock setup <claude|claude-hooks|antigravity|dsh>`
 
 Prints the configuration for the current worktree; it never edits harness files. Standard output carries only the file content (valid JSON or YAML), so redirecting it into the target file is always safe; where to save it goes to standard error. The command path is the running binary's canonical path.
 
 - **claude:** a `.mcp.json` for this worktree. Role and session come from the binding (`args: ["mcp"]`) unless `--role` names another role. Claude Code's local scope (`claude mcp add --scope local`) is not used: it applies to every worktree of the repository and would carry one worktree's role into the others.
+- **claude-hooks:** a complete `.claude/settings.local.json` whose only key is `hooks`: one `SessionStart` group with the matcher `startup|resume|clear|compact` and one command hook, `<bin> -C <root> start`, timeout 15 seconds. Binary and root are shell-quoted, so paths with spaces work; `-C` keeps the hook working when Claude Code is started from a subdirectory. Role and session come from the binding; with `--role` naming another role, `--role <role> --session <role>@<dir>` is appended — the same identity `setup claude --role` gives the MCP server. The hint says to save the file if it does not exist and otherwise to merge the `hooks` key into it, and that the file is local to the worktree and not committed. `setup claude` does not include the hook: `.mcp.json` cannot carry hooks, and an existing settings file has to be merged, not overwritten. `--json` carries `role`, `session`, `root`, `command` (the binary), `args` (the hook's arguments), and `hint`, like the other harnesses.
 - **antigravity:** an `mcpServers` entry `airlock-<role>` with `args: ["-C", "<root>", "mcp", "--role", "<role>", "--session", "<session>"]` — the configuration is global, so it carries the worktree explicitly.
 - **dsh:** a complete patch overlay file (YAML) with one `@deepseek-ai/dsh-mcp-client` row using `-C <root>`, plus the launch command as a comment: `dsh web --patch <file> --port 0`. One overlay per role keeps one role per DSH instance.
 

@@ -324,6 +324,12 @@ fn check_harnesses(
         );
         project_scope.insert(worktree, names);
     }
+    for worktree in worktrees {
+        let has_mcp = project_scope
+            .get(worktree.as_path())
+            .is_some_and(|names| !names.is_empty());
+        check_claude_hooks(report, bindings, worktree, has_mcp);
+    }
     if let Some(home) = &home {
         // Claude Code keys its local scope by repository, so an entry made in one worktree
         // applies to all of them: check it against every worktree.
@@ -519,7 +525,114 @@ fn check_harnesses(
     }
 }
 
-/// Adds the airlock servers from one JSON configuration file.
+/// Checks the Claude Code SessionStart hooks of one worktree that run airlock (Spec 06 §5).
+fn check_claude_hooks(
+    report: &mut Report,
+    bindings: &BTreeMap<String, Binding>,
+    worktree: &Path,
+    has_mcp: bool,
+) {
+    let here = binding_key(worktree).ok();
+    let binding = here.as_ref().and_then(|k| bindings.get(k));
+    let mut found = false;
+    for name in ["settings.json", "settings.local.json"] {
+        let path = worktree.join(".claude").join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let json = match serde_json::from_str::<Value>(&text) {
+            Ok(json) => json,
+            Err(e) => {
+                report.add(
+                    Level::Error,
+                    "harness",
+                    format!(
+                        "{}: not valid JSON ({e}); Claude Code ignores its settings and hooks",
+                        path.display()
+                    ),
+                );
+                continue;
+            }
+        };
+        let commands = json
+            .pointer("/hooks/SessionStart")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|group| group.get("hooks")?.as_array())
+            .flatten()
+            .filter_map(|hook| hook.get("command")?.as_str())
+            .filter(|command| command.contains("airlock"));
+        for command in commands {
+            found = true;
+            let words = crate::setup::shell_words(command);
+            let flag = |name: &str| {
+                words
+                    .iter()
+                    .position(|w| w == name)
+                    .and_then(|i| words.get(i + 1))
+            };
+            let label = format!("Claude Code SessionStart hook in {}", path.display());
+            let mut warnings = Vec::new();
+            let program = words.first().map(String::as_str).unwrap_or_default();
+            if Path::new(program).is_absolute() {
+                if !Path::new(program).is_file() {
+                    warnings.push(format!("command {program} not found"));
+                }
+            } else {
+                let suggestion = find_in_path(program)
+                    .or_else(|| std::env::current_exe().ok())
+                    .and_then(|p| std::fs::canonicalize(p).ok())
+                    .map(|p| format!("; use the absolute path {}", p.display()))
+                    .unwrap_or_default();
+                warnings.push(format!(
+                    "command `{program}` is looked up in Claude Code's PATH, which can differ from your shell's{suggestion}"
+                ));
+            }
+            if let Some(dir) = flag("-C") {
+                if binding_key(Path::new(dir)).ok() != here {
+                    warnings.push(format!(
+                        "-C {dir} is not this worktree; the hook briefs another worktree's session"
+                    ));
+                }
+            }
+            if let (Some(role), Some(b)) = (flag("--role"), binding) {
+                if b.locked && *role != b.role {
+                    report.add(
+                        Level::Error,
+                        "harness",
+                        format!(
+                            "{label}: --role {role} contradicts the locked binding to {}",
+                            b.role
+                        ),
+                    );
+                    continue;
+                }
+            }
+            if warnings.is_empty() {
+                report.add(Level::Ok, "harness", format!("{label}: {command}"));
+            } else {
+                report.add(
+                    Level::Warn,
+                    "harness",
+                    format!("{label}: {}", warnings.join("; ")),
+                );
+            }
+        }
+    }
+    if has_mcp && !found {
+        report.add(
+            Level::Ok,
+            "harness",
+            format!(
+                "{}: no Claude Code SessionStart hook (optional); `airlock setup claude-hooks` \
+                 re-delivers the briefing after a restart or compaction",
+                worktree.display()
+            ),
+        );
+    }
+}
+
 /// Adds the airlock servers from one JSON configuration file; returns their names.
 fn collect(
     report: &mut Report,

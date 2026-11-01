@@ -116,13 +116,14 @@ Agents use Airlock's MCP tools directly. `airlock setup` prints the configuratio
 ```bash
 cd ../my-project-engine
 airlock setup claude > .mcp.json   # per worktree; not `claude mcp add --scope local` (applies to all worktrees)
+mkdir -p .claude && airlock setup claude-hooks > .claude/settings.local.json   # optional; merge by hand if the file exists
 airlock setup antigravity   # entry for the global ~/.gemini/antigravity/mcp_config.json
 airlock setup dsh > ~/.dsh/airlock/my-project-engine.yml   # patch overlay; start: dsh web --patch … --port 0
 ```
 
 Per-directory harnesses (Claude Code) only need `airlock mcp` — role and session come from the binding. In a shared checkout, a harness that works as the *other* role (e.g. lead in a checkout bound to spec) passes `--role` and its own `--session` in its configuration; give every harness its own session id. Global configurations carry the worktree with `-C <dir>`. For a clean-room role the agent only sees the tools it needs and only its own role's tasks and questions (Spec 03 §2.1).
 
-The agent's first action is the briefing: the MCP tool `session_start`, the MCP prompt `start` (in Claude Code: `/mcp__airlock__start`), or `airlock start`.
+The agent's first action is the briefing: the MCP tool `session_start`, the MCP prompt `start` (in Claude Code: `/mcp__airlock__start`), or `airlock start`. With the hook from `airlock setup claude-hooks`, Claude Code runs `airlock start` itself whenever a session starts, resumes, is cleared, or is compacted, and hands the briefing to the model — so after a compaction the agent still knows its role, rules, and claimed task. The settings file is local to the worktree and not committed; if `.claude/settings.local.json` already exists, merge the printed `hooks` key into it instead of overwriting it.
 
 ### Instructing agents
 
@@ -213,4 +214,4 @@ Open the printed `http://127.0.0.1:3000/#token=…` URL (the Board is the defaul
 - **Review**, **Questions**, **Leases** — approve or reject, answer and resolve, force-release.
 - **Activity** — what needs attention (failed calls, clean-room sessions writing through the CLI, bursts of errors, corrected answers, `airlock mcp` processes older than the installed build), who works on what, and a logbook of every MCP, CLI, and REST call by day. The log keeps metadata only (no task bodies, notes, or question and answer text) for 30 days. In the terminal, `airlock activity` prints the logbook (times in UTC) and `airlock activity --problems` the list of problems.
 
-Tasks without `--touch` show "no touch data": list the files a task changes so overlaps become visible.
+Tasks without `--touch` show "no touch data": list the files a task changes so overlaps become visible. A directory works too (`--touch src/render/`): it overlaps every listed file beneath it.

@@ -108,7 +108,7 @@ Among tasks of the requested role with effective status `ready`:
 
 The order is deterministic.
 
-A ready task whose `touch` shares a path with an **occupying** task (`in_progress` or `in_review`; path rules in Spec 04 §3.5) is skipped in favor of the next task in this order. A task without `touch` data is never skipped, since its overlap is unknown. When every ready task overlaps, the first in order is returned anyway, together with its `overlaps`, so no session runs dry.
+A ready task whose `touch` shares a path with an **occupying** task (`in_progress` or `in_review`; path rules in Spec 04 §3.5, where a directory entry covers the paths beneath it) is skipped in favor of the next task in this order. A task without `touch` data is never skipped, since its overlap is unknown. When every ready task overlaps, the first in order is returned anyway, together with its `overlaps`, so no session runs dry.
 
 #### Overlap at Claim Time
 

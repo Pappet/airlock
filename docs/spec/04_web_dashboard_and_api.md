@@ -42,7 +42,11 @@ Lists questions by status. The project lead can answer, revise, and resolve them
 Shows active leases with session id and remaining time; expired leases are marked as such, and a lease whose task has a progress note (Spec 01 §2.4) shows it. A lead can force-release a lease. The task details show the progress note too ("Progress" while the task is claimed, "Earlier progress" after a release); there is no REST endpoint that writes it, since it is the lease holder's.
 
 ### 3.5 Overlap Rules
-Two open tasks (effective status other than `done`) **overlap** when their `touch` lists share a path. Paths are compared after normalization: surrounding whitespace is trimmed, `\` becomes `/`, repeated `/` collapse, and leading `./` are removed (`./src/a.rs` equals `src/a.rs`; `src/` does not equal `src/a.rs`). Only identical paths count; a shared directory does not.
+Two open tasks (effective status other than `done`) **overlap** when an entry of one `touch` list **covers** an entry of the other. Paths are normalized first: surrounding whitespace is trimmed, `\` becomes `/`, repeated `/` collapse, and leading `./` are removed (`./src/a.rs` equals `src/a.rs`). A trailing `/` is kept but only marks intent.
+
+- Entry `a` covers path `b` when both name the same path (`src/render` and `src/render/` are the same) or `b` lies beneath `a`: `b` starts with `a` followed by `/`. So `src/render/` covers `src/render/mesh.rs` and `src/render/`, `src/` covers `src/render/`, but `src/rend` does not cover `src/render/a.rs`, and `src/render/a.rs` does not overlap `src/render/b.rs`. A file covers only itself, since it has no children.
+- The shared paths reported for two tasks are, for each covering pair, the covered — more specific — path, deduplicated and sorted: `src/render/` against `src/render/mesh.rs` reports `src/render/mesh.rs`. For the same directory written with and without the slash, the form with the slash is reported.
+- Semantic conflicts (two files that depend on each other) stay out of scope; covering only makes module-wide `touch` entries count.
 
 - A task with an empty `touch` list has **unknown** overlap. It is marked "no touch data", never shown as free of overlap.
 - A task that is `in_progress` or `in_review` **occupies** its paths: its work is not merged yet. Overlaps with an occupying task are emphasized.
@@ -54,7 +58,7 @@ The analysis is a pure function of the task list (`src/overlap.rs`); the API ser
 Open tasks in columns by dependency stage: stage 1 holds every open task without open prerequisites (ready, in progress, in review); a blocked task sits in stage `1 + max(stage of its open prerequisites)`. Done prerequisites are ignored. `blocked_by` edges are drawn as arrows. Selecting a task highlights every task it overlaps with and lists the shared paths; selecting it again or pressing Escape clears the selection. The role filter applies.
 
 ### 3.7 File Matrix
-Rows are paths touched by two or more open tasks, most shared first, then by path; columns are the open tasks touching them. Cells of occupying tasks are marked running. Tasks without `touch` data are listed below the matrix. The matrix always covers all roles, since overlap across roles collides just the same.
+Rows are paths touched by two or more open tasks, most shared first, then by path; columns are the open tasks touching them. Every path named in a `touch` list is a candidate row, and its tasks are those with an entry covering it (§3.5): a file beneath a directory entry lists both tasks, while the directory itself is a row only when two tasks name it or a directory above it. The task details mark a directory entry when a path beneath it overlaps. Cells of occupying tasks are marked running. Tasks without `touch` data are listed below the matrix. The matrix always covers all roles, since overlap across roles collides just the same.
 
 ### 3.8 Dashboard Session
 Answers and force-releases from the dashboard are recorded under the session id `dashboard`, in the activity log as well (§3.11).

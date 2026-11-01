@@ -766,6 +766,228 @@ fn setup_writes_only_file_content_to_stdout() {
 
     let out = env.run(&env.engine, &["setup", "antigravity"]);
     serde_json::from_slice::<Value>(&out.stdout).expect("stdout is valid JSON");
+
+    let out = env.run(&env.engine, &["setup", "claude-hooks"]);
+    assert!(out.status.success());
+    serde_json::from_slice::<Value>(&out.stdout).expect("stdout is a valid settings file");
+    let hint = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        hint.contains(".claude/settings.local.json") && hint.contains("merge"),
+        "{hint}"
+    );
+}
+
+/// The SessionStart hook command of a `setup claude-hooks` settings file.
+fn hook_command(settings: &Value) -> String {
+    assert_eq!(
+        settings.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["hooks"],
+        "the file carries only hooks: {settings}"
+    );
+    let group = &settings["hooks"]["SessionStart"][0];
+    assert_eq!(group["matcher"], "startup|resume|clear|compact");
+    let hook = &group["hooks"][0];
+    assert_eq!(hook["type"], "command");
+    assert_eq!(hook["timeout"], 15);
+    hook["command"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn setup_prints_claude_hooks() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine"]);
+    let root = std::fs::canonicalize(&env.engine)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let bin = std::fs::canonicalize(env!("CARGO_BIN_EXE_airlock"))
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let settings: Value =
+        serde_json::from_str(&env.ok(&env.engine, &["setup", "claude-hooks"])).unwrap();
+    let command = hook_command(&settings);
+    assert!(command.contains("airlock"), "{command}");
+    assert!(
+        command.ends_with(" start"),
+        "role and session come from the binding: {command}"
+    );
+    assert!(command.contains(" -C "), "{command}");
+    assert!(!command.contains("--role"), "{command}");
+
+    let json = env.json(&env.engine, &["setup", "claude-hooks"]);
+    assert_eq!(json["command"], bin);
+    assert_eq!(json["args"], json!(["-C", root, "start"]));
+
+    let spec = env.json(&env.engine, &["setup", "claude-hooks", "--role", "spec"]);
+    assert_eq!(
+        spec["args"],
+        json!([
+            "-C",
+            root,
+            "start",
+            "--role",
+            "spec",
+            "--session",
+            "spec@game-engine"
+        ])
+    );
+    assert_eq!(spec["session"], "spec@game-engine");
+}
+
+#[test]
+fn claude_hooks_run_from_paths_with_spaces() {
+    let env = Env::new();
+    let spaced = env.tmp.path().join("my engine");
+    std::fs::create_dir_all(&spaced).unwrap();
+    std::fs::copy(env.main.join(".airlock"), spaced.join(".airlock")).unwrap();
+    env.ok(&spaced, &["use", "engine"]);
+    let settings: Value =
+        serde_json::from_str(&env.ok(&spaced, &["setup", "claude-hooks"])).unwrap();
+    let command = hook_command(&settings);
+    assert!(
+        command.contains("'"),
+        "a path with a space is quoted: {command}"
+    );
+
+    // The hook runs through a shell from another directory and still briefs this worktree.
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(env.tmp.path())
+            .env("AIRLOCK_HOME", &env.hub)
+            .env_remove("AIRLOCK_SESSION")
+            .env_remove("AIRLOCK_PROJECT")
+            .env_remove("AIRLOCK_ROLE")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.contains("engine"), "{text}");
+    }
+}
+
+#[test]
+fn doctor_checks_claude_hooks() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine", "--lock"]);
+    let settings_dir = env.engine.join(".claude");
+    std::fs::create_dir_all(&settings_dir).unwrap();
+    let write = |file: &str, command: &str| {
+        std::fs::write(
+            settings_dir.join(file),
+            json!({ "hooks": { "SessionStart": [{
+                "matcher": "startup|resume|clear|compact",
+                "hooks": [{ "type": "command", "command": command, "timeout": 15 }],
+            }] } })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    let findings = |env: &Env| -> Vec<(String, String)> {
+        let out = env.run(&env.main, &["doctor", "--json"]);
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["message"].as_str().unwrap().contains("SessionStart"))
+            .map(|f| {
+                (
+                    f["level"].as_str().unwrap().to_string(),
+                    f["message"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+
+    // A valid hook, as `setup claude-hooks` prints it, is fine.
+    let generated: Value =
+        serde_json::from_str(&env.ok(&env.engine, &["setup", "claude-hooks"])).unwrap();
+    std::fs::write(
+        settings_dir.join("settings.local.json"),
+        generated.to_string(),
+    )
+    .unwrap();
+    let found = findings(&env);
+    assert!(
+        !found.is_empty() && found.iter().all(|(level, _)| level == "ok"),
+        "{found:?}"
+    );
+
+    // A bare command name warns.
+    write("settings.local.json", "airlock start");
+    let found = findings(&env);
+    assert!(
+        found
+            .iter()
+            .any(|(level, m)| level == "warn" && m.contains("is looked up in Claude Code's PATH")),
+        "{found:?}"
+    );
+
+    // --role against the locked binding is an error and fails the run.
+    let bin = std::fs::canonicalize(env!("CARGO_BIN_EXE_airlock")).unwrap();
+    write(
+        "settings.json",
+        &format!("{} start --role lead", bin.display()),
+    );
+    let found = findings(&env);
+    assert!(
+        found.iter().any(|(level, m)| level == "error"
+            && m.contains("--role lead contradicts the locked binding to engine")),
+        "{found:?}"
+    );
+
+    // A -C that points elsewhere warns.
+    write(
+        "settings.json",
+        &format!("{} -C {} start", bin.display(), env.main.display()),
+    );
+    let found = findings(&env);
+    assert!(
+        found
+            .iter()
+            .any(|(level, m)| level == "warn" && m.contains("is not this worktree")),
+        "{found:?}"
+    );
+
+    // A settings file that is not JSON is an error.
+    std::fs::write(settings_dir.join("settings.json"), "{ not json").unwrap();
+    let out = env.run(&env.main, &["doctor"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Claude Code ignores its settings and hooks")
+            || String::from_utf8_lossy(&out.stderr)
+                .contains("Claude Code ignores its settings and hooks")
+    );
+}
+
+#[test]
+fn doctor_mentions_the_optional_hook_next_to_an_mcp_json() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine"]);
+    let mcp = env.ok(&env.engine, &["setup", "claude"]);
+    std::fs::write(env.engine.join(".mcp.json"), mcp).unwrap();
+    let findings = env.json(&env.main, &["doctor"]);
+    assert!(
+        findings
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["level"] == "ok"
+                && f["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no Claude Code SessionStart hook (optional)")),
+        "{findings}"
+    );
 }
 
 #[test]
