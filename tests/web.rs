@@ -242,6 +242,10 @@ fn dashboard_cards_follow_the_colour_budget() {
         !css.contains("border-left: 3px solid var(--prio"),
         "no priority stripe on cards"
     );
+    assert!(
+        !css.contains("padding-top: var(--space-2); border-top"),
+        "no lines between swimlane rows"
+    );
 }
 
 #[test]

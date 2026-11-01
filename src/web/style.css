@@ -389,26 +389,26 @@ main { min-width: 0; padding: var(--space-6) var(--space-8) var(--space-8); }
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-1);
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--surface-container-high);
+  padding: var(--space-2);
   overflow-wrap: anywhere;
 }
 .swim__desc { font-size: 0.72rem; line-height: 1.3; }
-.swim__cell { min-height: 40px; padding-top: var(--space-2); border-top: 1px solid var(--surface-container-high); }
+.swim__cell { min-height: 40px; padding: var(--space-2); }
+.swim__cell .card:last-child { margin-bottom: 0; }
+/* Alternate lanes: tonal rows instead of lines. */
+.swim__row--alt { background: var(--surface-container-low); border-radius: var(--radius-sm); }
 
 .stages { position: relative; }
 .stages svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-.stages svg path { fill: none; stroke: var(--on-surface-variant); stroke-width: 1.5; }
-.stages svg path.hot { stroke: var(--secondary); }
+.stages svg path { fill: none; stroke: rgba(122, 122, 122, 0.45); stroke-width: 1.5; }
+.stages svg path.hot { stroke: var(--secondary); stroke-width: 2; }
 .stages .column { position: relative; z-index: 1; background: rgba(26, 26, 26, 0.85); }
 
 .selection {
   margin-bottom: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  background: var(--surface-container-low);
+  padding: 0 var(--space-1) var(--space-2);
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
 }
 .selection .warn { color: var(--error); }
 .selection .ok { color: var(--primary); }

@@ -769,16 +769,18 @@ function swimlanes(tasks) {
   for (const [status, name] of STATUS_COLUMNS) {
     cells.push(h("div", { class: "label swim__colh" }, h("span", {}, name), h("span", {}, tasks.filter((t) => t.status === status).length)));
   }
+  let row = 0;
   for (const lane of lanes) {
     const own = tasks.filter((t) => (t.track || "") === lane.name);
     if (!own.length) continue;
-    cells.push(h("div", { class: "swim__lane", title: lane.description || null },
+    const alt = row++ % 2 ? " swim__row--alt" : "";
+    cells.push(h("div", { class: `swim__lane${alt}`, title: lane.description || null },
       priorityChip(lane.priority),
       h("b", { class: lane.name ? "" : "muted" }, lane.name || "no track"),
       lane.description ? h("span", { class: "muted swim__desc" }, lane.description) : null));
     for (const [status] of STATUS_COLUMNS) {
       const items = own.filter((t) => t.status === status).sort(byPriority);
-      cells.push(h("div", { class: "swim__cell" }, items.map((t) => card(t, "", undefined, false))));
+      cells.push(h("div", { class: `swim__cell${alt}` }, items.map((t) => card(t, "", undefined, false))));
     }
   }
   return h("div", { class: "swim-wrap" }, h("div", { class: "swim" }, cells));
@@ -812,7 +814,7 @@ function stagesView() {
   for (let stage = 1; stage <= maxStage; stage++) {
     const items = open.filter((a) => a.stage === stage);
     columns.push(h("section", { class: "column" },
-      h("div", { class: "label" }, h("span", {}, stage === 1 ? "Stage 1 · now" : `Stage ${stage}`), h("span", {}, items.length)),
+      h("div", { class: "label" }, h("span", {}, stage === 1 ? "Stage 1 · now" : `Stage ${stage}`), h("b", {}, items.length)),
       items.map((a) => {
         const task = taskById(a.id);
         let cls = "";
