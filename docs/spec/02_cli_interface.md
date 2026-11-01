@@ -168,7 +168,8 @@ Replaces the project's tasks, tracks, questions, and roles with a snapshot (defa
 | `airlock start [--role <role>] [--hints cli\|mcp]` | Print the session briefing (role, rules, claimed work, other sessions' claims of the role, next package); `--role` / `AIRLOCK_ROLE` for a second role in a shared checkout; `--hints mcp` names MCP tools instead of CLI commands (Spec 06 §3.2) |
 | `airlock role list` / `role set <name> …` / `role remove <name>` | Manage roles, their instructions, and their reading list |
 | `airlock doctor` | Check binary, project, worktrees, bindings, and harness configurations; exits `1` on errors |
-| `airlock setup <claude\|claude-hooks\|antigravity\|dsh> [--role <role>]` | Print the MCP configuration of this worktree for a harness; `claude-hooks`: a Claude Code SessionStart hook that runs `airlock start --hints mcp` (Spec 06 §6) |
+| `airlock setup <claude\|claude-hooks\|antigravity\|dsh> [--role <role>] [--auto-continue]` | Print the MCP configuration of this worktree for a harness; `claude-hooks`: a Claude Code SessionStart hook that runs `airlock start --hints mcp`, with `--auto-continue` also a Stop hook (Spec 06 §6) |
+| `airlock hook stop` | Run by the Claude Code Stop hook: prints a block decision when the inbox has news the session was not yet nudged about; never fails, never prints an error (Spec 06 §6.1). Not listed in `--help`. |
 
 ### 3.7 `airlock activity`
 

@@ -1075,8 +1075,9 @@ impl Store {
 
         let tasks = load_tasks(&tx)?;
         let mut items = Vec::new();
+        let mut newest = 0;
         for i in picked {
-            let (_, at, kind, task_id, question_id, track) = &rows[i];
+            let (seq, at, kind, task_id, question_id, track) = &rows[i];
             let Some(kind) = EventKind::parse(kind) else {
                 continue;
             };
@@ -1158,6 +1159,7 @@ impl Store {
                 }
             };
             items.push(item);
+            newest = *seq;
         }
 
         if !peek && last > cursor {
@@ -1167,7 +1169,31 @@ impl Store {
             )?;
         }
         tx.commit()?;
-        Ok(Inbox { items })
+        Ok(Inbox { items, newest })
+    }
+
+    /// The newest event a Stop hook already nudged `session` about (0 if none).
+    pub fn nudged_seq(&self, session: &str, role: &str) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT nudged_seq FROM inbox_cursors WHERE session = ?1 AND role = ?2",
+                params![session, role],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    /// Records that a Stop hook nudged `session` about events up to `seq`.
+    pub fn record_nudge(&mut self, session: &str, role: &str, seq: i64, now: i64) -> Result<()> {
+        let tx = self.write(now)?;
+        tx.execute(
+            "UPDATE inbox_cursors SET nudged_seq = max(nudged_seq, ?3) WHERE session = ?1 AND role = ?2",
+            params![session, role, seq],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Whether this hub wrote or imported a snapshot with this SHA-256 (hex).

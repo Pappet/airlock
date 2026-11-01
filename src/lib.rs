@@ -8,6 +8,7 @@ pub mod config;
 pub mod core;
 pub mod doctor;
 pub mod git;
+pub mod hook;
 pub mod hub;
 pub mod init;
 pub mod layout;

@@ -3,7 +3,8 @@
 use crate::activity::{self, ActivityLog, Channel, Entry, Filter as ActivityFilter};
 use crate::briefing::WorkPackage;
 use crate::cli::{
-    Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec, TrackCommand,
+    Cli, Command, HookEvent, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec,
+    TrackCommand,
 };
 use crate::core::{
     EventKind, Inbox, InboxTask, Priority, Question, Task, TaskState, TaskStatus, Track,
@@ -24,6 +25,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Runs one parsed invocation against the hub at `$AIRLOCK_HOME` or the platform default.
 pub fn run(cli: Cli) -> Result<()> {
+    // Harness hooks never fail and never print an error (Spec 06 §6).
+    if let Command::Hook(HookEvent::Stop) = cli.command {
+        if let (Ok(hub), Ok(current)) = (Hub::locate(), std::env::current_dir()) {
+            let cwd = cli
+                .directory
+                .map_or(current.clone(), |dir| current.join(dir));
+            crate::hook::stop(&hub, &cwd, cli.project.as_deref());
+        }
+        return Ok(());
+    }
     let hub = Hub::locate()?;
     let current = std::env::current_dir().context("reading the current directory")?;
     // `-C <dir>` behaves like starting in <dir> (Spec 06 §2.4).
@@ -122,7 +133,12 @@ pub fn run(cli: Cli) -> Result<()> {
             );
             return result.map(|_| ());
         }
-        Command::Setup { harness, role } => return setup::run(&project, harness, role, &out),
+        Command::Setup {
+            harness,
+            role,
+            auto_continue,
+        } => return setup::run(&project, harness, role, auto_continue, &out),
+        Command::Hook(_) => unreachable!("handled first"),
         Command::Serve { port } => return web::serve(project, port),
         Command::Activity {
             role,
@@ -175,6 +191,7 @@ pub fn run(cli: Cli) -> Result<()> {
             | Command::Mcp { .. }
             | Command::Use { .. }
             | Command::Setup { .. }
+            | Command::Hook(_)
             | Command::Activity { .. }
             | Command::Serve { .. } => unreachable!("handled above"),
             Command::Start { role, hints } => {

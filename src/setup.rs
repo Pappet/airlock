@@ -4,15 +4,20 @@
 use crate::app::{Output, ensure_role, project_root};
 use crate::cli::Harness;
 use crate::hub::{Project, binding_key};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde_json::json;
 
 pub(crate) fn run(
     project: &Project,
     harness: Harness,
     role: Option<String>,
+    auto_continue: bool,
     out: &Output,
 ) -> Result<()> {
+    ensure!(
+        !auto_continue || harness == Harness::ClaudeHooks,
+        "--auto-continue applies to `airlock setup claude-hooks` only"
+    );
     let root = project_root(project, "setup")?;
     let root = binding_key(root)?;
     let binding = project.binding.as_ref();
@@ -21,6 +26,12 @@ pub(crate) fn run(
         .context("no role: pass --role or bind this worktree with `airlock use <role>`")?;
     ensure_role(project, &role)?;
     let from_binding = binding.is_some_and(|b| b.role == role);
+    // The Stop hook acts for the worktree's binding, so it needs one for this role.
+    ensure!(
+        !auto_continue || from_binding,
+        "--auto-continue needs this worktree bound to role `{role}` (`airlock use {role}`): \
+         the Stop hook reads the inbox of the binding's session"
+    );
     let session = match binding {
         Some(b) if from_binding => b.session.clone(),
         _ => {
@@ -96,7 +107,7 @@ pub(crate) fn run(
                 .map(|a| shell_quote(a))
                 .collect::<Vec<_>>()
                 .join(" ");
-            let settings = json!({
+            let mut settings = json!({
                 "hooks": {
                     "SessionStart": [{
                         "matcher": "startup|resume|clear|compact",
@@ -104,12 +115,26 @@ pub(crate) fn run(
                     }]
                 }
             });
-            let hint = format!(
+            let mut hint = format!(
                 "Save as {root}/.claude/settings.local.json if that file does not exist; otherwise merge \
                  the `hooks` key into it. The file is local to this worktree and not committed. Claude Code \
                  then runs `airlock start` when a session starts, resumes, is cleared, or is compacted, \
                  and adds the briefing to the model's context."
             );
+            if auto_continue {
+                let stop = [bin.as_str(), "-C", root.as_str(), "hook", "stop"]
+                    .iter()
+                    .map(|a| shell_quote(a))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                settings["hooks"]["Stop"] =
+                    json!([{ "hooks": [{ "type": "command", "command": stop, "timeout": 15 }] }]);
+                hint.push_str(
+                    " With --auto-continue, Claude Code also runs `airlock hook stop` when the session \
+                     ends its turn: if Airlock has news for the role it was not yet told about, the \
+                     session continues instead of stopping (at most `auto_continue_limit` times an hour).",
+                );
+            }
             (hook_args, serde_json::to_string_pretty(&settings)?, hint)
         }
         Harness::Antigravity => {

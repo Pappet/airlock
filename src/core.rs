@@ -548,6 +548,9 @@ impl EventKind {
 pub struct Inbox {
     /// Oldest first; one item per task, question, or track (its latest event)
     pub items: Vec<InboxItem>,
+    /// Sequence number of the newest item's event (0 without items)
+    #[serde(skip)]
+    pub newest: i64,
 }
 
 /// One inbox entry: the event and what the role may read about its subject.
