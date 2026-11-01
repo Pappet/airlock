@@ -168,9 +168,9 @@ fn task_flow_with_json_output() {
         &env,
         &project,
         "E-1",
-        &["--blocked-by", "L-1", "--priority", "1"],
+        &["--blocked-by", "L-1", "--priority", "low"],
     );
-    add(&env, &project, "E-2", &["--priority", "5"]);
+    add(&env, &project, "E-2", &["--priority", "normal"]);
 
     let list = env.json(&project, &["task", "list", "--status", "blocked"]);
     assert_eq!(list[0]["id"], "E-1");
@@ -257,7 +257,7 @@ fn overlapping_work_is_handed_out_last_and_claims_ask_the_lead() {
         &env,
         &project,
         "E-2",
-        &["--touch", "./src/sim.rs", "--priority", "9"],
+        &["--touch", "./src/sim.rs", "--priority", "high"],
     );
     add(&env, &project, "E-3", &["--touch", "src/other.rs"]);
     env.ok(&project, &["--session", "engine-2", "task", "claim", "E-1"]);
@@ -566,7 +566,13 @@ fn snapshot_moves_state_to_another_machine() {
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("pass --yes"));
 
-    assert!(run2(&["import", "--yes"]).status.success());
+    let imported = run2(&["import", "--yes"]);
+    assert!(imported.status.success());
+    let summary = String::from_utf8_lossy(&imported.stdout).into_owned();
+    assert!(
+        summary.contains("Imported 2 tasks, 0 tracks, and"),
+        "{summary}"
+    );
     let tasks: Value = serde_json::from_slice(&run2(&["task", "list", "--json"]).stdout).unwrap();
     assert_eq!(tasks.as_array().unwrap().len(), 2);
     let questions: Value =
@@ -582,6 +588,64 @@ fn snapshot_moves_state_to_another_machine() {
             .iter()
             .any(|p| p == "docs/.airlock-state.json")
     );
+}
+
+#[test]
+fn import_accepts_a_version_1_snapshot_and_the_next_sync_writes_format_2() {
+    let env = Env::new();
+    let project = env.dir("project");
+    let id = env.json(&project, &["init"])["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A snapshot as committed before tracks: integer priorities, no tracks.
+    let task = |n: u32, priority: i64| {
+        format!(
+            r#"{{"id": "L-{n}", "title": "t", "role": "lead", "state": "open", "priority": {priority},
+            "blocked_by": [], "read": [], "touch": [], "do": "d", "verify": "v",
+            "notes": null, "created_at": 1700000000}}"#
+        )
+    };
+    let tasks: Vec<String> = [40, 30, 29, 10, 9, 5]
+        .iter()
+        .enumerate()
+        .map(|(i, p)| task(i as u32 + 1, *p))
+        .collect();
+    let v1 = format!(
+        r#"{{"format_version": 1, "project_id": "{id}",
+        "roles": {{"lead": {{"description": "l", "clean_room": false}}}},
+        "tasks": [{}], "questions": []}}"#,
+        tasks.join(",")
+    );
+    let state_path = project.join("docs/.airlock-state.json");
+    std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    std::fs::write(&state_path, v1).unwrap();
+
+    env.ok(&project, &["import", "--yes"]);
+    let listed = env.json(&project, &["task", "list"]);
+    let priorities: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["priority"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        priorities,
+        ["high", "high", "normal", "normal", "low", "low"]
+    );
+    assert!(
+        env.json(&project, &["track", "list"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    env.ok(&project, &["sync"]);
+    let exported: Value = serde_json::from_str(&read(&state_path)).unwrap();
+    assert_eq!(exported["format_version"], 2);
+    assert_eq!(exported["tracks"], serde_json::json!([]));
+    assert_eq!(exported["tasks"][0]["priority"], "high");
 }
 
 #[test]
@@ -676,4 +740,114 @@ fn sync_refuses_colliding_export_paths() {
             .contains("more than one artifact")
     );
     assert!(!project.join("docs").exists(), "nothing written");
+}
+
+#[test]
+fn tracks_from_the_cli() {
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    env.ok(
+        &project,
+        &[
+            "track",
+            "add",
+            "core",
+            "--priority",
+            "critical",
+            "--description",
+            "The battle faithful to the tick",
+        ],
+    );
+    env.ok(&project, &["track", "add", "comfort", "--priority", "low"]);
+    assert!(
+        env.fail(&project, &["track", "add", "bad name"])
+            .contains("track name"),
+    );
+    assert!(
+        env.fail(&project, &["track", "add", "core"])
+            .contains("already exists")
+    );
+
+    add(&env, &project, "E-1", &["--track", "comfort"]);
+    let task = env.json(&project, &["task", "show", "E-1"]);
+    assert_eq!(task["track"], "comfort");
+    assert!(
+        env.fail(
+            &project,
+            &[
+                "task", "add", "T", "--role", "engine", "--do", "x", "--verify", "y", "--track",
+                "nope"
+            ]
+        )
+        .contains("core")
+    );
+
+    let tracks = env.json(&project, &["track", "list"]);
+    let names: Vec<&str> = tracks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["core", "comfort"], "most important first");
+    assert_eq!(tracks[0]["priority"], "critical");
+    assert_eq!(tracks[0]["counts"]["ready"], 0);
+    assert_eq!(tracks[1]["counts"]["ready"], 1);
+    assert_eq!(
+        tracks[1]["counts"],
+        serde_json::json!({ "blocked": 0, "ready": 1, "in_progress": 0, "in_review": 0, "done": 0 })
+    );
+
+    add(&env, &project, "E-2", &["--priority", "low"]);
+    add(&env, &project, "E-3", &["--priority", "high"]);
+    let high = env.json(&project, &["task", "list", "--priority", "high"]);
+    assert_eq!(high.as_array().unwrap().len(), 1, "at least high");
+    assert_eq!(high[0]["id"], "E-3");
+    let comfort = env.json(&project, &["task", "list", "--track", "comfort"]);
+    assert_eq!(comfort.as_array().unwrap().len(), 1);
+    let none = env.json(&project, &["task", "list", "--no-track"]);
+    assert_eq!(none.as_array().unwrap().len(), 2);
+    let unknown = env.fail(&project, &["task", "list", "--track", "nope"]);
+    assert!(
+        unknown.contains("no track `nope`; defined tracks: comfort, core"),
+        "{unknown}"
+    );
+
+    assert!(
+        env.fail(&project, &["track", "remove", "comfort"])
+            .contains("used by 1 task")
+    );
+    assert!(
+        env.fail(&project, &["track", "edit", "comfort"])
+            .contains("nothing to change")
+    );
+    env.ok(&project, &["track", "edit", "comfort", "--name", "polish"]);
+    assert_eq!(
+        env.json(&project, &["task", "show", "E-1"])["track"],
+        "polish"
+    );
+
+    env.ok(&project, &["task", "edit", "E-1", "--clear-track"]);
+    assert!(
+        env.json(&project, &["task", "show", "E-1"])
+            .get("track")
+            .is_none_or(Value::is_null)
+    );
+    env.ok(&project, &["task", "edit", "E-1", "--track", "core"]);
+    assert_eq!(
+        env.json(&project, &["task", "next", "--role", "engine"])["id"],
+        "E-1",
+        "the critical track goes first"
+    );
+    env.ok(&project, &["track", "remove", "polish"]);
+
+    let text = env.ok(&project, &["track", "list"]);
+    assert!(text.contains("critical  core"), "{text}");
+    assert!(text.contains("(1 ready)"), "{text}");
+    assert!(text.contains("The battle faithful to the tick"), "{text}");
+    let shown = env.ok(&project, &["task", "show", "E-1"]);
+    assert!(shown.contains("track: core"), "{shown}");
+    let table = env.ok(&project, &["task", "list"]);
+    assert!(table.contains("TRACK"), "{table}");
 }

@@ -1,10 +1,12 @@
 //! Command execution: resolves project and session, runs the operation, prints the result.
 
-use crate::cli::{Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec};
-use crate::core::{Question, Task, TaskState, TaskStatus, dependents};
+use crate::cli::{
+    Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec, TrackCommand,
+};
+use crate::core::{Priority, Question, Task, TaskState, TaskStatus, Track, dependents};
 use crate::hub::{Binding, Hub, MARKER_FILE, Project, binding_key};
 use crate::overlap::{self, Overlap};
-use crate::store::{Completion, NewTask, Store, TaskEdit};
+use crate::store::{Completion, NewTask, Store, TaskEdit, TrackEdit};
 use crate::{briefing, doctor, init, mcp, setup, sync, web};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
@@ -124,6 +126,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),
         Command::Task(sub) => task(&mut store, &project, &session, sub, now, &out),
+        Command::Track(sub) => track(&mut store, sub, now, &out),
         Command::Question(sub) => question(&mut store, &session, sub, now, &out),
         Command::Sync { force } => {
             let root = project_root(&project, "sync")?;
@@ -147,19 +150,35 @@ pub fn run(cli: Cli) -> Result<()> {
             };
             let loaded = sync::load_snapshot(&path)?;
             sync::check_import(&loaded.snapshot, &project.id)?;
-            let (tasks, questions) = (store.tasks(now)?.len(), store.questions()?.len());
+            let (tasks, tracks, questions) = (
+                store.tasks(now)?.len(),
+                store.tracks()?.len(),
+                store.questions()?.len(),
+            );
             let prompt = format!(
-                "Replace {tasks} tasks and {questions} questions of project {} with {} tasks and {} questions from {}?",
+                "Replace {tasks} tasks, {tracks} tracks, and {questions} questions of project {} with {} tasks, {} tracks, and {} questions from {}?",
                 project.config.name,
                 loaded.snapshot.tasks.len(),
+                loaded.snapshot.tracks.len(),
                 loaded.snapshot.questions.len(),
                 path.display()
             );
             ensure!(yes || confirm(&prompt)?, "import cancelled");
             sync::import(&mut store, &hub, &project, &loaded, now)?;
             out.print(
-                &json!({ "tasks": loaded.snapshot.tasks.len(), "questions": loaded.snapshot.questions.len() }),
-                || format!("Imported {} tasks and {} questions", loaded.snapshot.tasks.len(), loaded.snapshot.questions.len()),
+                &json!({
+                    "tasks": loaded.snapshot.tasks.len(),
+                    "tracks": loaded.snapshot.tracks.len(),
+                    "questions": loaded.snapshot.questions.len()
+                }),
+                || {
+                    format!(
+                        "Imported {} tasks, {} tracks, and {} questions",
+                        loaded.snapshot.tasks.len(),
+                        loaded.snapshot.tracks.len(),
+                        loaded.snapshot.questions.len()
+                    )
+                },
             )
         }
     }
@@ -346,7 +365,16 @@ fn task(
     };
 
     match sub {
-        TaskCommand::List { role, status } => {
+        TaskCommand::List {
+            role,
+            status,
+            track,
+            no_track,
+            priority,
+        } => {
+            if let Some(track) = &track {
+                store.ensure_track(track)?;
+            }
             let tasks = store.tasks(now)?;
             let done = done_ids(&tasks);
             let views: Vec<TaskView> = tasks
@@ -354,6 +382,13 @@ fn task(
                 .map(|t| TaskView::new(t, &done))
                 .filter(|v| role.as_deref().is_none_or(|r| v.task.role == r))
                 .filter(|v| status.is_none_or(|s| v.status == s))
+                .filter(|v| {
+                    track
+                        .as_deref()
+                        .is_none_or(|t| v.task.track.as_deref() == Some(t))
+                })
+                .filter(|v| !no_track || v.task.track.is_none())
+                .filter(|v| priority.is_none_or(|p| v.task.priority >= p))
                 .collect();
             out.print(&views, || task_table(&views))
         }
@@ -366,7 +401,8 @@ fn task(
             };
             ensure_role(project, &role)?;
             let tasks = store.tasks(now)?;
-            let next = next_ready(&tasks, &role)
+            let tracks = store.tracks()?;
+            let next = next_ready(&tasks, &tracks, &role)
                 .with_context(|| format!("no ready task for role `{role}`"))?;
             if !next.overlaps.is_empty() {
                 eprintln!(
@@ -455,6 +491,47 @@ fn task(
     }
 }
 
+fn track(store: &mut Store, sub: TrackCommand, now: i64, out: &Output) -> Result<()> {
+    match sub {
+        TrackCommand::List => {
+            let views = TrackView::list(&store.tracks()?, &store.tasks(now)?);
+            out.print(&views, || track_table(&views))
+        }
+        TrackCommand::Add {
+            name,
+            priority,
+            description,
+        } => {
+            let track = store.add_track(&name, priority, &description, now)?;
+            out.print(&track, || {
+                format!("Added track {} ({})", track.name, track.priority.as_str())
+            })
+        }
+        TrackCommand::Edit {
+            name,
+            new_name,
+            priority,
+            description,
+        } => {
+            let edit = TrackEdit {
+                name: new_name,
+                priority,
+                description,
+            };
+            let track = store.edit_track(&name, edit, now)?;
+            out.print(&track, || {
+                format!("Edited track {} ({})", track.name, track.priority.as_str())
+            })
+        }
+        TrackCommand::Remove { name } => {
+            store.remove_track(&name, now)?;
+            out.print(&json!({ "removed": name }), || {
+                format!("Removed track {name}")
+            })
+        }
+    }
+}
+
 fn question(
     store: &mut Store,
     session: &str,
@@ -510,6 +587,56 @@ impl<'a> TaskView<'a> {
             dependents: None,
             overlaps: Vec::new(),
         }
+    }
+}
+
+/// How many tasks of a track are in each effective status.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct TrackCounts {
+    pub blocked: usize,
+    pub ready: usize,
+    pub in_progress: usize,
+    pub in_review: usize,
+    pub done: usize,
+}
+
+/// A track with the effective status of its tasks, as printed by `track list --json`
+/// and served by MCP `track_list`.
+#[derive(Debug, Serialize)]
+pub(crate) struct TrackView {
+    #[serde(flatten)]
+    pub track: Track,
+    pub counts: TrackCounts,
+}
+
+impl TrackView {
+    /// One view per track, in the order of `tracks`, counting from `tasks`.
+    pub fn list(tracks: &[Track], tasks: &[Task]) -> Vec<Self> {
+        let done = done_ids(tasks);
+        let mut views: Vec<Self> = tracks
+            .iter()
+            .map(|track| Self {
+                track: track.clone(),
+                counts: TrackCounts::default(),
+            })
+            .collect();
+        for task in tasks {
+            let Some(view) = views
+                .iter_mut()
+                .find(|v| task.track.as_deref() == Some(v.track.name.as_str()))
+            else {
+                continue;
+            };
+            let counts = &mut view.counts;
+            match task.status(|id| done.contains(id)) {
+                TaskStatus::Blocked => counts.blocked += 1,
+                TaskStatus::Ready => counts.ready += 1,
+                TaskStatus::InProgress => counts.in_progress += 1,
+                TaskStatus::InReview => counts.in_review += 1,
+                TaskStatus::Done => counts.done += 1,
+            }
+        }
+        views
     }
 }
 
@@ -571,6 +698,7 @@ fn new_task(spec: TaskSpec, prefix: String) -> NewTask {
         title: spec.title,
         role: spec.role,
         priority: spec.priority,
+        track: spec.track,
         blocked_by: spec.blocked_by,
         read: spec.read,
         touch: spec.touch,
@@ -589,6 +717,10 @@ fn task_edit(spec: TaskEditSpec) -> TaskEdit {
         title: spec.title,
         role: spec.role,
         priority: spec.priority,
+        track: match (spec.track, spec.clear_track) {
+            (_, true) => Some(None),
+            (track, false) => track.map(Some),
+        },
         blocked_by: replaced(spec.blocked_by, spec.clear_blocked_by),
         read: replaced(spec.read, spec.clear_read),
         touch: replaced(spec.touch, spec.clear_touch),
@@ -597,10 +729,22 @@ fn task_edit(spec: TaskEditSpec) -> TaskEdit {
     }
 }
 
-/// The next ready task of `role`: highest priority first, then oldest, then by
-/// id, skipping tasks that share files with occupying tasks. When every ready
-/// task does, the first is returned with its `overlaps` (Spec 01 §2.1).
-pub(crate) fn next_ready<'a>(tasks: &'a [Task], role: &str) -> Option<TaskView<'a>> {
+/// The next ready task of `role`: most important track first (a task without a
+/// track, or with an unknown one, counts as `normal`), then task priority, then
+/// oldest, then by id, skipping tasks that share files with occupying tasks.
+/// When every ready task does, the first is returned with its `overlaps`
+/// (Spec 01 §2.1).
+pub(crate) fn next_ready<'a>(
+    tasks: &'a [Task],
+    tracks: &[Track],
+    role: &str,
+) -> Option<TaskView<'a>> {
+    let track_priority = |task: &Task| {
+        task.track
+            .as_deref()
+            .and_then(|name| tracks.iter().find(|t| t.name == name))
+            .map_or(Priority::Normal, |t| t.priority)
+    };
     let done = done_ids(tasks);
     let mut ready: Vec<TaskView<'a>> = tasks
         .iter()
@@ -608,9 +752,9 @@ pub(crate) fn next_ready<'a>(tasks: &'a [Task], role: &str) -> Option<TaskView<'
         .filter(|v| v.task.role == role && v.status == TaskStatus::Ready)
         .collect();
     ready.sort_by(|a, b| {
-        b.task
-            .priority
-            .cmp(&a.task.priority)
+        track_priority(b.task)
+            .cmp(&track_priority(a.task))
+            .then(b.task.priority.cmp(&a.task.priority))
             .then(a.task.created_at.cmp(&b.task.created_at))
             .then(a.task.id.cmp(&b.task.id))
     });
@@ -760,21 +904,31 @@ fn task_table(views: &[TaskView]) -> String {
     if views.is_empty() {
         return "No tasks.".to_string();
     }
-    let rows: Vec<[String; 6]> = views
+    let rows: Vec<[String; 7]> = views
         .iter()
         .map(|v| {
             [
                 v.task.id.clone(),
                 v.status.as_str().to_string(),
                 v.task.role.clone(),
-                v.task.priority.to_string(),
+                v.task.priority.as_str().to_string(),
+                v.task.track.clone().unwrap_or_default(),
                 v.task.claimed_by.clone().unwrap_or_default(),
                 v.task.title.clone(),
             ]
         })
         .collect();
-    let header = ["ID", "STATUS", "ROLE", "PRIO", "CLAIMED BY", "TITLE"].map(str::to_string);
-    let mut widths = [0; 6];
+    let header = [
+        "ID",
+        "STATUS",
+        "ROLE",
+        "PRIO",
+        "TRACK",
+        "CLAIMED BY",
+        "TITLE",
+    ]
+    .map(str::to_string);
+    let mut widths = [0; 7];
     for row in std::iter::once(&header).chain(&rows) {
         for (w, cell) in widths.iter_mut().zip(row) {
             *w = (*w).max(cell.chars().count());
@@ -794,6 +948,50 @@ fn task_table(views: &[TaskView]) -> String {
         .join("\n")
 }
 
+fn track_table(views: &[TrackView]) -> String {
+    if views.is_empty() {
+        return "No tracks. Add one with `airlock track add <name>`.".to_string();
+    }
+    let name_width = views
+        .iter()
+        .map(|v| v.track.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    views
+        .iter()
+        .map(|v| {
+            let c = &v.counts;
+            let counts: Vec<String> = [
+                (c.blocked, "blocked"),
+                (c.ready, "ready"),
+                (c.in_progress, "running"),
+                (c.in_review, "in review"),
+                (c.done, "done"),
+            ]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, label)| format!("{n} {label}"))
+            .collect();
+            let counts = if counts.is_empty() {
+                "(no tasks)".to_string()
+            } else {
+                format!("({})", counts.join(", "))
+            };
+            let description = if v.track.description.is_empty() {
+                String::new()
+            } else {
+                format!("{}  ", v.track.description)
+            };
+            format!(
+                "{:<8}  {:<name_width$}  {description}{counts}",
+                v.track.priority.as_str(),
+                v.track.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn work_package(view: &TaskView) -> String {
     let t = view.task;
     let list = |items: &[String]| {
@@ -803,15 +1001,16 @@ fn work_package(view: &TaskView) -> String {
             items.join(", ")
         }
     };
-    let mut lines = vec![
-        format!("## {} — {}", t.id, t.title),
-        format!(
-            "role: {} · status: {} · priority: {}",
-            t.role,
-            view.status.as_str(),
-            t.priority
-        ),
-    ];
+    let mut header = format!(
+        "role: {} · status: {} · priority: {}",
+        t.role,
+        view.status.as_str(),
+        t.priority.as_str()
+    );
+    if let Some(track) = &t.track {
+        header.push_str(&format!(" · track: {track}"));
+    }
+    let mut lines = vec![format!("## {} — {}", t.id, t.title), header];
     if let Some(session) = &t.claimed_by {
         lines.push(format!("claimed by: {session}"));
     }
@@ -891,4 +1090,63 @@ pub(crate) fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     i64::try_from(secs).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(id: &str, priority: Priority, track: Option<&str>, created_at: i64) -> Task {
+        Task {
+            id: id.to_string(),
+            title: format!("Task {id}"),
+            role: "engine".to_string(),
+            state: TaskState::Open,
+            priority,
+            track: track.map(str::to_string),
+            blocked_by: Vec::new(),
+            read: Vec::new(),
+            touch: Vec::new(),
+            r#do: String::new(),
+            verify: String::new(),
+            notes: None,
+            claimed_by: None,
+            lease_expires_at: None,
+            created_at,
+            updated_at: created_at,
+        }
+    }
+
+    fn track(name: &str, priority: Priority) -> Track {
+        Track {
+            name: name.to_string(),
+            priority,
+            description: String::new(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn next_ready_prefers_the_most_important_track() {
+        let tracks = [
+            track("core", Priority::Critical),
+            track("comfort", Priority::Low),
+        ];
+        let mut tasks = vec![
+            task("E-1", Priority::High, Some("comfort"), 10),
+            task("E-2", Priority::Low, Some("core"), 20),
+            task("E-3", Priority::Critical, None, 30),
+            // Unknown track ranks as normal; created earlier than E-3, which
+            // still wins on task priority.
+            task("E-4", Priority::Normal, Some("gone"), 5),
+        ];
+        let mut order = Vec::new();
+        while let Some(next) = next_ready(&tasks, &tracks, "engine") {
+            let id = next.task.id.clone();
+            tasks.retain(|t| t.id != id);
+            order.push(id);
+        }
+        assert_eq!(order, ["E-2", "E-3", "E-4", "E-1"]);
+    }
 }

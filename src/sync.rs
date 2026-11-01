@@ -1,9 +1,10 @@
 //! `airlock sync` and `airlock import` (Spec 05 §3).
 
 use crate::config::ExportConfig;
-use crate::core::check_task_id;
+use crate::config::RoleConfig;
+use crate::core::{Priority, Question, TaskState, check_task_id, check_track_name};
 use crate::hub::{Hub, Project};
-use crate::snapshot::{FORMAT_VERSION, Snapshot};
+use crate::snapshot::{FORMAT_VERSION, SUPPORTED_VERSIONS, Snapshot, TaskRecord};
 use crate::store::Store;
 use crate::views;
 use anyhow::{Context, Result, bail, ensure};
@@ -35,6 +36,7 @@ pub fn sync(
         &project.id,
         &project.config,
         &store.tasks(now)?,
+        &store.tracks()?,
         &store.questions()?,
     );
     let json = snapshot.to_canonical_json()?;
@@ -81,28 +83,119 @@ pub struct LoadedSnapshot {
 
 pub fn load_snapshot(path: &Path) -> Result<LoadedSnapshot> {
     let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let snapshot =
-        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
+    let snapshot = parse_snapshot(&bytes).with_context(|| format!("parsing {}", path.display()))?;
     Ok(LoadedSnapshot {
         snapshot,
         sha256: sha256_hex(&bytes),
     })
 }
 
+/// Parses a snapshot of any supported format version into the current one.
+fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let version = value.get("format_version").and_then(|v| v.as_u64());
+    match version {
+        Some(1) => Ok(serde_json::from_value::<SnapshotV1>(value)?.into()),
+        Some(2) => Ok(serde_json::from_value(value)?),
+        Some(other) => bail!(unsupported(other)),
+        None => bail!("snapshot has no `format_version`"),
+    }
+}
+
+fn unsupported(version: impl std::fmt::Display) -> String {
+    let supported: Vec<String> = SUPPORTED_VERSIONS.iter().map(u32::to_string).collect();
+    format!(
+        "snapshot format version {version} is not supported (supported: {})",
+        supported.join(", ")
+    )
+}
+
+/// Format 1, as committed before tracks: integer priorities, no tracks.
+#[derive(serde::Deserialize)]
+struct SnapshotV1 {
+    project_id: String,
+    roles: std::collections::BTreeMap<String, RoleConfig>,
+    tasks: Vec<TaskRecordV1>,
+    questions: Vec<Question>,
+}
+
+#[derive(serde::Deserialize)]
+struct TaskRecordV1 {
+    id: String,
+    title: String,
+    role: String,
+    state: TaskState,
+    priority: i64,
+    blocked_by: Vec<String>,
+    read: Vec<String>,
+    touch: Vec<String>,
+    r#do: String,
+    verify: String,
+    notes: Option<String>,
+    created_at: i64,
+}
+
+impl From<SnapshotV1> for Snapshot {
+    fn from(v1: SnapshotV1) -> Self {
+        Self {
+            format_version: FORMAT_VERSION,
+            project_id: v1.project_id,
+            roles: v1.roles,
+            tracks: Vec::new(),
+            tasks: v1
+                .tasks
+                .into_iter()
+                .map(|t| TaskRecord {
+                    id: t.id,
+                    title: t.title,
+                    role: t.role,
+                    state: t.state,
+                    priority: Priority::from_legacy(t.priority),
+                    track: None,
+                    blocked_by: t.blocked_by,
+                    read: t.read,
+                    touch: t.touch,
+                    r#do: t.r#do,
+                    verify: t.verify,
+                    notes: t.notes,
+                    created_at: t.created_at,
+                })
+                .collect(),
+            questions: v1.questions,
+        }
+    }
+}
+
 /// Checks a snapshot before it replaces a project's state (Spec 05 §3.4).
 pub fn check_import(snapshot: &Snapshot, project_id: &str) -> Result<()> {
     ensure!(
         snapshot.format_version == FORMAT_VERSION,
-        "snapshot format version {} is not supported (expected {FORMAT_VERSION})",
-        snapshot.format_version
+        "{}",
+        unsupported(snapshot.format_version)
     );
     ensure!(
         snapshot.project_id == project_id,
         "snapshot belongs to project {}, not {project_id}",
         snapshot.project_id
     );
+    let mut track_names = HashSet::new();
+    for track in &snapshot.tracks {
+        check_track_name(&track.name).map_err(anyhow::Error::msg)?;
+        ensure!(
+            track_names.insert(track.name.as_str()),
+            "duplicate track `{}`",
+            track.name
+        );
+    }
     for task in &snapshot.tasks {
         check_task_id(&task.id).map_err(anyhow::Error::msg)?;
+        if let Some(track) = &task.track {
+            ensure!(
+                track_names.contains(track.as_str()),
+                "task `{}` has track `{track}`, which the snapshot does not define",
+                task.id
+            );
+        }
         ensure!(
             snapshot.roles.contains_key(&task.role),
             "task `{}` has role `{}`, which the snapshot does not define",
@@ -123,7 +216,7 @@ pub fn check_import(snapshot: &Snapshot, project_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Replaces the project's tasks, questions, and roles with the snapshot and
+/// Replaces the project's tasks, tracks, questions, and roles with the snapshot and
 /// records its hash as known to this hub.
 pub fn import(
     store: &mut Store,

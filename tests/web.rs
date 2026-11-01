@@ -165,6 +165,34 @@ fn serves_dashboard_with_allowed_host() {
 }
 
 #[test]
+fn dashboard_assets_know_tracks() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let js = get("/app.js");
+    assert_eq!(js.status, 200);
+    assert!(js.body.contains("/api/tracks"), "app.js must load tracks");
+    assert!(js.body.contains("airlock-group-by-track"));
+    let css = get("/style.css");
+    assert_eq!(css.status, 200);
+    assert!(css.body.contains(".p-critical"));
+}
+
+#[test]
+fn dashboard_has_tracks_tab() {
+    let s = Server::start();
+    let js = s.raw("GET", "/app.js", &[("Host", &s.host())], "");
+    assert_eq!(js.status, 200);
+    assert!(
+        js.body.contains("courseWarnings"),
+        "app.js must compute course warnings"
+    );
+    assert!(
+        js.body.contains("\"tracks\", \"Tracks\""),
+        "Tracks must be a tab"
+    );
+}
+
+#[test]
 fn rejects_foreign_host() {
     let s = Server::start();
     for host in ["evil.example", "127.0.0.1:9999", "localhost"] {
@@ -329,7 +357,7 @@ fn create_list_show_task() {
         "/api/tasks",
         Some(serde_json::json!({
             "title": "Alpha", "role": "engine", "do": "Do it",
-            "verify": "cargo test", "touch": ["src/a.rs"], "priority": 3
+            "verify": "cargo test", "touch": ["src/a.rs"], "priority": "high"
         })),
     );
     assert_eq!(created.status, 201, "{}", created.body);
@@ -346,7 +374,7 @@ fn create_list_show_task() {
 
     let list = s.api("GET", "/api/tasks", None).json();
     assert_eq!(list.as_array().unwrap().len(), 2);
-    assert_eq!(list[0]["priority"], 3);
+    assert_eq!(list[0]["priority"], "high");
     assert_eq!(list[1]["status"], "blocked");
     let blocked = s.api("GET", "/api/tasks?status=blocked", None).json();
     assert_eq!(blocked.as_array().unwrap().len(), 1);
@@ -372,11 +400,28 @@ fn create_with_invalid_input_is_400() {
     bad_prereq["blocked_by"] = serde_json::json!(["Z"]);
     let mut own_id = base.clone();
     own_id["id"] = "E-7".into();
-    for body in [unknown_role, missing, bad_prereq, own_id] {
+    let mut numeric_priority = base.clone();
+    numeric_priority["priority"] = 3.into();
+    for body in [
+        unknown_role,
+        missing,
+        bad_prereq,
+        own_id,
+        numeric_priority.clone(),
+    ] {
         let r = s.api("POST", "/api/tasks", Some(body.clone()));
         assert_eq!(r.status, 400, "{body}: {}", r.body);
         assert!(r.json()["error"].is_string());
     }
+    let r = s.api("POST", "/api/tasks", Some(numeric_priority));
+    assert!(
+        r.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("critical, high, normal, or low"),
+        "{}",
+        r.body
+    );
     let auth = format!("Bearer {}", s.token);
     let host = s.host();
     let garbled = s.raw(
@@ -481,6 +526,20 @@ fn patch_edits_task_content() {
             .unwrap()
             .contains("dependency cycle")
     );
+    let numeric = s.api(
+        "PATCH",
+        "/api/tasks/E-2",
+        Some(serde_json::json!({ "priority": 3 })),
+    );
+    assert_eq!(numeric.status, 400, "{}", numeric.body);
+    assert!(
+        numeric.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("critical, high, normal, or low"),
+        "{}",
+        numeric.body
+    );
     let missing = s.api(
         "PATCH",
         "/api/tasks/nope",
@@ -502,6 +561,128 @@ fn patch_edits_task_content() {
     );
     assert_eq!(forced.status, 200, "{}", forced.body);
     assert_eq!(forced.json()["claimed_by"], "s1");
+}
+
+fn ids(r: &Response) -> Vec<String> {
+    assert_eq!(r.status, 200, "{}", r.body);
+    r.json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn tracks_endpoint_and_filters() {
+    let s = Server::start();
+    s.cli(&["track", "add", "comfort", "--priority", "high"]);
+    s.cli(&["track", "add", "core", "--description", "Engine core"]);
+    let post = |title: &str, extra: Value| {
+        let mut body = serde_json::json!({
+            "title": title, "role": "engine", "do": "x", "verify": "y"
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let r = s.api("POST", "/api/tasks", Some(body));
+        assert_eq!(r.status, 201, "{}", r.body);
+        r.json()
+    };
+    let a = post(
+        "A",
+        serde_json::json!({ "track": "comfort", "priority": "high" }),
+    );
+    assert_eq!(a["track"], "comfort");
+    post(
+        "B",
+        serde_json::json!({ "track": "comfort", "blocked_by": ["E-1"] }),
+    );
+    post(
+        "C",
+        serde_json::json!({ "track": "core", "priority": "critical" }),
+    );
+    post("D", serde_json::json!({}));
+
+    let tracks = s.api("GET", "/api/tracks", None);
+    assert_eq!(tracks.status, 200, "{}", tracks.body);
+    let tracks = tracks.json();
+    let names: Vec<&str> = tracks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["comfort", "core"], "bare array in store order");
+    assert_eq!(tracks[0]["priority"], "high");
+    assert_eq!(
+        tracks[0]["counts"],
+        serde_json::json!({ "blocked": 1, "ready": 1, "in_progress": 0, "in_review": 0, "done": 0 })
+    );
+    assert_eq!(tracks[1]["description"], "Engine core");
+    assert_eq!(tracks[1]["counts"]["ready"], 1);
+
+    let list = |q: &str| ids(&s.api("GET", &format!("/api/tasks{q}"), None));
+    assert_eq!(list("?track=comfort"), ["E-1", "E-2"]);
+    assert_eq!(list("?track="), ["E-4"], "empty value means no track");
+    assert_eq!(list("?priority=high"), ["E-1", "E-3"]);
+    assert_eq!(list("?priority=low").len(), 4);
+    assert_eq!(list("?track=comfort&priority=high"), ["E-1"]);
+    for bad in ["?priority=urgent", "?priority=3"] {
+        let r = s.api("GET", &format!("/api/tasks{bad}"), None);
+        assert_eq!(r.status, 400, "{bad}: {}", r.body);
+        assert!(
+            r.json()["error"]
+                .as_str()
+                .unwrap()
+                .contains("critical, high, normal, or low")
+        );
+    }
+
+    let unknown = s.api(
+        "POST",
+        "/api/tasks",
+        Some(serde_json::json!({
+            "title": "E", "role": "engine", "do": "x", "verify": "y", "track": "nope"
+        })),
+    );
+    assert_eq!(unknown.status, 400, "{}", unknown.body);
+    assert!(unknown.json()["error"].as_str().unwrap().contains("nope"));
+    let unknown = s.api(
+        "PATCH",
+        "/api/tasks/E-4",
+        Some(serde_json::json!({ "track": "nope" })),
+    );
+    assert_eq!(unknown.status, 409, "{}", unknown.body);
+
+    let set = s.api(
+        "PATCH",
+        "/api/tasks/E-4",
+        Some(serde_json::json!({ "track": "core" })),
+    );
+    assert_eq!(set.status, 200, "{}", set.body);
+    assert_eq!(set.json()["track"], "core");
+    let keep = s.api(
+        "PATCH",
+        "/api/tasks/E-4",
+        Some(serde_json::json!({ "title": "D2" })),
+    );
+    assert_eq!(keep.json()["track"], "core", "absent track is kept");
+    let clear = s.api(
+        "PATCH",
+        "/api/tasks/E-4",
+        Some(serde_json::json!({ "track": null })),
+    );
+    assert_eq!(clear.status, 200, "{}", clear.body);
+    assert!(clear.json()["track"].is_null());
+    let empty = s.api("PATCH", "/api/tasks/E-4", Some(serde_json::json!({})));
+    assert_eq!(empty.status, 400, "{}", empty.body);
+    let wrong = s.api(
+        "PATCH",
+        "/api/tasks/E-4",
+        Some(serde_json::json!({ "track": 3 })),
+    );
+    assert_eq!(wrong.status, 400, "{}", wrong.body);
 }
 
 #[test]
@@ -673,4 +854,6 @@ fn events_report_task_and_question_changes() {
     read_until("event: task_changed\ndata: {\"id\":\"E-1\"}", &mut seen);
     s.cli(&["question", "ask", "Why?", "--topic", "melee.md"]);
     read_until("event: question_changed\ndata: {\"id\":1}", &mut seen);
+    s.cli(&["track", "add", "core"]);
+    read_until("event: track_changed\ndata: {\"id\":\"core\"}", &mut seen);
 }

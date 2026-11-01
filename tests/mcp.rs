@@ -236,7 +236,7 @@ fn unbound_session_runs_the_full_workflow() {
                 3,
                 "task_create",
                 json!({ "title": "More", "role": "engine", "do": "d", "verify": "v",
-                        "blocked_by": ["S-1"], "read": ["docs/spec/a.md"], "priority": 3 }),
+                        "blocked_by": ["S-1"], "read": ["docs/spec/a.md"], "priority": "high" }),
             ),
             call(4, "task_claim", json!({ "task_id": "S-1", "lease_minutes": 5 })),
             call(5, "task_heartbeat", json!({ "task_id": "S-1" })),
@@ -254,17 +254,27 @@ fn unbound_session_runs_the_full_workflow() {
                 "task_create",
                 json!({ "id": "E-7", "title": "Own id", "role": "engine", "do": "d", "verify": "v" }),
             ),
+            call(
+                16,
+                "task_create",
+                json!({ "title": "Numeric", "role": "engine", "do": "d", "verify": "v", "priority": 22 }),
+            ),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 14);
+    assert_eq!(s.tool_names(1).len(), 18);
     let own_id = s.tool_error(15);
     assert!(own_id.contains("ids are assigned by Airlock"), "{own_id}");
+    let numeric = s.tool_error(16);
+    assert!(
+        numeric.contains("critical, high, normal, or low"),
+        "{numeric}"
+    );
     assert!(s.tool_error(2).contains("missing required argument `role`"));
     assert_eq!(s.ok(3)["id"], "E-2", "the result carries the new id");
     assert_eq!(s.ok(3)["status"], "blocked");
     assert!(s.ok(4)["lease_expires_at"].is_i64());
     assert_eq!(s.ok(6)["now_ready"], json!(["E-2"]));
-    assert_eq!(s.ok(7)["task"]["id"], "E-2", "priority 3 beats E-1");
+    assert_eq!(s.ok(7)["task"]["id"], "E-2", "a high priority beats E-1");
     assert_eq!(s.ok(7)["task"]["read"], json!(["docs/spec/a.md"]));
     let l1 = s.ok(8);
     assert_eq!(
@@ -290,7 +300,7 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
                 1,
                 "task_update",
                 json!({ "task_id": "E-1", "title": "Renamed", "touch": ["src/e.rs"],
-                        "blocked_by": ["S-1"], "priority": 2 }),
+                        "blocked_by": ["S-1"], "priority": "high" }),
             ),
             call(
                 2,
@@ -331,9 +341,9 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
         (
             edited["title"].as_str(),
             edited["status"].as_str(),
-            edited["priority"].as_i64()
+            edited["priority"].as_str()
         ),
-        (Some("Renamed"), Some("blocked"), Some(2))
+        (Some("Renamed"), Some("blocked"), Some("high"))
     );
     assert_eq!(edited["touch"], json!(["src/e.rs"]));
     assert_eq!(edited["do"], "Build", "omitted fields are kept");
@@ -351,8 +361,8 @@ fn task_update_edits_content_and_needs_force_for_started_tasks() {
 #[test]
 fn overlapping_work_warns_and_asks_the_lead() {
     let env = Env::new();
-    // Added after E-1: E-2 (priority 0) and E-3 (priority 9).
-    for priority in ["0", "9"] {
+    // Added after E-1: E-2 (normal) and E-3 (high).
+    for priority in ["normal", "high"] {
         env.cli(&[
             "task",
             "add",
@@ -505,7 +515,7 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
             call(5, "task_claim", json!({ "task_id": "L-1" })),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 14);
+    assert_eq!(s.tool_names(1).len(), 18);
     assert_eq!(
         s.ok(2)["role"],
         "engine",
@@ -541,4 +551,89 @@ fn startup_fails_without_project_or_with_unknown_role() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown role `ghost`"));
+}
+
+#[test]
+fn tracks_through_mcp() {
+    let env = Env::new();
+    let s = env.session(
+        &["--session", "lead-1"],
+        &[
+            request(1, "tools/list", json!({})),
+            call(
+                2,
+                "track_create",
+                json!({ "name": "core", "priority": "critical", "description": "The battle" }),
+            ),
+            call(3, "track_create", json!({ "name": "comfort", "priority": 2 })),
+            call(
+                4,
+                "task_create",
+                json!({ "title": "t", "role": "engine", "do": "d", "verify": "v", "track": "core" }),
+            ),
+            call(5, "track_list", json!({})),
+            call(6, "task_update", json!({ "task_id": "E-2", "track": null })),
+            call(
+                7,
+                "task_update",
+                json!({ "task_id": "E-2", "track": "nope" }),
+            ),
+            call(
+                8,
+                "track_update",
+                json!({ "name": "core", "new_name": "heart", "priority": "high" }),
+            ),
+            call(9, "task_get", json!({ "task_id": "E-2" })),
+            call(10, "track_remove", json!({ "name": "heart" })),
+            call(11, "track_update", json!({ "name": "heart" })),
+            call(12, "task_update", json!({ "task_id": "E-2", "track": "heart" })),
+            call(13, "track_remove", json!({ "name": "heart" })),
+            call(14, "track_create", json!({ "name": "bad name" })),
+        ],
+    );
+    let names = s.tool_names(1);
+    for tool in ["track_list", "track_create", "track_update", "track_remove"] {
+        assert!(names.contains(&tool.to_string()), "{tool}");
+    }
+    assert_eq!(s.ok(2)["name"], "core");
+    assert_eq!(s.ok(2)["priority"], "critical");
+    let numeric = s.tool_error(3);
+    assert!(
+        numeric.contains("critical, high, normal, or low"),
+        "{numeric}"
+    );
+    assert_eq!(s.ok(4)["track"], "core");
+    let tracks = s.ok(5)["tracks"].as_array().unwrap().clone();
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0]["counts"]["ready"], 1);
+    assert!(
+        s.ok(6).get("track").is_none_or(Value::is_null),
+        "null clears"
+    );
+    assert!(s.tool_error(7).contains("core"), "lists the defined tracks");
+    assert_eq!(s.ok(8)["name"], "heart");
+    assert_eq!(s.ok(8)["priority"], "high");
+    assert!(s.ok(9).get("track").is_none_or(Value::is_null));
+    assert_eq!(s.ok(10)["removed"], "heart");
+    assert!(s.tool_error(11).contains("nothing to change"));
+    assert!(s.tool_error(12).contains("no track `heart`"));
+    assert!(s.tool_error(13).contains("no track `heart`"));
+    assert!(s.tool_error(14).contains("track name"));
+}
+
+#[test]
+fn clean_room_sessions_get_no_track_tools() {
+    let env = Env::new();
+    let s = env.session(
+        &["--role", "engine", "--session", "engine-1"],
+        &[
+            request(1, "tools/list", json!({})),
+            call(2, "track_list", json!({})),
+            call(3, "track_create", json!({ "name": "x" })),
+        ],
+    );
+    assert!(s.tool_names(1).iter().all(|n| !n.starts_with("track_")));
+    for id in [2, 3] {
+        assert_eq!(s.get(id)["error"]["code"], -32602);
+    }
 }

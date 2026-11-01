@@ -25,7 +25,11 @@ The API can mutate project state and exposes every question and answer, so it mu
 ### 3.1 Kanban Board
 - **Columns** follow the effective status (Spec 01 §2.1): `Blocked`, `Ready`, `In Progress`, `In Review`, `Done`.
 - **Role filter** over the roles in the project config.
-- **Cards** show id, title, priority, claiming session, and dependency badges. Clicking a card opens the full *Read*, *Touch*, *Do*, *Verify* instructions plus notes.
+- **Track and priority filters** next to the role filter: track (all / one track / no track) and minimum priority (all / `≥ low` … `≥ critical`). They apply to the Board and the Review Queue; the Tracks tab (§3.9) follows the role filter only.
+- **Group by track:** a switch, on by default and remembered per browser. On: one swimlane per track in track order (priority, then name; tasks without a track form a lane at `normal`), columns as above. Off: the flat board.
+- **Order within a cell:** grouped, by task priority (highest first), then oldest first. Flat, by track priority, then task priority, then oldest first, which is the `task next` order (Spec 01 §2.1).
+- **Cards** show id, title, track, priority, claiming session, and dependency badges. Clicking a card opens the priority and track, the full *Read*, *Touch*, *Do*, *Verify* instructions, and notes.
+- **Priority display** (§3.10) is the same on every card.
 
 ### 3.2 Review Queue
 Lists tasks in `In Review` with their notes; **Approve** and **Reject** (feedback required) map to `task approve` / `task reject`. Tasks that need a human check (hardware tests, manual QA, PR review) are routed here by completing them with `--review`.
@@ -54,26 +58,44 @@ Rows are paths touched by two or more open tasks, most shared first, then by pat
 ### 3.8 Dashboard Session
 Answers and force-releases from the dashboard are recorded under the session id `dashboard`.
 
+### 3.9 Tracks Tab
+The first tab in the tab bar; the default tab remains the Board. Read only: tracks and tasks are created and changed by agents over CLI and MCP.
+
+- **Rows:** one per track, sorted by track priority, then name, plus a row "no track" (at `normal`) when any task has none.
+- **Row content:** priority chip, name, description; a segmented bar of done / in review / running / ready / blocked with counts; what is running (task, session, lease minutes left); the most recently finished task (by `updated_at`).
+- **Role filter:** the tab follows it like the Board, so counts, bars, and warnings then cover that role's tasks only.
+- **Course warning, per role.** For a role R, a track T is off course when
+  1. T has at least one `ready` task of R,
+  2. no task of R in T is `in_progress`, and
+  3. some track of strictly lower priority has a task of R `in_progress`.
+
+  A task without a track counts as a track at `normal`. Only `in_progress` counts as running: a task `in_review` is finished work waiting for a human; it neither makes a track busy nor keeps it from being idle. The row gets a marker and one line per affected role, e.g. "engine: nothing running, 3 ready". The rule is per role because tracks span roles; comparing across roles would warn although each role works on its most important track. With the role filter set, only that role is checked.
+- **Click:** selecting a row opens the Board filtered to that track.
+
+### 3.10 Priority Display
+Fixed colors on every surface: `critical` red, `high` orange, `normal` cyan, `low` grey. Cards carry a colored left stripe and pips instead of a number: `●●●●` critical, `●●●○` high, `●●○○` normal, `●○○○` low. The task detail shows a priority chip and the track.
+
 ---
 
 ## 4. REST & Event API
 
-All endpoints exchange JSON and require the bearer token (§2). Request bodies use the MCP parameter names (Spec 03). Errors return `{ "error": "<message>" }` with `400` (invalid input), `404` (unknown id), or `409` (invalid transition or lost race).
+All endpoints exchange JSON and require the bearer token (§2). Request bodies use the MCP parameter names (Spec 03): `track` names a track, `priority` is one of `critical`, `high`, `normal`, `low` (a number is `400` with a message listing the four levels), and `track: null` on `PATCH` clears the track. Errors return `{ "error": "<message>" }` with `400` (invalid input), `404` (unknown id), or `409` (invalid transition or lost race).
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/project` | Project id, name, roles (`name`, `description`, `clean_room`), `lease_minutes`, dashboard `session`, Airlock `version` |
-| `GET` | `/api/tasks?role=&status=` | List tasks (with effective `status`) |
-| `POST` | `/api/tasks` | Create a task with the `task_create` parameters; the response carries the assigned id (`201`; invalid or unknown fields including `id`, unknown role or prerequisite, roles sharing a prefix: `400`) |
+| `GET` | `/api/tasks?role=&status=&track=&priority=` | List tasks (with effective `status`, `track`, and `priority` as a level name). `track=<name>` keeps one track, `track=` with an empty value keeps tasks without a track; `priority=<level>` keeps tasks of at least that level |
+| `POST` | `/api/tasks` | Create a task with the `task_create` parameters; the response carries the assigned id (`201`; invalid or unknown fields including `id`, unknown role, prerequisite, or track, roles sharing a prefix, a numeric `priority`: `400`) |
 | `GET` | `/api/tasks/{id}` | Task details |
-| `PATCH` | `/api/tasks/{id}` | Edit task content with the `task_update` parameters (no field, unknown role or field: `400`; task past `open` without `force`, unknown prerequisite, cycle: `409`) |
+| `PATCH` | `/api/tasks/{id}` | Edit task content with the `task_update` parameters (no field, unknown role or field, a numeric `priority`: `400`; task past `open` without `force`, unknown prerequisite, unknown track, cycle: `409`) |
 | `POST` | `/api/tasks/{id}/release` | Force-release a lease |
 | `POST` | `/api/tasks/{id}/approve` | Approve a task under review |
 | `POST` | `/api/tasks/{id}/reject` | Reject a task under review (`notes` required) |
+| `GET` | `/api/tracks` | Tracks with counts, highest priority first: the bare array of `track_list` entries (`name`, `priority`, `description`, `created_at`, `updated_at`, `counts` with `blocked`, `ready`, `in_progress`, `in_review`, `done`). Tracks are read only over REST |
 | `GET` | `/api/questions?topic=&status=` | List questions |
 | `POST` | `/api/questions/{id}/answer` | Answer or revise |
 | `POST` | `/api/questions/{id}/resolve` | Resolve |
 | `GET` | `/api/overlaps` | Overlap and stage analysis (§3.5–3.7): `tasks` (`id`, `status`, `stage`, `unknown`, `overlaps` of `{ id, occupied, paths }`), `files` (`path`, `tasks`, `occupied_by`), `no_touch` |
-| `GET` | `/api/events` | Server-Sent Events: `task_changed`, `question_changed` with data `{ "id": <entity id> }`; `resync` when the client fell behind |
+| `GET` | `/api/events` | Server-Sent Events: `task_changed`, `question_changed`, `track_changed` with data `{ "id": <entity id> }` (the track name; a rename emits it for the old and the new name); `resync` when the client fell behind |
 
 Claiming and completing tasks are session operations and stay with the CLI and MCP. Because other processes write to the same store, the server detects changes by polling SQLite's `PRAGMA data_version` (once per second) and emits SSE events accordingly; it also re-checks when the earliest lease expires, since leases run out without a write. The browser's `EventSource` cannot send the `Authorization` header, so the dashboard reads `/api/events` as a `fetch` stream.

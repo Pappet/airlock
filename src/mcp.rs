@@ -4,11 +4,13 @@
 //! optionally to one role. Sessions bound to a clean-room role see a reduced
 //! tool set restricted to their own role's tasks and their own questions.
 
-use crate::app::{TaskView, claim, done_ids, ensure_role, next_ready, project_root, unix_now};
+use crate::app::{
+    TaskView, TrackView, claim, done_ids, ensure_role, next_ready, project_root, unix_now,
+};
 use crate::briefing::{self, Briefing, Via, WorkPackage};
-use crate::core::{QuestionStatus, Task, dependents};
+use crate::core::{Priority, QuestionStatus, Task, dependents};
 use crate::hub::{Hub, Project};
-use crate::store::{NewTask, Store, TaskEdit};
+use crate::store::{NewTask, Store, TaskEdit, TrackEdit};
 use crate::sync;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value, json};
@@ -233,7 +235,10 @@ impl Server {
             "task_next" => {
                 let role = self.role_arg(args)?;
                 let tasks = self.store.tasks(now)?;
-                Ok(json!({ "task": next_ready(&tasks, &role).map(|v| WorkPackage::from(&v)) }))
+                let tracks = self.store.tracks()?;
+                Ok(
+                    json!({ "task": next_ready(&tasks, &tracks, &role).map(|v| WorkPackage::from(&v)) }),
+                )
             }
             "task_get" => {
                 let id = str_arg(args, "task_id")?;
@@ -302,7 +307,8 @@ impl Server {
                     prefix: self.project.config.task_prefix(&role)?,
                     title: str_arg(args, "title")?,
                     role,
-                    priority: opt_i32(args, "priority")?.unwrap_or(0),
+                    priority: opt_priority(args, "priority")?.unwrap_or_default(),
+                    track: opt_str(args, "track")?,
                     blocked_by: str_list(args, "blocked_by")?,
                     read: str_list(args, "read")?,
                     touch: str_list(args, "touch")?,
@@ -321,7 +327,8 @@ impl Server {
                 let edit = TaskEdit {
                     title: opt_str(args, "title")?,
                     role: opt_str(args, "role")?,
-                    priority: opt_i32(args, "priority")?,
+                    priority: opt_priority(args, "priority")?,
+                    track: opt_nullable_str(args, "track")?,
                     blocked_by: opt_str_list(args, "blocked_by")?,
                     read: opt_str_list(args, "read")?,
                     touch: opt_str_list(args, "touch")?,
@@ -338,6 +345,33 @@ impl Server {
                     &task,
                     &done_ids(&tasks),
                 ))?)
+            }
+            "track_list" => {
+                let views = TrackView::list(&self.store.tracks()?, &self.store.tasks(now)?);
+                Ok(json!({ "tracks": views }))
+            }
+            "track_create" => {
+                let name = str_arg(args, "name")?;
+                let priority = opt_priority(args, "priority")?.unwrap_or_default();
+                let description = opt_str(args, "description")?.unwrap_or_default();
+                let track = self.store.add_track(&name, priority, &description, now)?;
+                Ok(serde_json::to_value(track)?)
+            }
+            "track_update" => {
+                let name = str_arg(args, "name")?;
+                let edit = TrackEdit {
+                    name: opt_str(args, "new_name")?,
+                    priority: opt_priority(args, "priority")?,
+                    description: opt_str(args, "description")?,
+                };
+                Ok(serde_json::to_value(
+                    self.store.edit_track(&name, edit, now)?,
+                )?)
+            }
+            "track_remove" => {
+                let name = str_arg(args, "name")?;
+                self.store.remove_track(&name, now)?;
+                Ok(json!({ "removed": name }))
             }
             "question_ask" => {
                 let topic = str_arg(args, "topic")?;
@@ -518,7 +552,8 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
                 "read": strings,
                 "touch": strings,
                 "blocked_by": strings,
-                "priority": { "type": "integer" },
+                "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
+                "track": { "type": "string", "description": "Track the task belongs to; create it first with track_create" },
             }),
             &["title", "role", "do", "verify"],
         ),
@@ -534,10 +569,44 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
                 "read": strings,
                 "touch": strings,
                 "blocked_by": strings,
-                "priority": { "type": "integer" },
+                "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
+                "track": { "type": ["string", "null"], "description": "Track to move the task to; null takes it out of its track" },
                 "force": { "type": "boolean", "description": "Edit a task that is in progress, in review, or done" },
             }),
             &["task_id"],
+        ),
+        tool(
+            "track_list",
+            "List tracks, most important first, with the number of their tasks per status (blocked, ready, in_progress, in_review, done).",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "track_create",
+            "Create a track: a named line of work with its own priority. Ready tasks of more important tracks are handed out first.",
+            json!({
+                "name": { "type": "string", "description": "Letters, digits, `-`, `_`" },
+                "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
+                "description": { "type": "string" },
+            }),
+            &["name"],
+        ),
+        tool(
+            "track_update",
+            "Rename or change a track. Omitted fields are kept; the tasks of a renamed track follow it.",
+            json!({
+                "name": { "type": "string", "description": "Current name" },
+                "new_name": { "type": "string" },
+                "priority": { "type": "string", "enum": ["critical", "high", "normal", "low"] },
+                "description": { "type": "string" },
+            }),
+            &["name"],
+        ),
+        tool(
+            "track_remove",
+            "Remove a track no task belongs to.",
+            json!({ "name": { "type": "string" } }),
+            &["name"],
         ),
         tool(
             "question_ask",
@@ -606,6 +675,17 @@ fn opt_str(args: &Map<String, Value>, key: &str) -> Result<Option<String>> {
     }
 }
 
+/// A string that may be `null` on purpose: absent keeps (`None`), `null` clears
+/// (`Some(None)`), a string sets (`Some(Some(..))`).
+fn opt_nullable_str(args: &Map<String, Value>, key: &str) -> Result<Option<Option<String>>> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(s)) => Ok(Some(Some(s.clone()))),
+        Some(_) => bail!("argument `{key}` must be a string or null"),
+    }
+}
+
 fn opt_bool(args: &Map<String, Value>, key: &str) -> Result<Option<bool>> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -624,10 +704,14 @@ fn opt_i64(args: &Map<String, Value>, key: &str) -> Result<Option<i64>> {
     }
 }
 
-fn opt_i32(args: &Map<String, Value>, key: &str) -> Result<Option<i32>> {
-    opt_i64(args, key)?
-        .map(|v| i32::try_from(v).with_context(|| format!("argument `{key}` is out of range")))
-        .transpose()
+/// A priority level by name; anything else, numbers included, is rejected
+/// with the message listing the four levels.
+fn opt_priority(args: &Map<String, Value>, key: &str) -> Result<Option<Priority>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.parse()?)),
+        Some(other) => Ok(Some(other.to_string().parse()?)),
+    }
 }
 
 fn opt_u32(args: &Map<String, Value>, key: &str) -> Result<Option<u32>> {

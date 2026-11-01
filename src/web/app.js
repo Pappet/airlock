@@ -2,6 +2,9 @@
 // All data is rendered with textContent; `verify` is shown, never executed.
 
 const TOKEN_KEY = "airlock-token";
+const GROUP_KEY = "airlock-group-by-track";
+const PRIORITIES = ["critical", "high", "normal", "low"];
+const PIPS = { critical: "●●●●", high: "●●●○", normal: "●●○○", low: "●○○○" };
 const STATUS_COLUMNS = [
   ["blocked", "Blocked"],
   ["ready", "Ready"],
@@ -10,6 +13,7 @@ const STATUS_COLUMNS = [
   ["done", "Done"],
 ];
 const TABS = [
+  ["tracks", "Tracks"],
   ["board", "Board"],
   ["stages", "Stages"],
   ["files", "Files"],
@@ -19,9 +23,21 @@ const TABS = [
 ];
 const RUNNING = new Set(["in_progress", "in_review"]);
 
+function loadGroupByTrack() {
+  try { return localStorage.getItem(GROUP_KEY) !== "false"; } catch (_) { return true; }
+}
+
+function saveGroupByTrack(on) {
+  try { localStorage.setItem(GROUP_KEY, String(on)); } catch (_) { /* private mode */ }
+}
+
 const state = {
   project: null,
   tasks: [],
+  tracks: [],
+  groupByTrack: loadGroupByTrack(),
+  trackFilter: null, // null = all tracks, "" = no track, otherwise a track name
+  minPriority: null, // null = all, otherwise a level
   analysis: { tasks: [], files: [], no_touch: [] },
   questions: [],
   tab: "board",
@@ -69,12 +85,18 @@ function tokenRejected() {
 }
 
 async function load() {
-  const [tasks, analysis, questions] = await Promise.all([
+  const [tasks, analysis, questions, tracks] = await Promise.all([
     api("GET", "/api/tasks"),
     api("GET", "/api/overlaps"),
     api("GET", "/api/questions"),
+    api("GET", "/api/tracks"),
   ]);
-  Object.assign(state, { tasks, analysis, questions });
+  tracks.sort(byTrackOrder);
+  Object.assign(state, { tasks, analysis, questions, tracks });
+  // A renamed or removed track would leave an invisible active filter behind.
+  if (state.trackFilter && !tracks.some((t) => t.name === state.trackFilter) && !tasks.some((t) => t.track === state.trackFilter)) {
+    state.trackFilter = null;
+  }
   // Do not wipe a half-written answer or feedback; render once focus leaves.
   if (document.activeElement?.matches("#view textarea, #view input")) {
     state.pending = true;
@@ -164,6 +186,48 @@ function setLive(live) {
 const taskById = (id) => state.tasks.find((t) => t.id === id);
 const analysisById = (id) => state.analysis.tasks.find((t) => t.id === id);
 const visible = (task) => !state.role || task.role === state.role;
+
+// critical = 3 … low = 0; unknown levels count as normal.
+function priorityRank(level) {
+  const i = PRIORITIES.indexOf(level);
+  return i < 0 ? priorityRank("normal") : PRIORITIES.length - 1 - i;
+}
+
+const trackOf = (task) => (task.track && state.tracks.find((t) => t.name === task.track)) || null;
+
+// A task without a track ranks as a `normal` track.
+const trackRank = (task) => priorityRank(trackOf(task)?.priority ?? "normal");
+
+// Role, track, and minimum-priority filters together (Board and Review).
+function matchesFilters(task) {
+  if (!visible(task)) return false;
+  if (state.trackFilter !== null && (task.track || "") !== state.trackFilter) return false;
+  if (state.minPriority !== null && priorityRank(task.priority) < priorityRank(state.minPriority)) return false;
+  return true;
+}
+
+function priorityChip(level) {
+  return h("span", { class: `chip p-${level}` }, level);
+}
+
+function pips(level) {
+  return h("span", { class: `pips p-${level}`, title: `priority ${level}`, "aria-label": `priority ${level}` }, PIPS[level] || PIPS.normal);
+}
+
+// Track order everywhere: priority desc, then name. Works on tracks and lanes.
+function byTrackOrder(a, b) {
+  return priorityRank(b.priority) - priorityRank(a.priority) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+
+// Task priority desc, then oldest first.
+function byPriority(a, b) {
+  return priorityRank(b.priority) - priorityRank(a.priority)
+    || (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0)
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+// The `task next` order: track rank, task priority, oldest first.
+const byNextOrder = (a, b) => trackRank(b) - trackRank(a) || byPriority(a, b);
 const now = () => Math.floor(Date.now() / 1000);
 
 function minutesLeft(task) {
@@ -185,23 +249,24 @@ function overlapBadges(id) {
   return badges;
 }
 
-function card(task, extraClass = "", onclick) {
+function card(task, extraClass = "", onclick, showTrack = true) {
   const running = RUNNING.has(task.status);
   const minutes = minutesLeft(task);
   return h(
     "button",
     {
       type: "button",
-      class: `card ${running ? "is-running" : ""} ${extraClass}`,
+      class: `card p-${task.priority} ${running ? "is-running" : ""} ${extraClass}`,
       "data-id": task.id,
       onclick: onclick || (() => openDetail(task.id)),
     },
     h("div", { class: "card__head" },
       h("span", { class: "card__id" }, running ? `▶ ${task.id}` : task.id),
-      h("span", { class: "label" }, `P${task.priority}`)),
+      pips(task.priority)),
     h("div", { class: "card__title" }, task.title),
     h("div", { class: "card__meta" },
       task.role,
+      showTrack && task.track ? ` · ${task.track}` : "",
       task.claimed_by ? ` · ${task.claimed_by}` : "",
       minutes !== null ? ` · ${minutes} min` : ""),
     h("div", { class: "badges" },
@@ -211,16 +276,144 @@ function card(task, extraClass = "", onclick) {
 }
 
 // ─── Views ───────────────────────────────────────────────────────────
-function boardView() {
+// ─── Tracks tab ──────────────────────────────────────────────────────
+// Course warning, per role R: track T is off course when T has a ready task of R,
+// none of R in progress, and a track of strictly lower priority has one of R in
+// progress. `in_review` never counts as running. Tasks without a track form the
+// "" key at `normal`. Pure: the caller passes the tasks it wants checked (e.g.
+// only one role's). Returns Map<trackKey, Array<{ role, ready }>> of flagged
+// tracks only.
+function courseWarnings(tasks, tracks) {
+  const rankOf = (key) => priorityRank(tracks.find((t) => t.name === key)?.priority ?? "normal");
+  const roles = [...new Set(tasks.map((t) => t.role))].sort();
+  const warnings = new Map();
+  for (const role of roles) {
+    const mine = tasks.filter((t) => t.role === role);
+    const count = (key, status) => mine.filter((t) => (t.track || "") === key && t.status === status).length;
+    const keys = [...new Set(mine.map((t) => t.track || ""))];
+    const busyRanks = keys.filter((k) => count(k, "in_progress") > 0).map(rankOf);
+    for (const key of keys) {
+      const ready = count(key, "ready");
+      if (ready > 0 && count(key, "in_progress") === 0 && busyRanks.some((r) => r < rankOf(key))) {
+        warnings.set(key, [...(warnings.get(key) || []), { role, ready }]);
+      }
+    }
+  }
+  return warnings;
+}
+
+const BAR_SEGMENTS = [
+  ["done", "done", "done"],
+  ["in_review", "in review", "review"],
+  ["in_progress", "running", "run"],
+  ["ready", "ready", "ready"],
+  ["blocked", "blocked", "blocked"],
+];
+
+function tracksView() {
   const tasks = state.tasks.filter(visible);
-  if (!tasks.length) return empty("No tasks", "Add tasks with `airlock task add` or over MCP.");
+  const rows = state.tracks.map((t) => ({ name: t.name, priority: t.priority, description: t.description }));
+  for (const name of new Set(tasks.map((t) => t.track || ""))) {
+    if (!rows.some((r) => r.name === name)) rows.push({ name, priority: "normal", description: "" });
+  }
+  rows.sort(byTrackOrder);
+  if (!rows.length) return empty("No tracks", "Create tracks with `airlock track add` or over MCP.");
+  const warnings = courseWarnings(tasks, state.tracks);
+
+  return h("div", { class: "tracks" }, rows.map((row) => {
+    const own = tasks.filter((t) => (t.track || "") === row.name);
+    const count = (status) => own.filter((t) => t.status === status).length;
+    const running = own.filter((t) => t.status === "in_progress");
+    const lastDone = own.filter((t) => t.status === "done").sort((a, b) => b.updated_at - a.updated_at)[0];
+    const flagged = warnings.get(row.name) || [];
+    const open = () => {
+      state.trackFilter = row.name;
+      state.tab = "board";
+      location.replace("#board");
+      render();
+    };
+    const bar = h("div", { class: "bar", role: "img", "aria-label": own.length ? `${own.length} tasks` : "no tasks" },
+      BAR_SEGMENTS.map(([status, name, cls]) => {
+        const n = count(status);
+        if (!n) return null;
+        const seg = h("span", { class: `bar__seg bar__seg--${cls}`, title: `${n} ${name}` });
+        seg.style.flexGrow = String(n);
+        return seg;
+      }));
+    return h("div", {
+      class: `track-row p-${row.priority}${flagged.length ? " is-offcourse" : ""}`,
+      role: "button",
+      tabindex: "0",
+      title: "Show this track's tasks on the board",
+      "data-track": row.name,
+      onclick: open,
+      onkeydown: (e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      },
+    },
+      h("div", { class: "track-row__name" },
+        priorityChip(row.priority),
+        h("b", { class: row.name ? "" : "muted" }, row.name || "no track"),
+        row.description ? h("span", { class: "muted swim__desc" }, row.description) : null),
+      h("div", { class: "track-row__bar" },
+        bar,
+        h("div", { class: "track-row__counts" },
+          BAR_SEGMENTS.map(([status, name]) => `${count(status)} ${name}`).join(" · "))),
+      h("div", { class: "track-row__now" },
+        flagged.map((w) => h("div", { class: "course-warning" }, `${w.role}: nothing running, ${w.ready} ready`)),
+        running.map((t) => {
+          const minutes = minutesLeft(t);
+          return h("div", { class: "track-run" }, `▶ ${t.id} ${t.title}`, t.claimed_by ? ` · ${t.claimed_by}` : "", minutes !== null ? ` · ${minutes} min` : "");
+        }),
+        !running.length && !flagged.length ? h("div", { class: "muted" }, own.length ? "idle" : "no tasks") : null,
+        lastDone ? h("div", { class: "muted track-last" }, `last done: ${lastDone.id} ${lastDone.title}`) : null));
+  }));
+}
+
+function boardView() {
+  if (!state.tasks.length) return empty("No tasks", "Add tasks with `airlock task add` or over MCP.");
+  const tasks = state.tasks.filter(matchesFilters);
+  if (!tasks.length) return empty("No matching tasks", "No task matches the role, track, and priority filters.");
+  return state.groupByTrack ? swimlanes(tasks) : flatBoard(tasks);
+}
+
+function flatBoard(tasks) {
   return h("div", { class: "columns" },
     STATUS_COLUMNS.map(([status, name]) => {
-      const items = tasks.filter((t) => t.status === status);
+      const items = tasks.filter((t) => t.status === status).sort(byNextOrder);
       return h("section", { class: "column" },
         h("div", { class: "label" }, h("span", {}, name), h("span", {}, items.length)),
         items.length ? items.map((t) => card(t)) : h("div", { class: "muted" }, "—"));
     }));
+}
+
+// One lane per track in track order; "no track" sorts in as a `normal` track named "".
+function swimlanes(tasks) {
+  const lanes = state.tracks.map((t) => ({ name: t.name, priority: t.priority, description: t.description }));
+  lanes.push({ name: "", priority: "normal", description: "" });
+  for (const name of new Set(tasks.map((t) => t.track || ""))) {
+    if (!lanes.some((l) => l.name === name)) lanes.push({ name, priority: "normal", description: "" });
+  }
+  lanes.sort(byTrackOrder);
+
+  const cells = [h("div", {})];
+  for (const [status, name] of STATUS_COLUMNS) {
+    cells.push(h("div", { class: "label swim__colh" }, h("span", {}, name), h("span", {}, tasks.filter((t) => t.status === status).length)));
+  }
+  for (const lane of lanes) {
+    const own = tasks.filter((t) => (t.track || "") === lane.name);
+    if (!own.length) continue;
+    cells.push(h("div", { class: "swim__lane", title: lane.description || null },
+      priorityChip(lane.priority),
+      h("b", { class: lane.name ? "" : "muted" }, lane.name || "no track"),
+      lane.description ? h("span", { class: "muted swim__desc" }, lane.description) : null));
+    for (const [status] of STATUS_COLUMNS) {
+      const items = own.filter((t) => t.status === status).sort(byPriority);
+      cells.push(h("div", { class: "swim__cell" }, items.map((t) => card(t, "", undefined, false))));
+    }
+  }
+  return h("div", { class: "swim-wrap" }, h("div", { class: "swim" }, cells));
 }
 
 function stagesView() {
@@ -339,8 +532,8 @@ function hoverColumn(table, col, on) {
 }
 
 function reviewView() {
-  const items = state.tasks.filter((t) => t.status === "in_review" && visible(t));
-  if (!items.length) return empty("Review queue empty", "Tasks completed with `--review` appear here.");
+  const items = state.tasks.filter((t) => t.status === "in_review" && matchesFilters(t));
+  if (!items.length) return empty("Review queue empty", "Tasks completed with `--review` appear here, unless a filter hides them.");
   return h("div", { class: "list" }, items.map((task) => {
     const feedback = h("textarea", { placeholder: "Feedback (required to reject)", "aria-label": `Feedback for ${task.id}` });
     const reject = h("button", { type: "button", class: "btn btn--danger", disabled: true, onclick: () => act(
@@ -350,7 +543,9 @@ function reviewView() {
       h("div", { class: "item__head" },
         h("button", { type: "button", class: "link card__id", onclick: () => openDetail(task.id) }, task.id),
         h("span", { class: "item__title" }, task.title),
-        h("span", { class: "label" }, task.role)),
+        h("span", { class: "label" }, task.role),
+        pips(task.priority),
+        h("span", { class: "label" }, task.track || "no track")),
       task.notes ? h("p", {}, task.notes) : h("p", { class: "muted" }, "No notes."),
       h("div", { class: "actions" },
         h("div", { class: "field" }, feedback),
@@ -481,9 +676,12 @@ function renderDrawer() {
 
   body.replaceChildren(
     h("button", { type: "button", class: "btn close", onclick: closeDetail }, "Close"),
-    h("span", { class: "label" }, `${task.role} · ${task.status.replace("_", " ")} · P${task.priority}`),
+    h("div", { class: "drawer__tags" },
+      h("span", { class: "label" }, `${task.role} · ${task.status.replace("_", " ")}`),
+      priorityChip(task.priority),
+      h("span", { class: "label" }, task.track ? `track ${task.track}` : "no track")),
     h("h2", {}, h("span", { class: "mono" }, task.id), " ", task.title),
-    task.claimed_by ? h("div", { class: "mono muted" }, `▶ ${task.claimed_by}${minutes !== null ? ` · ${minutes} min left` : ""}`) : null,
+    task.claimed_by ? h("div", { class: "mono muted" }, `▶ ${task.claimed_by}${minutes !== null ? ` · ${minutes} min left` : ""}`) : "",
     h("div", { class: "badges" }, task.status !== "done" ? overlapBadges(task.id) : null),
     h("section", {}, h("span", { class: "label" }, "Read"), pathList(task.read, new Map())),
     h("section", {}, h("span", { class: "label" }, "Touch"), pathList(task.touch, touchMarks)),
@@ -528,6 +726,8 @@ function renderChrome() {
       onclick: () => { state.role = role; render(); },
     }, role || "all roles")));
 
+  renderFilters();
+
   const counts = {
     review: state.tasks.filter((t) => t.status === "in_review").length,
     questions: state.questions.filter((q) => q.status === "open").length,
@@ -542,10 +742,65 @@ function renderChrome() {
   }, counts[id] ? `${name} ${counts[id]}` : name)));
 }
 
+// Track, minimum-priority, and grouping controls; Board and Review only.
+function renderFilters() {
+  const slot = $("board-filters");
+  const active = state.tab === "board" || state.tab === "review";
+  const key = JSON.stringify([active, state.tab === "board", state.tracks.map((t) => t.name), state.trackFilter, state.minPriority, state.groupByTrack]);
+  if (slot.dataset.key === key) return;
+  slot.dataset.key = key;
+  const focused = slot.contains(document.activeElement) ? document.activeElement.id : null;
+  if (!active) { slot.replaceChildren(); return; }
+
+  const track = h("select", {
+    id: "filter-track",
+    class: "select",
+    "aria-label": "Filter by track",
+    onchange: (e) => {
+      const v = e.target.value;
+      state.trackFilter = v === "all" ? null : v.slice(2);
+      render();
+    },
+  },
+    h("option", { value: "all", selected: state.trackFilter === null }, "all tracks"),
+    state.tracks.map((t) => h("option", { value: `t:${t.name}`, selected: state.trackFilter === t.name }, t.name)),
+    h("option", { value: "t:", selected: state.trackFilter === "" }, "no track"));
+
+  const min = h("select", {
+    id: "filter-priority",
+    class: "select",
+    "aria-label": "Minimum priority",
+    onchange: (e) => {
+      state.minPriority = e.target.value === "all" ? null : e.target.value;
+      render();
+    },
+  },
+    h("option", { value: "all", selected: state.minPriority === null }, "all priorities"),
+    [...PRIORITIES].reverse().map((p) => h("option", { value: p, selected: state.minPriority === p }, `≥ ${p}`)));
+
+  const group = state.tab === "board"
+    ? h("button", {
+        id: "filter-group",
+        type: "button",
+        class: "pill switch",
+        "aria-pressed": String(state.groupByTrack),
+        title: "One swimlane per track",
+        onclick: () => {
+          state.groupByTrack = !state.groupByTrack;
+          saveGroupByTrack(state.groupByTrack);
+          render();
+        },
+      }, "group by track")
+    : null;
+
+  slot.replaceChildren(track, min, group);
+  if (focused) $(focused)?.focus();
+}
+
 function render() {
   if (state.rejected) return;
   renderChrome();
-  const views = { board: boardView, stages: stagesView, files: filesView, review: reviewView, questions: questionsView, leases: leasesView };
+  const views = { tracks: tracksView, board: boardView, stages: stagesView, files: filesView, review: reviewView, questions: questionsView, leases: leasesView };
   $("view").replaceChildren(views[state.tab]());
   renderDrawer();
 }
@@ -581,7 +836,7 @@ function start() {
     resizeTimer = setTimeout(() => { if (state.tab === "stages") render(); }, 100);
   });
   // Lease minutes tick without server events.
-  setInterval(() => { if (state.tab === "leases" || state.tab === "board") render(); }, 30000);
+  setInterval(() => { if (state.tab === "leases" || state.tab === "board" || state.tab === "tracks") render(); }, 30000);
   api("GET", "/api/project")
     .then((project) => { state.project = project; render(); listen(); })
     .catch((err) => {

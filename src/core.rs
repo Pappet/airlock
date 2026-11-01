@@ -63,6 +63,115 @@ impl TaskStatus {
     }
 }
 
+/// How urgently a task is handed out: `Critical` first, `Low` last.
+///
+/// Stored as its [`rank`](Priority::rank) (0 to 3) and shown by name.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    clap::ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
+#[value(rename_all = "lowercase")]
+pub enum Priority {
+    /// Low priority: handed out last
+    Low,
+    /// The default
+    #[default]
+    Normal,
+    /// Handed out before normal work
+    High,
+    /// Handed out before everything else
+    Critical,
+}
+
+impl Priority {
+    /// The lowercase name used in JSON, the CLI, and listings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+
+    /// The stored integer: low 0, normal 1, high 2, critical 3.
+    pub fn rank(self) -> i64 {
+        match self {
+            Self::Low => 0,
+            Self::Normal => 1,
+            Self::High => 2,
+            Self::Critical => 3,
+        }
+    }
+
+    /// The level stored as `rank`, or `None` outside 0 to 3.
+    pub fn from_rank(rank: i64) -> Option<Self> {
+        match rank {
+            0 => Some(Self::Low),
+            1 => Some(Self::Normal),
+            2 => Some(Self::High),
+            3 => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    /// Maps an old integer priority onto a level (schema migration 4):
+    /// 30 and up is high, 10 to 29 normal, below 10 low. Never critical.
+    pub fn from_legacy(value: i64) -> Self {
+        match value {
+            30.. => Self::High,
+            10..=29 => Self::Normal,
+            _ => Self::Low,
+        }
+    }
+}
+
+impl fmt::Display for Priority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Priority {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "critical" => Ok(Self::Critical),
+            "high" => Ok(Self::High),
+            "normal" => Ok(Self::Normal),
+            "low" => Ok(Self::Low),
+            _ => Err(anyhow::anyhow!(
+                "invalid priority `{s}`: use critical, high, normal, or low"
+            )),
+        }
+    }
+}
+
+/// A named line of work with its own priority; tasks may belong to one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Track {
+    /// Unique name: letters, digits, `-`, `_`; case is preserved
+    pub name: String,
+    pub priority: Priority,
+    pub description: String,
+    /// Unix timestamp (seconds) of creation
+    pub created_at: i64,
+    /// Unix timestamp (seconds) of the last modification
+    pub updated_at: i64,
+}
+
 /// A structured work package.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
@@ -74,9 +183,12 @@ pub struct Task {
     pub role: String,
     /// Persisted lifecycle state
     pub state: TaskState,
-    /// Higher values are handed out first by `task next`
+    /// Higher priorities are handed out first by `task next`
     #[serde(default)]
-    pub priority: i32,
+    pub priority: Priority,
+    /// The track this task belongs to, if any
+    #[serde(default)]
+    pub track: Option<String>,
     /// Prerequisites that must be `Done` before this task is ready
     #[serde(default)]
     pub blocked_by: Vec<String>,
@@ -138,6 +250,21 @@ pub fn check_task_id(id: &str) -> Result<(), String> {
     } else {
         Err(format!(
             "invalid task id `{id}`: use letters, digits, `-`, `_`, or `.`"
+        ))
+    }
+}
+
+/// Checks a track name: non-empty ASCII letters, digits, `-`, or `_`.
+pub fn check_track_name(name: &str) -> Result<(), String> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid track name `{name}`: use letters, digits, `-`, or `_`"
         ))
     }
 }

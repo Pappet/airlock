@@ -15,6 +15,7 @@ Airlock replaces it with:
 - **Compact work packages** (*Read, Touch, Do, Verify*) handed to an agent one at a time instead of the whole plan.
 - **Leases**: a claimed task belongs to one session; crashed sessions' leases expire.
 - **Derived readiness**: tasks become ready when their prerequisites are done — no manual bookkeeping.
+- **Tracks and a priority scale**: named lines of work with their own priority (`critical`, `high`, `normal`, `low`); agents get the ready task of the most important track first, and the dashboard shows whether work runs where it should.
 - **A question channel** between implementation and specification sessions, with an audit trail in git.
 - **CLI for humans, MCP for agents**, plus a local web dashboard.
 - **Guided onboarding**: worktrees bound to roles, a session briefing agents read first, `doctor` and `setup` for harness configuration.
@@ -23,11 +24,12 @@ Airlock replaces it with:
 
 - **Hub store:** SQLite (WAL) per project under the platform state directory, referenced from the repository by a one-line `.airlock` marker. Safe concurrent use from many processes via immediate transactions and conditional state transitions.
 - **Task lifecycle:** `open → in_progress → (in_review →) done`, with claim, heartbeat, release, approve, and reject; `blocked`/`ready` derived from `blocked_by`.
+- **Tracks and priority:** `airlock track add|list|edit|remove` (MCP `track_*`); tasks take `--track` and a level (`critical > high > normal > low`, no numbers); `task next` orders by track priority, then task priority, then age.
 - **Questions:** `open → answered → resolved`, optionally linked to the spec file that codifies the answer.
 - **Deterministic export:** `airlock sync` writes a byte-stable JSON snapshot (`docs/.airlock-state.json`, the only import source) plus `docs/PLAN.md` and `docs/spec/QUESTIONS.md` views. Merge conflicts in generated files are cleared by re-running `airlock sync`; a guard refuses to overwrite snapshots written by another machine.
-- **MCP tools:** `task_next`, `task_claim`, `task_heartbeat`, `task_complete`, `question_ask`, … with role binding and a restricted tool set for clean-room roles.
+- **MCP tools:** `task_next`, `task_claim`, `task_heartbeat`, `task_complete`, `track_list`, `question_ask`, … with role binding and a restricted tool set for clean-room roles.
 - **Onboarding:** `airlock init --template clean-room|parallel|single` registers the project, commits a layout (`airlock.toml`), creates the worktrees, and binds them; `airlock use <role>` binds a worktree to a role and a stable session; `airlock start` / MCP `session_start` brief an agent on its rules, claims, and next package; `airlock doctor` checks the setup; `airlock setup claude|antigravity|dsh` prints harness configurations.
-- **Dashboard:** loopback-only, token-protected Kanban board, dependency stages, file-overlap matrix, review queue, questions inbox, and lease monitor.
+- **Dashboard:** loopback-only, token-protected Tracks tab (with a per-role course warning), Kanban board (swimlanes per track, priority and track filters), dependency stages, file-overlap matrix, review queue, questions inbox, and lease monitor.
 
 Scope of v0.x: one machine per project state. The clean-room features structure and record the exchange between sessions; actual isolation of a clean-room session must come from its environment (separate user, container, or sandbox) — see [Spec 05 §4](docs/spec/05_git_sync_and_airlock.md#4-the-airlock-boundary).
 
@@ -49,13 +51,17 @@ cargo build --release
 ```bash
 airlock init --template clean-room --yes      # register, commit layout, create ../<dir>-engine, bind roles
 
+airlock track add Combat --priority high \
+  --description "The battle, faithful to the tick"   # a named line of work with a priority
+
 airlock task add "Missiles implementation" --role engine \
+  --track Combat --priority high \
   --read docs/spec/missiles.md --touch src/missiles.rs \
   --do "Implement shot clock and volley firing cycle" \
   --verify "cargo test missiles"            # prints "Added E-1 (ready)": ids are assigned
 
 export AIRLOCK_SESSION=engine-agent-01
-airlock task next --role engine               # show next ready work package
+airlock task next --role engine               # next ready package: most important track first
 airlock task claim E-1                        # take it under a lease
 airlock task done E-1 --notes "All unit tests passing."
 

@@ -42,7 +42,7 @@ If the bound role has `clean_room: true` in the project config, the server expos
 
 `session_start`, `task_next`, `task_get`, `task_claim`, `task_heartbeat`, `task_release`, `task_complete`, `question_ask`, `question_list`
 
-restricted to the bound role's tasks (including `task_get`) and the session's own questions (`question_list`). `task_create`, `task_update`, `question_answer`, `question_resolve`, and `doc_sync` are not listed at all. This keeps an agent from accidentally answering its own questions or browsing other roles' work; it is a guardrail, not a security boundary (Spec 05 §4). Task ids and role names are coordination metadata, not material from the analysis side, so naming them would be harmless; clean-room errors nevertheless name only the session's own role ("task `L-1` is not available to role `engine`"), keeping the session's view limited to its own work.
+restricted to the bound role's tasks (including `task_get`) and the session's own questions (`question_list`). `task_create`, `task_update`, `track_list`, `track_create`, `track_update`, `track_remove`, `question_answer`, `question_resolve`, and `doc_sync` are not listed at all. This keeps an agent from accidentally answering its own questions or browsing other roles' work; it is a guardrail, not a security boundary (Spec 05 §4). Task ids, role names, and track names (which appear in the work packages of the role's own tasks) are coordination metadata, not material from the analysis side, so naming them would be harmless; clean-room errors nevertheless name only the session's own role ("task `L-1` is not available to role `engine`"), keeping the session's view limited to its own work.
 
 Without `--role`, all tools are exposed and `role` parameters are required where listed.
 
@@ -58,9 +58,9 @@ The session briefing (Spec 06 §3): role, rules, reading list, claimed work, nex
 - **Returns:** the structured briefing in `structuredContent`; the text content is the briefing as Markdown rather than JSON.
 
 ### 3.1 `task_next`
-Returns the next ready task for a role (Spec 01 §2.1 selection order) without claiming it.
+Returns the next ready task for a role (Spec 01 §2.1 selection order: track priority, task priority, age) without claiming it.
 - **Parameters:** `role` (string; required unless bound)
-- **Returns:** `{ task: { id, title, blocked_by, read, touch, do, verify, notes?, overlaps? } }`, or `{ task: null }` if none is ready. `notes` appears when present, e.g. review feedback after a rejection. `overlaps` (`[{ id, occupied, paths }]`) appears when no ready task is free of overlap with running work and this one is handed out anyway. Kept compact — the work package is meant to replace reading the whole plan.
+- **Returns:** `{ task: { id, title, track?, priority, blocked_by, read, touch, do, verify, notes?, overlaps? } }`, or `{ task: null }` if none is ready. `track` appears when the task has one and `priority` is one of `critical`, `high`, `normal`, `low`. `notes` appears when present, e.g. review feedback after a rejection. `overlaps` (`[{ id, occupied, paths }]`) appears when no ready task is free of overlap with running work and this one is handed out anyway. Kept compact — the work package is meant to replace reading the whole plan.
 
 ### 3.2 `task_get`
 - **Parameters:** `task_id` (string)
@@ -83,29 +83,41 @@ Returns the next ready task for a role (Spec 01 §2.1 selection order) without c
 - **Returns:** `{ task_id, state, now_ready: [task ids] }`. Only the lease holder can complete via MCP.
 
 ### 3.7 `task_create`
-- **Parameters:** `title`, `role`, `do`, `verify` (strings, required); `read`, `touch`, `blocked_by` (string arrays, optional); `priority` (integer, optional). There is no `id` parameter: Airlock assigns it (Spec 01 §2.1), and a call that passes `id` fails with a message saying so.
+- **Parameters:** `title`, `role`, `do`, `verify` (strings, required); `read`, `touch`, `blocked_by` (string arrays, optional); `priority` (`critical | high | normal | low`, optional; default `normal`); `track` (string, optional; an existing track, see `track_create`). There is no `id` parameter: Airlock assigns it (Spec 01 §2.1), and a call that passes `id` fails with a message saying so.
 - **Returns:** the created task, including its new `id`.
 
 ### 3.8 `task_update`
-- **Parameters:** `task_id` (string, required); `title`, `role`, `do`, `verify` (strings, optional); `read`, `touch`, `blocked_by` (string arrays, optional; replace the list, `[]` empties it); `priority` (integer, optional); `force` (boolean, optional; default `false`)
-- **Returns:** the updated task. Omitted fields are kept; at least one field must be given. Tasks past `open` need `force` (Spec 01 §2.1); changes to `blocked_by` are checked against the whole graph.
+- **Parameters:** `task_id` (string, required); `title`, `role`, `do`, `verify` (strings, optional); `read`, `touch`, `blocked_by` (string arrays, optional; replace the list, `[]` empties it); `priority` (`critical | high | normal | low`, optional); `track` (string or `null`, optional; `null` takes the task out of its track, an absent field keeps it); `force` (boolean, optional; default `false`)
+- **Returns:** the updated task. Omitted fields are kept; at least one field must be given. Tasks past `open` need `force` (Spec 01 §2.1); changes to `blocked_by` are checked against the whole graph. An unknown track is an error that names the defined tracks; a number as priority is an error that lists the four levels.
 
-### 3.9 `question_ask`
+### 3.9 Track tools
+Tracks are named lines of work with their own priority (Spec 01 §2.5). None of the four tools is part of the clean-room set (§2.1); they are open to every other session, bound or not.
+
+| Tool | Parameters | Returns |
+|---|---|---|
+| `track_list` | none | `{ tracks: [...] }`, highest priority first, then by name. Each entry: `name`, `priority`, `description`, `created_at`, `updated_at`, `counts` (`{ blocked, ready, in_progress, in_review, done }`, effective status) |
+| `track_create` | `name` (string, required); `priority` (`critical \| high \| normal \| low`, optional; default `normal`); `description` (string, optional) | the created track |
+| `track_update` | `name` (string, required; the current name); `new_name`, `description` (strings, optional); `priority` (optional) | the updated track. Omitted fields are kept; at least one field must be given. A rename updates every task of the track |
+| `track_remove` | `name` (string, required) | `{ removed: <name> }`. Refused while any task, in any state, uses the track |
+
+`track_list` wraps its array in an object because `structuredContent` is always an object; the CLI (`track list --json`) and REST (`GET /api/tracks`) return the bare array.
+
+### 3.10 `question_ask`
 - **Parameters:** `topic` (string), `question` (string)
 - **Returns:** `{ question_id }`
 
-### 3.10 `question_list`
+### 3.11 `question_list`
 - **Parameters:** `topic` (string, optional), `status` (`open | answered | resolved`, optional)
 - **Returns:** `{ questions: [...] }`, newest first, including answers. Clean-room sessions see only their own questions.
 
-### 3.11 `question_answer`
+### 3.12 `question_answer`
 - **Parameters:** `question_id` (integer), `answer` (string), `spec_file` (string, optional)
 - **Returns:** the updated question.
 
-### 3.12 `question_resolve`
+### 3.13 `question_resolve`
 - **Parameters:** `question_id` (integer), `spec_file` (string, optional)
 - **Returns:** the updated question.
 
-### 3.13 `doc_sync`
+### 3.14 `doc_sync`
 Equivalent to `airlock sync` without `--force`, writing into the project root the server resolved at startup (requires a server started inside the project, not only via `--project`).
 - **Returns:** `{ written: [paths], unchanged: [paths] }`, or an error if the snapshot was changed outside this hub.
