@@ -17,6 +17,8 @@ Example client configuration (Claude Code `.mcp.json`):
 }
 ```
 
+The example shows the explicit form. In a worktree bound with `airlock use` (Spec 06 §2.3), `"args": ["mcp"]` suffices: role and session come from the binding, and `airlock setup claude` prints exactly that.
+
 ### 1.1 Transport and Protocol
 
 - stdio transport: one JSON-RPC 2.0 message per line on stdin/stdout. stdout carries nothing but protocol messages; the startup line (project, session, role) and diagnostics go to stderr. The server exits when stdin closes.
