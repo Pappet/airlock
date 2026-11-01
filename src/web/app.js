@@ -219,10 +219,9 @@ function empty(label, text) {
 
 function setLive(live) {
   state.live = live;
-  $("live-dot").className = `pulse-dot ${live ? "live" : "offline"}`;
-  const label = $("live-label");
-  label.textContent = live ? "LIVE" : "OFFLINE";
-  label.className = live ? "live" : "offline";
+  $("live-dot").className = `pulse ${live ? "live" : "offline"}`;
+  $("live").className = `live ${live ? "is-live" : "is-offline"}`;
+  $("live-label").textContent = live ? "LIVE" : "OFFLINE";
 }
 
 // ─── Derived data ────────────────────────────────────────────────────
@@ -1091,10 +1090,9 @@ function renderChrome() {
   if (p) $("version").textContent = `STUDIO // v${p.version.split(".").slice(0, 2).join(".")}`;
   document.title = p ? `Airlock · ${p.name}` : "Airlock";
 
-  const open = state.tasks.filter((t) => t.status !== "done").length;
   const running = state.tasks.filter((t) => t.status === "in_progress").length;
-  const shared = state.analysis.files.length;
-  $("counts").textContent = `${open} open  ${running} running  ${shared} shared files`;
+  $("hero-stats").replaceChildren(...heroStats());
+  $("hero-now").replaceChildren(...heroNow());
 
   const roles = p ? p.roles.map((r) => r.name) : [];
   $("role-filter").replaceChildren(
@@ -1114,11 +1112,54 @@ function renderChrome() {
   };
   $("tabs").replaceChildren(...TABS.map(([id, name]) => h("button", {
     type: "button",
-    class: "pill",
+    class: `tab${state.tab === id ? " on" : ""}`,
     role: "tab",
     "aria-selected": String(state.tab === id),
     onclick: () => { state.tab = id; location.replace(`#${id}`); render(); },
-  }, counts[id] ? `${name} ${counts[id]}` : name)));
+  }, name, counts[id] ? h("span", { class: "tab__n" }, counts[id]) : null)));
+}
+
+// ─── Hero band: the state of the airlock, visible on every tab ──────
+const HERO_ROWS = 3;
+
+function heroStats() {
+  const count = (status) => state.tasks.filter((t) => t.status === status).length;
+  const stat = (value, label, cls = "") => h("div", { class: `stat ${cls}` }, h("b", {}, value), h("span", {}, label));
+  return [
+    stat(state.tasks.filter((t) => t.status !== "done").length, "open"),
+    stat(count("in_progress"), "running", "stat--hot"),
+    stat(count("in_review"), "in review"),
+    stat(state.questions.filter((q) => q.status === "open").length, "open questions", "stat--info"),
+    stat(state.analysis.files.length, "shared files"),
+  ];
+}
+
+// Running tasks as lease rows; the seam shows the lease window left, so a
+// heartbeat-extended lease (longer than one window) reads as full.
+function heroNow() {
+  const running = state.tasks.filter((t) => t.status === "in_progress").sort(byNextOrder);
+  if (!running.length) return [h("div", { class: "now__idle" }, "nothing running")];
+  const window = state.project?.lease_minutes || 60;
+  const rows = running.slice(0, HERO_ROWS).map((t) => {
+    const minutes = minutesLeft(t);
+    const low = minutes !== null && minutes < 15;
+    const pct = minutes === null ? 100 : Math.min(100, Math.round((100 * minutes) / window));
+    return h("button", { type: "button", class: `lease${low ? " is-low" : ""}`, onclick: () => openDetail(t.id) },
+      h("span", { class: "pulse live", "aria-hidden": "true" }),
+      h("span", { class: "lease__id" }, t.id),
+      h("span", { class: "lease__title" }, t.title),
+      h("span", { class: "lease__who" }, t.claimed_by || ""),
+      h("span", { class: "lease__left" }, minutes === null ? "" : `${minutes} min`),
+      h("span", { class: "lease__seam" }, h("i", { style: `width:${pct}%` })));
+  });
+  if (running.length > HERO_ROWS) {
+    rows.push(h("button", {
+      type: "button",
+      class: "now__more",
+      onclick: () => { state.tab = "leases"; location.replace("#leases"); render(); },
+    }, `+${running.length - HERO_ROWS} more`));
+  }
+  return rows;
 }
 
 // Track, minimum-priority, and grouping controls; Board and Review only.

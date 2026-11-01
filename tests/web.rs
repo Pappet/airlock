@@ -205,6 +205,25 @@ fn fonts_need_allowed_host() {
 }
 
 #[test]
+fn dashboard_has_hero_band() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let html = get("/").body;
+    assert!(html.contains("id=\"hero-stats\"") && html.contains("id=\"hero-now\""));
+    assert!(
+        !html.contains("section-strip"),
+        "the section strip is replaced by the hero band"
+    );
+    let js = get("/app.js").body;
+    assert!(js.contains("function heroNow") && js.contains("const HERO_ROWS = 3"));
+    let css = get("/style.css").body;
+    assert!(
+        css.contains(".tab.on::after"),
+        "the active tab gets an underline anchor"
+    );
+}
+
+#[test]
 fn dashboard_assets_know_tracks() {
     let s = Server::start();
     let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
