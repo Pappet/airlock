@@ -211,8 +211,14 @@ fn exported_tasks_and_plan_follow_numeric_id_order() {
     let ids: Vec<&str> = snapshot.tasks.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, ["E-1", "E-2", "E-10"]);
     let plan = airlock::views::plan(&snapshot);
-    let at = |id: &str| plan.find(&format!("{id} ")).unwrap_or_else(|| panic!("{id} in plan"));
-    assert!(at("E-2") < at("E-10"), "plan lists E-2 before E-10:\n{plan}");
+    let at = |id: &str| {
+        plan.find(&format!("{id} "))
+            .unwrap_or_else(|| panic!("{id} in plan"))
+    };
+    assert!(
+        at("E-2") < at("E-10"),
+        "plan lists E-2 before E-10:\n{plan}"
+    );
 }
 
 #[test]
