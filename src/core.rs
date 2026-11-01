@@ -295,6 +295,45 @@ pub fn task_number(id: &str, prefix: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// Orders task ids the way people read them: runs of digits compare as numbers,
+/// so `E-2` sorts before `E-10`. Ties (`E-02` and `E-2`) fall back to the text,
+/// keeping the order total.
+pub fn cmp_task_ids(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    let (mut i, mut j) = (0, 0);
+    while i < x.len() && j < y.len() {
+        if x[i].is_ascii_digit() && y[j].is_ascii_digit() {
+            let run = |s: &[u8], k: usize| {
+                let end = s[k..]
+                    .iter()
+                    .position(|c| !c.is_ascii_digit())
+                    .map_or(s.len(), |n| k + n);
+                (
+                    end,
+                    k + s[k..end].iter().take_while(|&&c| c == b'0').count(),
+                )
+            };
+            let ((ei, si), (ej, sj)) = (run(x, i), run(y, j));
+            // Without leading zeros, the longer run is the bigger number.
+            let order = (ei - si)
+                .cmp(&(ej - sj))
+                .then_with(|| x[si..ei].cmp(&y[sj..ej]));
+            if order != Ordering::Equal {
+                return order;
+            }
+            (i, j) = (ei, ej);
+        } else {
+            if x[i] != y[j] {
+                return x[i].cmp(&y[j]);
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    (x.len() - i).cmp(&(y.len() - j)).then_with(|| a.cmp(b))
+}
+
 /// Ids of the tasks that list `id` as a prerequisite (the inverse of `blocked_by`).
 pub fn dependents<'a>(tasks: &'a [Task], id: &str) -> Vec<&'a str> {
     tasks

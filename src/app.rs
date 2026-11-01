@@ -4,7 +4,9 @@ use crate::activity::{self, ActivityLog, Channel, Entry, Filter as ActivityFilte
 use crate::cli::{
     Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec, TrackCommand,
 };
-use crate::core::{Priority, Question, Task, TaskState, TaskStatus, Track, dependents};
+use crate::core::{
+    Priority, Question, Task, TaskState, TaskStatus, Track, cmp_task_ids, dependents,
+};
 use crate::hub::{Binding, Hub, MARKER_FILE, Project, binding_key};
 use crate::overlap::{self, Overlap};
 use crate::problems::{self, Problem};
@@ -1009,7 +1011,7 @@ pub(crate) fn next_ready<'a>(
             .cmp(&track_priority(a.task))
             .then(b.task.priority.cmp(&a.task.priority))
             .then(a.task.created_at.cmp(&b.task.created_at))
-            .then(a.task.id.cmp(&b.task.id))
+            .then_with(|| cmp_task_ids(&a.task.id, &b.task.id))
     });
     let analysis = overlap::analyze(tasks);
     for view in &mut ready {

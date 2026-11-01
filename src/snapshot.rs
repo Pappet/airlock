@@ -5,7 +5,9 @@
 //! changes the exported file.
 
 use crate::config::{ProjectConfig, RoleConfig};
-use crate::core::{GraphError, Priority, Question, Task, TaskState, Track, check_dependencies};
+use crate::core::{
+    GraphError, Priority, Question, Task, TaskState, Track, check_dependencies, cmp_task_ids,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -111,7 +113,7 @@ impl Snapshot {
         questions: &[Question],
     ) -> Self {
         let mut tasks: Vec<TaskRecord> = tasks.iter().map(TaskRecord::from).collect();
-        tasks.sort_by(|a, b| a.id.cmp(&b.id));
+        tasks.sort_by(|a, b| cmp_task_ids(&a.id, &b.id));
         let mut tracks: Vec<TrackRecord> = tracks.iter().map(TrackRecord::from).collect();
         tracks.sort_by(|a, b| a.name.cmp(&b.name));
         let mut questions = questions.to_vec();

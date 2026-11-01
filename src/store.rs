@@ -8,7 +8,7 @@
 
 use crate::core::{
     AnswerVersion, Priority, Question, QuestionStatus, Task, TaskState, TaskStatus, Track,
-    check_dependencies, check_task_prefix, check_track_name, dependents, task_number,
+    check_dependencies, check_task_prefix, check_track_name, cmp_task_ids, dependents, task_number,
 };
 use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail, ensure};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
 const MIGRATIONS: &[&str] = &[
@@ -261,7 +261,7 @@ impl Store {
         let mut conn =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
-        let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+        let mode = enable_wal(&conn)?;
         ensure!(
             mode.eq_ignore_ascii_case("wal"),
             "{} does not support WAL mode",
@@ -314,8 +314,10 @@ impl Store {
             .prepare(&format!("{SELECT_QUESTIONS} ORDER BY id DESC"))?;
         let rows = stmt.query_map([], question_from_row)?;
         let mut questions: Vec<Question> = rows.collect::<rusqlite::Result<_>>()?;
+        // One query for every history instead of one per question.
+        let mut history = load_all_history(&self.conn)?;
         for question in &mut questions {
-            question.history = load_history(&self.conn, question.id)?;
+            question.history = history.remove(&question.id).unwrap_or_default();
         }
         Ok(questions)
     }
@@ -1025,6 +1027,22 @@ fn next_task_number(conn: &Connection, prefix: &str) -> Result<u64> {
     Ok(highest + 1)
 }
 
+/// Switches to WAL. On a fresh file SQLite answers a concurrent switch with
+/// SQLITE_BUSY without consulting the busy timeout, so retry for a while.
+pub(crate) fn enable_wal(conn: &Connection) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0)) {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => return Ok(other?),
+        }
+    }
+}
+
 fn task_exists(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn
         .query_row("SELECT 1 FROM tasks WHERE id = ?1", [id], |_| Ok(()))
@@ -1033,9 +1051,11 @@ fn task_exists(conn: &Connection, id: &str) -> Result<bool> {
 }
 
 fn load_tasks(conn: &Connection) -> Result<Vec<Task>> {
-    let mut stmt = conn.prepare(&format!("{SELECT_TASKS} ORDER BY id"))?;
+    let mut stmt = conn.prepare(SELECT_TASKS)?;
     let rows = stmt.query_map([], task_from_row)?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut tasks: Vec<Task> = rows.collect::<rusqlite::Result<_>>()?;
+    tasks.sort_by(|a, b| cmp_task_ids(&a.id, &b.id));
+    Ok(tasks)
 }
 
 fn load_task(conn: &Connection, id: &str) -> Result<Task> {
@@ -1099,15 +1119,35 @@ fn load_history(conn: &Connection, id: u64) -> Result<Vec<AnswerVersion>> {
         "SELECT answer, answered_by, answered_at, spec_file FROM answer_history
           WHERE question_id = ?1 ORDER BY seq",
     )?;
-    let rows = stmt.query_map([sql_id(id)?], |row| {
-        Ok(AnswerVersion {
-            answer: row.get(0)?,
-            answered_by: row.get(1)?,
-            answered_at: row.get(2)?,
-            spec_file: row.get(3)?,
-        })
-    })?;
+    let rows = stmt.query_map([sql_id(id)?], answer_version_from_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Every question's replaced answers, oldest first, keyed by question id.
+fn load_all_history(conn: &Connection) -> Result<HashMap<u64, Vec<AnswerVersion>>> {
+    let mut stmt = conn.prepare(
+        "SELECT answer, answered_by, answered_at, spec_file, question_id FROM answer_history
+          ORDER BY question_id, seq",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut history: HashMap<u64, Vec<AnswerVersion>> = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(4)?;
+        history
+            .entry(u64::try_from(id)?)
+            .or_default()
+            .push(answer_version_from_row(row)?);
+    }
+    Ok(history)
+}
+
+fn answer_version_from_row(row: &Row) -> rusqlite::Result<AnswerVersion> {
+    Ok(AnswerVersion {
+        answer: row.get(0)?,
+        answered_by: row.get(1)?,
+        answered_at: row.get(2)?,
+        spec_file: row.get(3)?,
+    })
 }
 
 fn find<'a>(tasks: &'a [Task], id: &str) -> Result<&'a Task> {

@@ -20,6 +20,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: dashboard script parses
+        run: node --check src/web/app.js
 
   test:
     name: test (${{ matrix.os }})
