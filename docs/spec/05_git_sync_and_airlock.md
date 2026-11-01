@@ -87,7 +87,7 @@ The snapshot (`src/snapshot.rs`) contains semantic project state only. **Session
 | `do`, `verify` | string | |
 | `notes` | string \| null | |
 | `created_at` | integer | unix seconds |
-| `claimed_by`, `lease_expires_at`, `updated_at` | — | not exported: session state / write noise |
+| `claimed_by`, `lease_expires_at`, `progress`, `updated_at` | — | not exported: session state / write noise |
 
 **Track records** (`tracks`, sorted by name): `name`, `priority` (as for tasks), `description`, `created_at`. `updated_at` is not exported.
 

@@ -67,19 +67,19 @@ The session briefing (Spec 06 §3): role, rules, reading list, claimed work, nex
 ### 3.1 `task_next`
 Returns the next ready task for a role (Spec 01 §2.1 selection order: track priority, task priority, age) without claiming it.
 - **Parameters:** `role` (string; required unless bound)
-- **Returns:** `{ task: { id, title, track?, priority, blocked_by, read, touch, do, verify, notes?, overlaps? } }`, or `{ task: null }` if none is ready. `track` appears when the task has one and `priority` is one of `critical`, `high`, `normal`, `low`. `notes` appears when present, e.g. review feedback after a rejection. `overlaps` (`[{ id, occupied, paths }]`) appears when no ready task is free of overlap with running work and this one is handed out anyway. Kept compact — the work package is meant to replace reading the whole plan.
+- **Returns:** `{ task: { id, title, track?, priority, blocked_by, read, touch, do, verify, notes?, progress?, overlaps? } }`, or `{ task: null }` if none is ready. `track` appears when the task has one and `priority` is one of `critical`, `high`, `normal`, `low`. `notes` appears when present, e.g. review feedback after a rejection; `progress` when an earlier holder left a progress note. `overlaps` (`[{ id, occupied, paths }]`) appears when no ready task is free of overlap with running work and this one is handed out anyway. Kept compact — the work package is meant to replace reading the whole plan.
 
 ### 3.2 `task_get`
 - **Parameters:** `task_id` (string)
-- **Returns:** the full task including effective `status`, dependents, and lease info.
+- **Returns:** the full task including effective `status`, dependents, and lease info, and `progress` when the task has a progress note (Spec 01 §2.4).
 
 ### 3.3 `task_claim`
 - **Parameters:** `task_id` (string), `lease_minutes` (integer, optional; default from project config)
 - **Returns:** `{ task_id, lease_expires_at }`, plus `overlaps` and `question_id` (or `question_error`) when the task shares files with running work. The claim is not refused; the question for the lead is the session's own, so clean-room sessions see its answer in `question_list` and the briefing (Spec 01 §2.1).
 
 ### 3.4 `task_heartbeat`
-- **Parameters:** `task_id` (string), `lease_minutes` (integer, optional)
-- **Returns:** `{ task_id, lease_expires_at }`
+- **Parameters:** `task_id` (string), `lease_minutes` (integer, optional), `notes` (string, optional): the running note for the session's successor — done so far, remaining, next step. It replaces the previous note; an empty string removes it; without `notes` the note stays (Spec 01 §2.4). There is no separate tool for it, so the clean-room tool set is unchanged.
+- **Returns:** `{ task_id, lease_expires_at, progress }` (`progress` is `null` when the task has no note)
 
 ### 3.5 `task_release`
 - **Parameters:** `task_id` (string)

@@ -26,6 +26,9 @@ pub struct WorkPackage {
     /// Review feedback or earlier notes, if any
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// The running note of the session that holds or last held the lease
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<String>,
     /// Shared files with occupying tasks, when no task free of overlap is ready
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub overlaps: Vec<Overlap>,
@@ -44,6 +47,7 @@ impl From<&Task> for WorkPackage {
             r#do: task.r#do.clone(),
             verify: task.verify.clone(),
             notes: task.notes.clone(),
+            progress: task.progress.clone(),
             overlaps: Vec::new(),
         }
     }
@@ -233,17 +237,22 @@ impl Briefing {
                     .lease_minutes_left
                     .map(|m| format!(" (lease: {m} min left)"))
                     .unwrap_or_default();
-                package(&mut out, &claimed.package, &lease);
+                package(&mut out, &claimed.package, &lease, "Progress");
             }
             let _ = writeln!(
                 out,
-                "\nContinue this work. Extend the lease with {} during long work; finish with {} once *Verify* passes.",
+                "\nContinue this work{}. Extend the lease with {} during long work; finish with {} once *Verify* passes.",
+                if self.claimed.iter().any(|c| c.package.progress.is_some()) {
+                    " from where the progress note says it stopped"
+                } else {
+                    ""
+                },
                 cmd("task_heartbeat", "airlock task heartbeat <id>"),
                 cmd("task_complete", "airlock task done <id> --notes \"…\"")
             );
         } else if let Some(next) = &self.next {
             out.push_str("\n## Next work package\n");
-            package(&mut out, next, "");
+            package(&mut out, next, "", "Earlier progress");
             if !next.overlaps.is_empty() {
                 let _ = writeln!(
                     out,
@@ -318,6 +327,14 @@ impl Briefing {
         );
         let _ = writeln!(
             out,
+            "- Before your context fills, record where you are with {}; your successor reads it in this briefing.",
+            cmd(
+                "task_heartbeat` with `notes",
+                "airlock task heartbeat <id> --notes \"done …; next …\""
+            )
+        );
+        let _ = writeln!(
+            out,
             "- If a spec is ambiguous or incomplete, ask with {} instead of guessing.{}",
             cmd("question_ask", "airlock question ask \"…\" --topic <spec>"),
             if self.clean_room {
@@ -346,7 +363,9 @@ fn question_item(out: &mut String, q: &Question, mark: &str) {
     );
 }
 
-fn package(out: &mut String, p: &WorkPackage, suffix: &str) {
+/// `progress_label` names the progress note: the holder's own ("Progress") or one
+/// left by an earlier holder ("Earlier progress").
+fn package(out: &mut String, p: &WorkPackage, suffix: &str, progress_label: &str) {
     let list = |items: &[String]| {
         if items.is_empty() {
             "—".to_string()
@@ -387,6 +406,13 @@ fn package(out: &mut String, p: &WorkPackage, suffix: &str) {
             out,
             "- **Notes:** {}",
             notes.trim_end().replace('\n', "\n  ")
+        );
+    }
+    if let Some(progress) = &p.progress {
+        let _ = writeln!(
+            out,
+            "- **{progress_label}:** {}",
+            progress.trim_end().replace('\n', "\n  ")
         );
     }
 }

@@ -286,7 +286,12 @@ fn cli_log_holds_no_free_text() {
         "SECRET-RULES",
     ]);
     env.ok(&["track", "add", "t", "--description", "SECRET-TRACK"]);
+    env.ok(&["task", "claim", "E-1"]);
+    env.ok(&["task", "heartbeat", "E-1", "--notes", "SECRET-PROGRESS"]);
     assert!(env.entries().iter().all(|e| e.ok));
+    let heartbeat = env.entries().pop().unwrap();
+    assert_eq!(heartbeat.command, "task heartbeat");
+    assert_eq!(heartbeat.changed, ["notes"]);
 
     let mut scanned = Vec::new();
     for file in std::fs::read_dir(env.project_dir()).unwrap() {

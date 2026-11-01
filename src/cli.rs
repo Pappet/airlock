@@ -192,6 +192,10 @@ pub enum TaskCommand {
         id: String,
         #[arg(long)]
         lease: Option<u32>,
+        /// Running note for your successor: done so far, remaining, next step.
+        /// Replaces the previous note; "" removes it
+        #[arg(long)]
+        notes: Option<String>,
     },
     /// Give a claimed task back (state returns to open)
     Release {

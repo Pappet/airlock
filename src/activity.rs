@@ -775,8 +775,13 @@ fn summarize_task(sub: &TaskCommand, changed: &mut Changed) -> Option<String> {
             changed.flag("force", spec.force);
             Some(spec.id.clone())
         }
-        TaskCommand::Claim { id, lease } | TaskCommand::Heartbeat { id, lease } => {
+        TaskCommand::Claim { id, lease } => {
             changed.opt("lease_minutes", lease);
+            Some(id.clone())
+        }
+        TaskCommand::Heartbeat { id, lease, notes } => {
+            changed.opt("lease_minutes", lease);
+            changed.flag("notes", notes.is_some());
             Some(id.clone())
         }
         TaskCommand::Release { id, force } => {

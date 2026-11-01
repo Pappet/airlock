@@ -208,6 +208,12 @@ pub struct Task {
     pub claimed_by: Option<String>,
     /// Unix timestamp (seconds) at which the lease expires
     pub lease_expires_at: Option<i64>,
+    /// The lease holder's running note for its successor (done so far, remaining,
+    /// next step). Session state like `claimed_by`: never exported, kept across
+    /// release and lease expiry, cleared when the task leaves `in_progress` for
+    /// `done` or `in_review`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<String>,
     /// Unix timestamp (seconds) of creation
     pub created_at: i64,
     /// Unix timestamp (seconds) of the last modification

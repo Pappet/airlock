@@ -304,6 +304,43 @@ fn unbound_session_runs_the_full_workflow() {
 }
 
 #[test]
+fn heartbeat_notes_become_progress_until_completion() {
+    let env = Env::new();
+    let s = env.session(
+        &["--session", "lead-1"],
+        &[
+            call(1, "task_claim", json!({ "task_id": "S-1" })),
+            call(
+                2,
+                "task_heartbeat",
+                json!({ "task_id": "S-1", "notes": "outline done; next: §3" }),
+            ),
+            call(3, "task_get", json!({ "task_id": "S-1" })),
+            call(4, "task_heartbeat", json!({ "task_id": "S-1" })),
+            call(5, "session_start", json!({})),
+            call(
+                6,
+                "task_complete",
+                json!({ "task_id": "S-1", "notes": "spec written" }),
+            ),
+            call(7, "task_get", json!({ "task_id": "S-1" })),
+            call(8, "task_heartbeat", json!({ "task_id": "S-1", "notes": 3 })),
+        ],
+    );
+    assert_eq!(s.ok(2)["progress"], "outline done; next: §3");
+    assert_eq!(s.ok(3)["progress"], "outline done; next: §3");
+    assert_eq!(
+        s.ok(4)["progress"],
+        "outline done; next: §3",
+        "kept without notes"
+    );
+    assert_eq!(s.ok(5)["claimed"][0]["progress"], "outline done; next: §3");
+    assert_eq!(s.ok(7)["notes"], "spec written");
+    assert!(s.ok(7).get("progress").is_none(), "completion clears it");
+    assert!(s.tool_error(8).contains("notes"), "{}", s.tool_error(8));
+}
+
+#[test]
 fn task_update_edits_content_and_needs_force_for_started_tasks() {
     let env = Env::new();
     let s = env.session(

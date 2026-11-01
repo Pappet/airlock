@@ -495,9 +495,20 @@ fn sync_is_byte_stable_and_ignores_session_state() {
     assert!(read(&project.join("docs/PLAN.md")).contains("### E-1"));
 
     env.ok(&project, &["task", "claim", "L-1"]);
+    env.ok(
+        &project,
+        &[
+            "task",
+            "heartbeat",
+            "L-1",
+            "--notes",
+            "half done; next: docs",
+        ],
+    );
     let again = env.json(&project, &["sync"]);
     assert_eq!(again["written"], serde_json::json!([]));
     assert_eq!(read(&project.join("docs/.airlock-state.json")), state);
+    assert!(!read(&project.join("docs/PLAN.md")).contains("half done"));
 
     env.ok(&project, &["task", "done", "L-1"]);
     let changed = env.json(&project, &["sync"]);

@@ -64,21 +64,132 @@ fn leases_expire_lazily_and_can_be_renewed() {
     store.add_task(new_task(&[]), 0).unwrap();
     store.claim("T-1", "s1", 10 * MIN, 0).unwrap();
 
-    store.heartbeat("T-1", "s1", 10 * MIN, 5 * MIN).unwrap();
+    store
+        .heartbeat("T-1", "s1", 10 * MIN, None, 5 * MIN)
+        .unwrap();
     assert_eq!(
         store.task("T-1", 14 * MIN).unwrap().state,
         TaskState::InProgress
     );
-    assert!(err(store.heartbeat("T-1", "s2", 10 * MIN, 6 * MIN)).contains("claimed by s1"));
+    assert!(err(store.heartbeat("T-1", "s2", 10 * MIN, None, 6 * MIN)).contains("claimed by s1"));
 
     // Expired at 15 min: reads show it released, before any write happens.
     let expired = store.task("T-1", 15 * MIN).unwrap();
     assert_eq!(expired.state, TaskState::Open);
     assert_eq!(expired.claimed_by, None);
 
-    assert!(err(store.heartbeat("T-1", "s1", 10 * MIN, 16 * MIN)).contains("not claimed"));
+    assert!(err(store.heartbeat("T-1", "s1", 10 * MIN, None, 16 * MIN)).contains("not claimed"));
     let reclaimed = store.claim("T-1", "s2", 10 * MIN, 16 * MIN).unwrap();
     assert_eq!(reclaimed.claimed_by.as_deref(), Some("s2"));
+}
+
+#[test]
+fn heartbeat_records_progress_and_complete_clears_it() {
+    let (_dir, mut store) = open();
+    store.add_task(new_task(&[]), 0).unwrap();
+    store.claim("T-1", "s1", 10 * MIN, 0).unwrap();
+    assert_eq!(store.task("T-1", 0).unwrap().progress, None);
+
+    let t = store
+        .heartbeat("T-1", "s1", 10 * MIN, Some("parser done; next: tests"), 1)
+        .unwrap();
+    assert_eq!(t.progress.as_deref(), Some("parser done; next: tests"));
+    assert_eq!(t.notes, None, "heartbeats never touch notes");
+    let t = store.heartbeat("T-1", "s1", 10 * MIN, None, 2).unwrap();
+    assert_eq!(
+        t.progress.as_deref(),
+        Some("parser done; next: tests"),
+        "a heartbeat without notes keeps the progress"
+    );
+    let t = store
+        .heartbeat("T-1", "s1", 10 * MIN, Some("tests half done"), 3)
+        .unwrap();
+    assert_eq!(
+        t.progress.as_deref(),
+        Some("tests half done"),
+        "replaced, not appended"
+    );
+
+    let done = store
+        .complete("T-1", "s1", Some("all green"), false, false, 4)
+        .unwrap();
+    assert_eq!(done.task.progress, None);
+    assert_eq!(done.task.notes.as_deref(), Some("all green"));
+
+    // Submitting for review clears it as well; an empty note removes it.
+    store.add_task(new_task(&[]), 5).unwrap();
+    store.claim("T-2", "s1", 10 * MIN, 5).unwrap();
+    store
+        .heartbeat("T-2", "s1", 10 * MIN, Some("x"), 6)
+        .unwrap();
+    let t = store.heartbeat("T-2", "s1", 10 * MIN, Some(""), 7).unwrap();
+    assert_eq!(t.progress, None);
+    store
+        .heartbeat("T-2", "s1", 10 * MIN, Some("y"), 8)
+        .unwrap();
+    let review = store.complete("T-2", "s1", None, true, false, 9).unwrap();
+    assert_eq!(review.task.progress, None);
+}
+
+#[test]
+fn progress_survives_release_and_expiry() {
+    let (_dir, mut store) = open();
+    store.add_task(new_task(&[]), 0).unwrap();
+    store.claim("T-1", "s1", 10 * MIN, 0).unwrap();
+    store
+        .heartbeat("T-1", "s1", 10 * MIN, Some("step 1 of 3"), 1)
+        .unwrap();
+    let released = store.release("T-1", "s1", false, 2).unwrap();
+    assert_eq!(released.state, TaskState::Open);
+    assert_eq!(released.progress.as_deref(), Some("step 1 of 3"));
+
+    let t = store.claim("T-1", "s2", 10 * MIN, 3).unwrap();
+    assert_eq!(
+        t.progress.as_deref(),
+        Some("step 1 of 3"),
+        "the next holder reads it"
+    );
+    store
+        .heartbeat("T-1", "s2", 10 * MIN, Some("step 2 of 3"), 4)
+        .unwrap();
+
+    // The lease runs out at 14 min; the next write releases it and keeps the note.
+    let t = store.claim("T-1", "s3", 10 * MIN, 20 * MIN).unwrap();
+    assert_eq!(t.claimed_by.as_deref(), Some("s3"));
+    assert_eq!(t.progress.as_deref(), Some("step 2 of 3"));
+    assert_eq!(
+        store.task("T-1", 20 * MIN).unwrap().progress.as_deref(),
+        Some("step 2 of 3")
+    );
+}
+
+#[test]
+fn progress_is_cleared_by_any_writer_finishing_the_task() {
+    // A process from before schema 6 finishes tasks without knowing `progress`;
+    // the trigger clears it anyway.
+    let (dir, mut store) = open();
+    store.add_task(new_task(&[]), 0).unwrap();
+    store.claim("T-1", "s1", 10 * MIN, 0).unwrap();
+    store
+        .heartbeat("T-1", "s1", 10 * MIN, Some("x"), 1)
+        .unwrap();
+    let raw = rusqlite::Connection::open(dir.path().join("airlock.db")).unwrap();
+    raw.execute(
+        "UPDATE tasks SET state = 'done', claimed_by = NULL, lease_expires_at = NULL WHERE id = 'T-1'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(store.task("T-1", 2).unwrap().progress, None);
+}
+
+#[test]
+fn only_the_holder_writes_progress() {
+    let (_dir, mut store) = open();
+    store.add_task(new_task(&[]), 0).unwrap();
+    assert!(err(store.heartbeat("T-1", "s1", 10 * MIN, Some("x"), 1)).contains("not claimed"));
+    store.claim("T-1", "s1", 10 * MIN, 1).unwrap();
+    assert!(err(store.heartbeat("T-1", "s2", 10 * MIN, Some("x"), 2)).contains("claimed by s1"));
+    assert_eq!(store.task("T-1", 2).unwrap().progress, None);
 }
 
 #[test]

@@ -970,7 +970,10 @@ function leasesView() {
           h("span", { class: "label" }, "Lease"),
           h("span", { class: `minutes${expired ? " expired" : minutes !== null && minutes <= 5 ? " low" : ""}` },
             minutes === null ? "—" : expired ? "EXPIRED" : `${minutes} min`)),
-        release));
+        release),
+      task.progress ? h("div", { class: "field" },
+        h("span", { class: "label" }, "Progress"),
+        h("pre", {}, task.progress)) : "");
   }));
 }
 
@@ -1034,6 +1037,7 @@ function renderDrawer() {
     h("section", {}, h("span", { class: "label" }, "Do"), h("pre", {}, task.do)),
     h("section", {}, h("span", { class: "label" }, "Verify · never executed by Airlock"), h("pre", {}, task.verify)),
     h("section", {}, h("span", { class: "label" }, "Notes"), task.notes ? h("pre", {}, task.notes) : h("div", { class: "muted" }, "—")),
+    task.progress ? h("section", {}, h("span", { class: "label" }, task.status === "in_progress" ? "Progress" : "Earlier progress"), h("pre", {}, task.progress)) : "",
     h("section", {}, h("span", { class: "label" }, "Blocked by"), idLinks(task.blocked_by)),
     h("section", {}, h("span", { class: "label" }, "Unblocks"), idLinks(dependents)),
   );

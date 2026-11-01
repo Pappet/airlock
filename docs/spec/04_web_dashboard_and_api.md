@@ -39,7 +39,7 @@ Lists tasks in `In Review` with their notes; **Approve** and **Reject** (feedbac
 Lists questions by status. The project lead can answer, revise, and resolve them (optionally recording the spec file that codifies the answer). Revising an answered question is a correction (Spec 01 §2.2): a question that was corrected carries a "corrected" chip, whose tooltip names who corrected it and how many earlier answers are kept. Resolved questions are shown read only; correcting one is done over MCP, CLI, or `POST /api/questions/{id}/answer`, which accept it.
 
 ### 3.4 Live Leases
-Shows active leases with session id and remaining time; expired leases are marked as such. A lead can force-release a lease.
+Shows active leases with session id and remaining time; expired leases are marked as such, and a lease whose task has a progress note (Spec 01 §2.4) shows it. A lead can force-release a lease. The task details show the progress note too ("Progress" while the task is claimed, "Earlier progress" after a release); there is no REST endpoint that writes it, since it is the lease holder's.
 
 ### 3.5 Overlap Rules
 Two open tasks (effective status other than `done`) **overlap** when their `touch` lists share a path. Paths are compared after normalization: surrounding whitespace is trimmed, `\` becomes `/`, repeated `/` collapse, and leading `./` are removed (`./src/a.rs` equals `src/a.rs`; `src/` does not equal `src/a.rs`). Only identical paths count; a shared directory does not.
