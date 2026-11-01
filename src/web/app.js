@@ -14,6 +14,7 @@ const STATUS_COLUMNS = [
 ];
 const TABS = [
   ["tracks", "Tracks"],
+  ["activity", "Activity"],
   ["board", "Board"],
   ["stages", "Stages"],
   ["files", "Files"],
@@ -46,6 +47,10 @@ const state = {
   detail: null,
   questionFilter: "open",
   live: false,
+  // Activity tab: `key` is the entries path last requested; `entries` stays
+  // null until the first answer. `session`, `filter` and `problem` are the
+  // logbook filters (a problem key overrides the others).
+  activity: { key: null, entries: null, problems: [], sessions: [], session: null, filter: "all", problem: null },
 };
 
 // ─── Token & API ─────────────────────────────────────────────────────
@@ -112,6 +117,27 @@ function scheduleReload() {
   reloadTimer = setTimeout(() => load().catch(showError), 150);
 }
 
+let activityTimer = null;
+function scheduleActivityReload() {
+  clearTimeout(activityTimer);
+  activityTimer = setTimeout(() => { if (state.tab === "activity") loadActivity().catch(showError); }, 150);
+}
+
+// Entries for the current filters plus all problems and sessions; a response
+// to a superseded request is dropped.
+async function loadActivity() {
+  const path = activityPath();
+  state.activity.key = path;
+  const [entries, problems, sessions] = await Promise.all([
+    api("GET", path),
+    api("GET", "/api/activity/problems"),
+    api("GET", "/api/activity/sessions"),
+  ]);
+  if (state.activity.key !== path) return;
+  Object.assign(state.activity, { entries, problems, sessions });
+  if (state.tab === "activity") render();
+}
+
 // SSE over fetch: EventSource cannot send the Authorization header.
 async function listen() {
   for (;;) {
@@ -120,6 +146,7 @@ async function listen() {
       if (res.status === 401) return tokenRejected();
       if (!res.ok) throw new Error(`events: ${res.status}`);
       setLive(true);
+      state.activity.key = null; // refetch the Activity tab on (re)connect
       await load();
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -132,7 +159,14 @@ async function listen() {
         while ((end = buffer.indexOf("\n\n")) >= 0) {
           const block = buffer.slice(0, end);
           buffer = buffer.slice(end + 2);
-          if (/^event: /m.test(block)) scheduleReload();
+          const name = block.match(/^event: (.*)$/m)?.[1];
+          // A logged call changes only the Activity tab; its own task or
+          // question events follow separately.
+          if (name === "activity") scheduleActivityReload();
+          else if (name) {
+            scheduleReload();
+            if (name === "resync") scheduleActivityReload();
+          }
         }
       }
     } catch (_) { /* reconnect below */ }
@@ -369,6 +403,293 @@ function tracksView() {
         !running.length && !flagged.length ? h("div", { class: "muted" }, own.length ? "idle" : "no tasks") : null,
         lastDone ? h("div", { class: "muted track-last" }, `last done: ${lastDone.id} ${lastDone.title}`) : null));
   }));
+}
+
+// ─── Activity helpers (pure; times are unix seconds, shown in local time) ───
+const CHANNELS = ["mcp", "cli", "rest"];
+const pad2 = (n) => String(n).padStart(2, "0");
+
+function localDay(at) {
+  const d = new Date(at * 1000);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function clock(at) {
+  const d = new Date(at * 1000);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+// "Today", "Yesterday", otherwise the local date.
+function dayLabel(at, now) {
+  const day = localDay(at);
+  if (day === localDay(now)) return "Today";
+  const d = new Date(now * 1000);
+  const yesterday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+  return day === localDay(yesterday.getTime() / 1000) ? "Yesterday" : day;
+}
+
+// Day and clock time of a moment, short for today.
+function when(at, now) {
+  const label = dayLabel(at, now);
+  return label === "Today" ? clock(at) : `${label === "Yesterday" ? "yesterday" : label} ${clock(at)}`;
+}
+
+function ago(at, now) {
+  const minutes = Math.max(0, Math.floor((now - at) / 60));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)} h ago`;
+  return `${Math.floor(minutes / 1440)} d ago`;
+}
+
+// Entries, in the order given, as runs of one local day: [{ label, entries }].
+function groupByDay(entries, now) {
+  const groups = [];
+  for (const entry of entries) {
+    const label = dayLabel(entry.at, now);
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.entries.push(entry);
+    else groups.push({ label, entries: [entry] });
+  }
+  return groups;
+}
+
+// Session bar chips: [{ session, role, calls: [[channel, n]] (non-zero only), ago }].
+function sessionChips(sessions, now) {
+  return sessions.map((s) => ({
+    session: s.session,
+    role: s.role,
+    calls: CHANNELS.filter((c) => s.calls[c] > 0).map((c) => [c, s.calls[c]]),
+    ago: ago(s.last_at, now),
+  }));
+}
+
+// Blocked tasks grouped by their unfinished prerequisites, in task order:
+// [{ blocked: [id], waitingOn: [{ id, role, holder }] }]. `role` limits the
+// blocked tasks; prerequisites of every role count. An unknown prerequisite
+// counts as unfinished with role null.
+function blockers(tasks, role = null) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const groups = new Map();
+  for (const task of tasks) {
+    if (task.status !== "blocked" || (role && task.role !== role)) continue;
+    const open = task.blocked_by.filter((id) => byId.get(id)?.status !== "done").sort();
+    if (!open.length) continue;
+    const key = open.join(" ");
+    if (!groups.has(key)) {
+      groups.set(key, {
+        blocked: [],
+        waitingOn: open.map((id) => ({ id, role: byId.get(id)?.role ?? null, holder: byId.get(id)?.claimed_by ?? null })),
+      });
+    }
+    groups.get(key).blocked.push(task.id);
+  }
+  return [...groups.values()];
+}
+
+// ─── Activity view ───────────────────────────────────────────────────
+const SEVERE = new Set(["failure", "error_burst"]);
+// The server's default length of `GET /api/activity`.
+const ACTIVITY_LIMIT = 500;
+const LOG_FILTERS = [
+  ["all", "all"],
+  ["writes", "writes only"],
+  ["problems", "failures & problems"],
+  ["mcp", "MCP"],
+  ["cli", "CLI"],
+  ["rest", "REST"],
+];
+// With a role selected, rows without a role or with another one are hidden.
+const roleVisible = (item) => !state.role || item.role === state.role;
+// Problems of one kind never share entries, so the oldest entry names one.
+const problemKey = (p) => `${p.kind}:${p.entry_ids[0]}`;
+
+function selectedProblem() {
+  const key = state.activity.problem;
+  return key ? state.activity.problems.find((p) => p.entry_ids.length && problemKey(p) === key && roleVisible(p)) || null : null;
+}
+
+// A selected problem loads its own entries; otherwise session, role, channel
+// and writes filter on the server.
+function activityPath() {
+  const a = state.activity;
+  const q = new URLSearchParams();
+  const problem = selectedProblem();
+  if (problem) {
+    q.set("since", String(problem.first_at));
+    if (problem.session) q.set("session", problem.session);
+    q.set("limit", "5000");
+  } else {
+    if (a.session) q.set("session", a.session);
+    if (state.role) q.set("role", state.role);
+    if (CHANNELS.includes(a.filter)) q.set("channel", a.filter);
+    if (a.filter === "writes") q.set("writes", "true");
+  }
+  return `/api/activity?${q}`;
+}
+
+function channelBadge(channel) {
+  return h("span", { class: `ch ch--${channel}` }, channel.toUpperCase());
+}
+
+function problemText(p) {
+  const who = p.session && !p.message.includes(p.session) ? `${p.session} · ` : "";
+  if (p.kind !== "failure") return `${who}${p.message}`;
+  return `${who}${p.command || "call"}${p.target ? ` ${p.target}` : ""} → ${p.message}`;
+}
+
+function problemRow(p, selected, t) {
+  const severe = SEVERE.has(p.kind);
+  const content = [
+    h("span", { class: `act-icon ${severe ? "bad" : "warn"}`, "aria-hidden": "true" }, severe ? "✖" : "⚠"),
+    " ",
+    problemText(p),
+    h("span", { class: "muted" }, p.count > 1 ? ` · ${p.count}×` : "", ` · ${when(p.last_at, t)}`),
+  ];
+  if (!p.entry_ids.length) return h("div", { class: "act-problem" }, content);
+  const key = problemKey(p);
+  return h("button", {
+    type: "button",
+    class: "act-problem",
+    "aria-pressed": String(selected === p),
+    title: "Show this problem's calls in the logbook",
+    onclick: () => {
+      state.activity.problem = state.activity.problem === key ? null : key;
+      render();
+    },
+  }, content);
+}
+
+function problemsPanel(problems, selected, t) {
+  return h("section", { class: `act-panel${problems.length ? " is-bad" : ""}` },
+    h("div", { class: "label" }, problems.length ? `Problems · ${problems.length}` : "Problems"),
+    problems.length
+      ? problems.map((p) => problemRow(p, selected, t))
+      : h("div", { class: "muted" }, "No problems in the last 30 days."));
+}
+
+function waitingOn(list) {
+  const byHolder = new Map();
+  for (const w of list) {
+    const key = JSON.stringify([w.role, w.holder]);
+    byHolder.set(key, [...(byHolder.get(key) || []), w.id]);
+  }
+  return [...byHolder].map(([key, ids], i) => {
+    const [role, holder] = JSON.parse(key);
+    return [
+      i ? "; " : "",
+      ids.join(", "),
+      h("span", { class: "muted" }, ` · ${role ?? "unknown task"}, `),
+      holder ? h("span", { class: "act-session" }, holder) : h("span", { class: "act-nobody" }, "nobody on it"),
+    ];
+  });
+}
+
+function statePanel() {
+  const claimed = state.tasks
+    .filter((t) => t.status === "in_progress" && t.claimed_by && visible(t))
+    .sort((a, b) => (a.claimed_by < b.claimed_by ? -1 : a.claimed_by > b.claimed_by ? 1 : 0));
+  const blocked = blockers(state.tasks, state.role);
+  const idLink = (id) => h("button", { type: "button", class: "link", onclick: () => openDetail(id) }, id);
+  return h("section", { class: "act-panel" },
+    h("div", { class: "label" }, "State"),
+    claimed.length
+      ? claimed.map((t) => {
+          const minutes = minutesLeft(t);
+          const lease = minutes === null ? "no lease" : minutes === 0 ? "lease expired" : `lease ${minutes} min`;
+          return h("div", {}, h("span", { class: "act-session" }, t.claimed_by), " ", idLink(t.id),
+            h("span", { class: "muted" }, ` ${t.track || "no track"} · ${lease}`));
+        })
+      : h("div", { class: "muted" }, "Nothing claimed."),
+    h("div", { class: "label" }, "Blockers"),
+    blocked.length
+      ? blocked.map((g) => h("div", {},
+          g.blocked.map((id, i) => [i ? ", " : "", idLink(id)]),
+          h("span", { class: "muted" }, " ← "),
+          waitingOn(g.waitingOn)))
+      : h("div", { class: "muted" }, "Nothing blocked."));
+}
+
+function sessionBar(t) {
+  const a = state.activity;
+  const pick = (session) => () => { a.session = session; a.problem = null; render(); };
+  return h("div", { class: "act-sessions", role: "group", "aria-label": "Sessions" },
+    h("button", { type: "button", class: "act-chip", "aria-pressed": String(!a.session), onclick: pick(null) }, h("b", {}, "all")),
+    sessionChips(a.sessions.filter(roleVisible), t).map((c) => h("button", {
+      type: "button",
+      class: "act-chip",
+      "aria-pressed": String(a.session === c.session),
+      onclick: pick(a.session === c.session ? null : c.session),
+    },
+      h("b", {}, c.session),
+      c.role ? h("span", { class: "muted" }, c.role) : null,
+      c.calls.map(([channel, n]) => h("span", {}, channelBadge(channel), ` ${n}`)),
+      h("span", { class: "muted" }, c.ago))));
+}
+
+function logRow(e, mark) {
+  return h("div", {
+    class: `act-row${mark ? ` is-${mark}` : ""}${e.ok ? "" : " is-failed"}`,
+    title: [e.agent, `pid ${e.pid}`, `build ${e.build}`, e.clean_room ? "clean room" : null].filter(Boolean).join(" · "),
+  },
+    h("span", { class: "act-time" }, clock(e.at)),
+    h("span", { class: "act-session" }, e.session),
+    channelBadge(e.channel),
+    h("span", { class: "act-what" },
+      e.command,
+      e.target ? ` ${e.target}` : "",
+      e.changed.length ? h("span", { class: "act-changed" }, ` · ${e.changed.join(", ")}`) : null,
+      e.ok ? null : ` → ${e.error || "failed"}`));
+}
+
+function logbook(problems, selected, t) {
+  const a = state.activity;
+  // Row highlight per entry: a severe problem wins over a warning.
+  const marks = new Map();
+  for (const p of problems) {
+    for (const id of p.entry_ids) if (marks.get(id) !== "bad") marks.set(id, SEVERE.has(p.kind) ? "bad" : "warn");
+  }
+  let entries;
+  if (selected) {
+    const ids = new Set(selected.entry_ids);
+    entries = a.entries.filter((e) => ids.has(e.id));
+  } else {
+    entries = a.entries.filter(roleVisible);
+    if (a.filter === "problems") entries = entries.filter((e) => !e.ok || marks.has(e.id));
+  }
+  const pills = h("div", { class: "filters", role: "group", "aria-label": "Logbook filter" },
+    LOG_FILTERS.map(([id, name]) => h("button", {
+      type: "button",
+      class: "pill",
+      "aria-pressed": String(!selected && a.filter === id),
+      onclick: () => { a.filter = id; a.problem = null; render(); },
+    }, name)));
+  const focus = selected
+    ? h("div", { class: "act-focus" },
+        h("span", {}, `${entries.length} call${entries.length === 1 ? "" : "s"} behind: ${problemText(selected)}`),
+        h("button", { type: "button", class: "link", onclick: () => { a.problem = null; render(); } }, "show all"))
+    : null;
+  return h("section", { class: "act-log" },
+    h("div", { class: "act-loghead" }, h("div", { class: "label" }, "Logbook"), pills),
+    focus,
+    entries.length
+      ? groupByDay(entries, t).map((g) => h("div", {},
+          h("div", { class: "label act-day" }, g.label),
+          g.entries.map((e) => logRow(e, marks.get(e.id)))))
+      : h("div", { class: "muted act-none" }, "No calls match."),
+    !selected && a.entries.length >= ACTIVITY_LIMIT ? h("div", { class: "muted act-none" }, `Newest ${ACTIVITY_LIMIT} calls shown.`) : null);
+}
+
+function activityView() {
+  const a = state.activity;
+  if (!a.entries) return empty("Activity", "Loading…");
+  const t = now();
+  const problems = a.problems.filter(roleVisible);
+  const selected = selectedProblem();
+  return h("div", { class: "activity" },
+    h("div", { class: "act-strip" }, problemsPanel(problems, selected, t), statePanel()),
+    sessionBar(t),
+    logbook(problems, selected, t));
 }
 
 function boardView() {
@@ -801,7 +1122,8 @@ function renderFilters() {
 function render() {
   if (state.rejected) return;
   renderChrome();
-  const views = { tracks: tracksView, board: boardView, stages: stagesView, files: filesView, review: reviewView, questions: questionsView, leases: leasesView };
+  if (state.tab === "activity" && state.activity.key !== activityPath()) loadActivity().catch(showError);
+  const views = { tracks: tracksView, activity: activityView, board: boardView, stages: stagesView, files: filesView, review: reviewView, questions: questionsView, leases: leasesView };
   $("view").replaceChildren(views[state.tab]());
   renderDrawer();
 }
@@ -836,8 +1158,8 @@ function start() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => { if (state.tab === "stages") render(); }, 100);
   });
-  // Lease minutes tick without server events.
-  setInterval(() => { if (state.tab === "leases" || state.tab === "board" || state.tab === "tracks") render(); }, 30000);
+  // Lease minutes and "N min ago" tick without server events.
+  setInterval(() => { if (["leases", "board", "tracks", "activity"].includes(state.tab)) render(); }, 30000);
   api("GET", "/api/project")
     .then((project) => { state.project = project; render(); listen(); })
     .catch((err) => {

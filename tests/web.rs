@@ -193,6 +193,35 @@ fn dashboard_has_tracks_tab() {
 }
 
 #[test]
+fn dashboard_has_activity_tab() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let js = get("/app.js");
+    assert_eq!(js.status, 200);
+    let tracks = js.body.find("[\"tracks\", \"Tracks\"]");
+    let activity = js.body.find("[\"activity\", \"Activity\"]");
+    assert!(
+        tracks.is_some() && activity > tracks,
+        "Activity must be a tab after Tracks"
+    );
+    for needle in [
+        "/api/activity?",
+        "/api/activity/problems",
+        "/api/activity/sessions",
+        "groupByDay",
+        "sessionChips",
+        "blockers",
+    ] {
+        assert!(js.body.contains(needle), "app.js lacks {needle}");
+    }
+    let css = get("/style.css");
+    assert!(
+        css.body.contains(".ch--rest"),
+        "style.css lacks channel colours"
+    );
+}
+
+#[test]
 fn rejects_foreign_host() {
     let s = Server::start();
     for host in ["evil.example", "127.0.0.1:9999", "localhost"] {
