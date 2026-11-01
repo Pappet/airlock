@@ -248,6 +248,35 @@ fn task_edit_changes_content_and_guards_started_tasks() {
 }
 
 #[test]
+fn a_directory_in_touch_occupies_the_files_beneath_it() {
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    add(&env, &project, "E-1", &["--touch", "src/render/"]);
+    add(
+        &env,
+        &project,
+        "E-2",
+        &["--touch", "src/render/mesh.rs", "--priority", "high"],
+    );
+    add(&env, &project, "E-3", &["--touch", "src/sim.rs"]);
+    env.ok(&project, &["--session", "engine-2", "task", "claim", "E-1"]);
+
+    // E-2 has the higher priority but lies beneath the occupied directory.
+    let next = env.json(&project, &["task", "next", "--role", "engine"]);
+    assert_eq!(next["id"], "E-3");
+    env.ok(&project, &["--session", "engine-3", "task", "claim", "E-3"]);
+
+    let claimed = env.json(&project, &["--session", "engine-1", "task", "claim", "E-2"]);
+    assert_eq!(claimed["overlaps"][0]["id"], "E-1");
+    assert_eq!(
+        claimed["overlaps"][0]["paths"],
+        serde_json::json!(["src/render/mesh.rs"])
+    );
+    assert!(claimed["question_id"].is_u64(), "the lead gets a question");
+}
+
+#[test]
 fn overlapping_work_is_handed_out_last_and_claims_ask_the_lead() {
     let env = Env::new();
     let project = env.dir("project");

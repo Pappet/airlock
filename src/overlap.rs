@@ -1,8 +1,10 @@
 //! File overlap and dependency stages of open tasks (dashboard views, Spec 04
 //! §3.5–3.6; claim-time warnings, Spec 01 §2.1).
 //!
-//! Two open tasks overlap when their `touch` lists share a path. A task without
-//! `touch` data has unknown overlap and is reported as such, never as clean.
+//! Two open tasks overlap when an entry of one `touch` list covers an entry of
+//! the other: the same path, or a directory and a path beneath it
+//! (`src/render/` covers `src/render/mesh.rs`). A task without `touch` data has
+//! unknown overlap and is reported as such, never as clean.
 
 use crate::core::{Task, TaskState, TaskStatus};
 use serde::Serialize;
@@ -49,7 +51,7 @@ pub struct TaskAnalysis {
     pub stage: u32,
     /// The task has no `touch` data, so its overlap is unknown
     pub unknown: bool,
-    /// Other open tasks sharing at least one path, sorted by id
+    /// Other open tasks sharing at least one path (by coverage), sorted by id
     pub overlaps: Vec<Overlap>,
 }
 
@@ -59,7 +61,8 @@ pub struct Overlap {
     pub id: String,
     /// The other task is in progress or in review, so the paths are occupied
     pub occupied: bool,
-    /// Shared paths, sorted
+    /// Shared paths, sorted: for a directory and a path beneath it, the more
+    /// specific one
     pub paths: Vec<String>,
 }
 
@@ -74,7 +77,8 @@ pub struct FileUse {
 }
 
 /// Normalizes a `touch` path for comparison: `\` becomes `/`, leading `./` and
-/// repeated `/` are removed.
+/// repeated `/` are removed. A trailing `/` is kept; it only marks intent, since
+/// `src/render` and `src/render/` cover the same paths (see [`covers`]).
 pub fn normalize_path(path: &str) -> String {
     let mut path = path.trim().replace('\\', "/");
     while path.contains("//") {
@@ -84,6 +88,44 @@ pub fn normalize_path(path: &str) -> String {
         path = rest.to_string();
     }
     path
+}
+
+/// `path` without a trailing `/`.
+fn stem(path: &str) -> &str {
+    path.strip_suffix('/').unwrap_or(path)
+}
+
+/// Whether `touch` entry `a` covers path `b` (both normalized): `a` and `b` name
+/// the same path, or `b` lies beneath directory `a`. `src/rend` does not cover
+/// `src/render/a.rs`; a file covers only itself, as it has no children.
+pub fn covers(a: &str, b: &str) -> bool {
+    let (a, b) = (stem(a), stem(b));
+    a == b || (b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b'/')
+}
+
+/// The path to report when `a` covers `b`: the more specific `b`, or for the
+/// same path written with and without a trailing `/`, the directory form.
+fn covered(a: &str, b: &str) -> String {
+    if stem(a) == stem(b) && (a.ends_with('/') || b.ends_with('/')) {
+        format!("{}/", stem(b))
+    } else {
+        b.to_string()
+    }
+}
+
+/// Paths shared by two `touch` sets: for every covering pair, the covered path.
+fn shared(a: &BTreeSet<String>, b: &BTreeSet<String>) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for p in a {
+        for q in b {
+            if covers(p, q) {
+                paths.insert(covered(p, q));
+            } else if covers(q, p) {
+                paths.insert(covered(q, p));
+            }
+        }
+    }
+    paths.into_iter().collect()
 }
 
 /// Whether a task in this status holds its files: its work is not merged yet.
@@ -127,7 +169,7 @@ pub fn analyze(tasks: &[Task]) -> Analysis {
             .enumerate()
             .filter(|&(j, _)| j != i)
             .filter_map(|(j, other)| {
-                let paths: Vec<String> = touch[i].intersection(&touch[j]).cloned().collect();
+                let paths = shared(&touch[i], &touch[j]);
                 (!paths.is_empty()).then(|| Overlap {
                     id: other.id.clone(),
                     occupied: is_occupying(status[other.id.as_str()]),
@@ -144,17 +186,31 @@ pub fn analyze(tasks: &[Task]) -> Analysis {
         });
     }
 
-    let mut users: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (task, paths) in open.iter().zip(&touch) {
-        for path in paths {
-            users.entry(path).or_default().push(&task.id);
-        }
+    // Every named path is a candidate row (one per path, the directory form when
+    // it is written both ways); its users are the tasks with an entry covering it.
+    let mut named: BTreeMap<&str, bool> = BTreeMap::new();
+    for path in touch.iter().flatten() {
+        *named.entry(stem(path)).or_default() |= path.ends_with('/');
     }
-    let mut files: Vec<FileUse> = users
+    let mut files: Vec<FileUse> = named
         .into_iter()
+        .map(|(stem, dir)| {
+            let path = if dir {
+                format!("{stem}/")
+            } else {
+                stem.to_string()
+            };
+            let ids: Vec<&str> = open
+                .iter()
+                .zip(&touch)
+                .filter(|(_, entries)| entries.iter().any(|e| covers(e, &path)))
+                .map(|(task, _)| task.id.as_str())
+                .collect();
+            (path, ids)
+        })
         .filter(|(_, ids)| ids.len() > 1)
         .map(|(path, ids)| FileUse {
-            path: path.to_string(),
+            path,
             occupied_by: ids
                 .iter()
                 .filter(|id| is_occupying(status[**id]))
@@ -246,6 +302,105 @@ mod tests {
             assert_eq!(normalize_path(raw), "src/a.rs", "{raw}");
         }
         assert_ne!(normalize_path("src/"), normalize_path("src/a.rs"));
+        assert_eq!(
+            normalize_path("./src/render/"),
+            "src/render/",
+            "the slash stays"
+        );
+    }
+
+    fn paths(a: &Analysis, id: &str, other: &str) -> Vec<String> {
+        entry(a, id)
+            .overlaps
+            .iter()
+            .find(|o| o.id == other)
+            .map(|o| o.paths.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn directory_entries_cover_files_beneath() {
+        let a = analyze(&[
+            task("D", TaskState::InProgress, &[], &["src/render/"]),
+            task("F", TaskState::Open, &[], &["src/render/mesh.rs"]),
+        ]);
+        assert_eq!(paths(&a, "D", "F"), ["src/render/mesh.rs"]);
+        assert_eq!(paths(&a, "F", "D"), ["src/render/mesh.rs"]);
+        assert_eq!(describe(&a.conflicts("F")), "src/render/mesh.rs with D");
+        let rows: Vec<&str> = a.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            rows,
+            ["src/render/mesh.rs"],
+            "the directory itself is no row"
+        );
+        assert_eq!(a.files[0].tasks, ["D", "F"]);
+        assert_eq!(a.files[0].occupied_by, ["D"]);
+    }
+
+    #[test]
+    fn trailing_slash_is_optional() {
+        let a = analyze(&[
+            task("D", TaskState::Open, &[], &["src/render"]),
+            task("F", TaskState::Open, &[], &["src/render/mesh.rs"]),
+            task("E", TaskState::Open, &[], &["src/render/"]),
+        ]);
+        assert_eq!(paths(&a, "D", "F"), ["src/render/mesh.rs"]);
+        assert_eq!(paths(&a, "D", "E"), ["src/render/"]);
+        assert_eq!(paths(&a, "E", "D"), ["src/render/"]);
+        let rows: Vec<&str> = a.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(rows, ["src/render/mesh.rs", "src/render/"]);
+        assert_eq!(a.files[0].tasks, ["D", "E", "F"]);
+        assert_eq!(
+            a.files[1].tasks,
+            ["D", "E"],
+            "two tasks name the same directory"
+        );
+    }
+
+    #[test]
+    fn sibling_files_do_not_overlap_by_directory() {
+        let a = analyze(&[
+            task("A", TaskState::Open, &[], &["src/render/a.rs"]),
+            task("B", TaskState::Open, &[], &["src/render/b.rs"]),
+        ]);
+        assert!(entry(&a, "A").overlaps.is_empty());
+        assert!(a.files.is_empty());
+    }
+
+    #[test]
+    fn prefix_without_separator_is_not_coverage() {
+        assert!(!covers("src/rend", "src/render/a.rs"));
+        assert!(!covers("src/render/a.rs", "src/render"));
+        assert!(covers("src/render", "src/render/a.rs"));
+        assert!(covers("src/a.rs", "src/a.rs"));
+        let a = analyze(&[
+            task("A", TaskState::Open, &[], &["src/rend"]),
+            task("B", TaskState::Open, &[], &["src/render/a.rs"]),
+        ]);
+        assert!(entry(&a, "A").overlaps.is_empty());
+    }
+
+    #[test]
+    fn nested_directories_overlap() {
+        let a = analyze(&[
+            task("A", TaskState::Open, &[], &["src/"]),
+            task("B", TaskState::Open, &[], &["src/render/"]),
+            task(
+                "C",
+                TaskState::Open,
+                &[],
+                &["src/render/mesh.rs", "docs/x.md"],
+            ),
+        ]);
+        assert_eq!(paths(&a, "A", "B"), ["src/render/"]);
+        assert_eq!(paths(&a, "A", "C"), ["src/render/mesh.rs"]);
+        assert_eq!(paths(&a, "B", "C"), ["src/render/mesh.rs"]);
+        let rows: Vec<(&str, usize)> = a
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.tasks.len()))
+            .collect();
+        assert_eq!(rows, [("src/render/mesh.rs", 3), ("src/render/", 2)]);
     }
 
     #[test]
