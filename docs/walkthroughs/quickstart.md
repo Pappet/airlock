@@ -146,7 +146,12 @@ Work is coordinated through Airlock; this checkout is bound to your role and ses
   the task you already hold, or the next work package.
 - **One task at a time:** claim it before you start (`task_claim` /
   `airlock task claim <id>`). Work only on what its *Do* says and touch only
-  the files it lists.
+  the files it lists. Never plan task ids ahead and never claim a second task
+  while you hold one.
+- **Take the next task from Airlock:** after each `task_complete`
+  (`airlock task done`), read its `inbox` part (`Since your last look:`) — a more
+  important task or an answer may have arrived — and continue with its `next`
+  (`Next:`) or `task_next`.
 - **Keep your lease alive:** during long work, renew it with `task_heartbeat`
   (`airlock task heartbeat <id>`); an expired lease lets another session take the task.
   Before your context fills up, add a progress note (`notes` /

@@ -94,7 +94,7 @@ airlock task edit E-6d --track Core        # or --clear-track
 Changes the content of a task; omitted fields keep their values, at least one field must be given. `--read`, `--touch`, and `--blocked-by` replace their whole list; `--clear-read`, `--clear-touch`, and `--clear-blocked-by` empty it; `--clear-track` takes the task out of its track. The id, state, claim, lease, and notes cannot be edited. A task that is `in_progress`, `in_review`, or `done` needs `--force`; the claim and lease survive the edit. Fails on an unknown role, an unknown track, an unknown prerequisite, or a dependency cycle (the whole graph is checked, Spec 01 §2.1).
 
 #### `airlock task claim <id> [--lease <minutes>]`
-Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked. If the task shares files with an `in_progress` or `in_review` task, the claim still succeeds: a warning goes to stderr, an overlap question is recorded for the lead (Spec 01 §2.1), and `--json` adds `overlaps` and `question_id` (or `question_error` if the question could not be recorded).
+Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked. If the task shares files with an `in_progress` or `in_review` task, the claim still succeeds: a warning goes to stderr, an overlap question is recorded for the lead (Spec 01 §2.1), and `--json` adds `overlaps` and `question_id` (or `question_error` if the question could not be recorded). Two more warnings go to stderr, again without refusing: when a ready task of the role ranks strictly higher by track or task priority (`warning: more important work is ready: E-3 (critical); …`, `--json`: `higher_priority`), and when the session already holds another task (`warning: this session also holds E-2; …`, `--json`: `holding`).
 
 #### `airlock task heartbeat <id> [--lease <minutes>] [--notes <text>]`
 Extends the current session's lease from now. Fails if the session does not hold the lease. `--notes` replaces the task's progress note for a successor (done so far, remaining, next step; Spec 01 §2.4); `--notes ""` removes it, and without `--notes` the note stays. `task show` prints it as `**Progress:**`.
@@ -103,7 +103,7 @@ Extends the current session's lease from now. Fails if the session does not hold
 Returns a claimed task to `open`. Without `--force`, only the lease holder may release.
 
 #### `airlock task done <id> [--notes <text>] [--review] [--force]`
-Finishes a claimed task: `done`, or `in_review` with `--review`. Without `--force`, only the lease holder may finish it. Prints the ids of tasks that became ready.
+Finishes a claimed task: `done`, or `in_review` with `--review`. Without `--force`, only the lease holder may finish it. Prints the ids of tasks that became ready, then what changed for the task's role since this session last looked (`Since your last look:` with the inbox lines, Spec 01 §2.6; the inbox is marked as read) and the next task `task next` hands out (`Next: E-3 (critical, Navigation) Hotfix`, or `Next: nothing ready for <role>`). `--json` carries `inbox` and `next` as MCP `task_complete` does.
 
 #### `airlock task approve <id> [--notes <text>]` / `airlock task reject <id> --notes <text>`
 Resolves a task under review: `approve` → `done`; `reject` → `open` with the feedback stored in `notes`.

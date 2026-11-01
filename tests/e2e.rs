@@ -970,3 +970,44 @@ fn inbox_on_the_cli_and_events_never_reach_the_snapshot() {
         "unknown roles are refused"
     );
 }
+
+#[test]
+fn task_done_prints_the_news_and_the_next_task() {
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    add(&env, &project, "E-1", &[]);
+    add(&env, &project, "E-2", &[]);
+    env.ok(&project, &["task", "claim", "E-1", "--session", "engine-1"]);
+    // Claiming past nothing more important warns about nothing.
+    let out = env.run(&project, &["task", "claim", "E-2", "--session", "engine-2"]);
+    assert!(String::from_utf8_lossy(&out.stderr).is_empty());
+    env.ok(
+        &project,
+        &["task", "release", "E-2", "--session", "engine-2"],
+    );
+    add(&env, &project, "E-3", &["--priority", "critical"]);
+
+    let text = env.ok(&project, &["task", "done", "E-1", "--session", "engine-1"]);
+    assert!(text.starts_with("Completed E-1"), "{text}");
+    assert!(text.contains("Since your last look:"), "{text}");
+    assert!(text.contains("  E-2 ready — Title (normal)"), "{text}");
+    assert!(text.contains("  E-3 ready — Title (critical)"), "{text}");
+    assert!(text.contains("Next: E-3 (critical) Title"), "{text}");
+
+    // A second claim and a claim past the critical task both warn on stderr.
+    env.ok(&project, &["task", "claim", "E-2", "--session", "engine-1"]);
+    add(&env, &project, "E-4", &[]);
+    let out = env.run(&project, &["task", "claim", "E-4", "--session", "engine-1"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success());
+    assert!(
+        stderr.contains("more important work is ready: E-3 (critical)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("this session also holds E-2"), "{stderr}");
+
+    let done = env.json(&project, &["task", "done", "E-4", "--session", "engine-1"]);
+    assert_eq!(done["next"]["id"], "E-3");
+    assert_eq!(done["inbox"]["items"], serde_json::json!([]));
+}

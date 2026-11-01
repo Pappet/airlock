@@ -245,6 +245,9 @@ impl Server {
         self.project.config = self.hub.load_config(&self.project.id)?;
         // Read before this briefing is logged, so it is the one before this.
         let previous = activity::last_briefing_quietly(&self.project.database, &self.session);
+        if let Some(role) = &self.role {
+            self.store.open_inbox(&self.session, role, unix_now())?;
+        }
         briefing::build(
             &self.store,
             &self.project,
@@ -441,17 +444,17 @@ impl Server {
                 self.ensure_own_role(&self.store.task(&id, now)?)?;
                 let notes = opt_str(args, "notes")?;
                 let review = opt_bool(args, "review")?.unwrap_or(false);
-                let done = self.store.complete(
+                crate::app::finish(
+                    &mut self.store,
+                    &self.project,
                     &id,
                     &self.session,
                     notes.as_deref(),
                     review,
                     false,
                     now,
-                )?;
-                Ok(
-                    json!({ "task_id": done.task.id, "state": done.task.state, "now_ready": done.now_ready }),
-                )
+                )?
+                .to_json()
             }
             "task_create" => {
                 ensure!(

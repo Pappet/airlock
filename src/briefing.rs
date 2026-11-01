@@ -354,7 +354,23 @@ impl Briefing {
         }
 
         out.push_str("\n## Workflow\n\n");
-        let _ = writeln!(out, "- Claim before you start; work on one task at a time.");
+        let _ = writeln!(
+            out,
+            "- Work on one task at a time: claim it before you start. After each {}, take the next task from {}; never plan task ids ahead and never claim a second task while you hold one.",
+            cmd("task_complete", "airlock task done"),
+            cmd(
+                "task_complete`'s `next` field or from `task_next",
+                "the `Next:` line it prints or from `airlock task next"
+            )
+        );
+        let _ = writeln!(
+            out,
+            "- {} before you go on: a more important task or an answer may have arrived.",
+            match via {
+                Via::Mcp => "Read the `inbox` part of every `task_complete` result",
+                Via::Cli => "Read the `Since your last look` lines of every `airlock task done`",
+            }
+        );
         let _ = writeln!(
             out,
             "- Extend the lease during long work — it expires after {} min without a heartbeat.",

@@ -985,6 +985,20 @@ impl Store {
         Ok(question)
     }
 
+    /// Starts `session`'s inbox for `role` at the newest event unless it has
+    /// one already, so news from now on is not lost (Spec 01 §2.6). The
+    /// briefing and a claim call it; reading the inbox does it too.
+    pub fn open_inbox(&mut self, session: &str, role: &str, now: i64) -> Result<()> {
+        let tx = self.write(now)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO inbox_cursors (session, role, seq)
+             VALUES (?1, ?2, (SELECT coalesce(max(seq), 0) FROM events))",
+            params![session, role],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// What changed for `role` since `session` last looked (Spec 01 §2.6).
     /// `coordinating` is true for roles that are not clean-room: they also see
     /// new questions and tasks in review from other roles. Reading advances the

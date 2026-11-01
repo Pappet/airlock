@@ -1,6 +1,7 @@
 //! Command execution: resolves project and session, runs the operation, prints the result.
 
 use crate::activity::{self, ActivityLog, Channel, Entry, Filter as ActivityFilter};
+use crate::briefing::WorkPackage;
 use crate::cli::{
     Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec, TrackCommand,
 };
@@ -190,6 +191,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 };
                 // Read before this briefing is logged, so it is the one before this.
                 let previous = activity::last_briefing_quietly(&project.database, &session);
+                if let Some(role) = &role {
+                    store.open_inbox(&session, role, now)?;
+                }
                 let brief =
                     briefing::build(&store, &project, &session, role.as_deref(), previous, now)?;
                 let via = match hints {
@@ -742,7 +746,7 @@ fn task(
         }
         TaskCommand::Claim { id, lease } => {
             let claimed = claim(store, &id, session, lease_secs(lease)?, now)?;
-            if let Some(warning) = claimed.warning() {
+            for warning in claimed.warnings() {
                 eprintln!("{warning}");
             }
             out.print(&claimed.to_json()?, || {
@@ -765,8 +769,17 @@ fn task(
             review,
             force,
         } => {
-            let completion = store.complete(&id, session, notes.as_deref(), review, force, now)?;
-            print_completion(out, &completion)
+            let finished = finish(
+                store,
+                project,
+                &id,
+                session,
+                notes.as_deref(),
+                review,
+                force,
+                now,
+            )?;
+            out.print(&finished.to_json()?, || finished.text())
         }
         TaskCommand::Approve { id, notes } => {
             let completion = store.approve(&id, notes.as_deref(), now)?;
@@ -1033,12 +1046,32 @@ pub(crate) fn next_ready<'a>(
     tracks: &[Track],
     role: &str,
 ) -> Option<TaskView<'a>> {
-    let track_priority = |task: &Task| {
-        task.track
-            .as_deref()
-            .and_then(|name| tracks.iter().find(|t| t.name == name))
-            .map_or(Priority::Normal, |t| t.priority)
-    };
+    let ready = ready_in_order(tasks, tracks, role);
+    let clean = ready
+        .iter()
+        .position(|v| v.overlaps.is_empty())
+        .unwrap_or(0);
+    ready.into_iter().nth(clean)
+}
+
+/// How important a task is for `task next`: its track's priority (a task
+/// without a track, or with an unknown one, counts as `normal`), then its own.
+pub(crate) fn rank(task: &Task, tracks: &[Track]) -> (Priority, Priority) {
+    let track = task
+        .track
+        .as_deref()
+        .and_then(|name| tracks.iter().find(|t| t.name == name))
+        .map_or(Priority::Normal, |t| t.priority);
+    (track, task.priority)
+}
+
+/// The ready tasks of `role` in `task next` order — rank, then oldest, then
+/// id — each with the files it shares with occupying tasks (Spec 01 §2.1).
+pub(crate) fn ready_in_order<'a>(
+    tasks: &'a [Task],
+    tracks: &[Track],
+    role: &str,
+) -> Vec<TaskView<'a>> {
     let done = done_ids(tasks);
     let mut ready: Vec<TaskView<'a>> = tasks
         .iter()
@@ -1046,9 +1079,8 @@ pub(crate) fn next_ready<'a>(
         .filter(|v| v.task.role == role && v.status == TaskStatus::Ready)
         .collect();
     ready.sort_by(|a, b| {
-        track_priority(b.task)
-            .cmp(&track_priority(a.task))
-            .then(b.task.priority.cmp(&a.task.priority))
+        rank(b.task, tracks)
+            .cmp(&rank(a.task, tracks))
             .then(a.task.created_at.cmp(&b.task.created_at))
             .then_with(|| cmp_task_ids(&a.task.id, &b.task.id))
     });
@@ -1056,11 +1088,7 @@ pub(crate) fn next_ready<'a>(
     for view in &mut ready {
         view.overlaps = analysis.conflicts(&view.task.id);
     }
-    let clean = ready
-        .iter()
-        .position(|v| v.overlaps.is_empty())
-        .unwrap_or(0);
-    ready.into_iter().nth(clean)
+    ready
 }
 
 /// A claimed task and the files it shares with occupying tasks.
@@ -1071,6 +1099,20 @@ pub(crate) struct Claimed {
     pub question_id: Option<u64>,
     /// Why the overlap question could not be recorded; the claim stands
     pub question_error: Option<String>,
+    /// Ready tasks of the role that rank strictly higher than the claimed one
+    pub higher_priority: Vec<Ranked>,
+    /// Other tasks this session already holds a lease on
+    pub holding: Vec<String>,
+}
+
+/// A ready task named in a claim warning.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct Ranked {
+    pub id: String,
+    pub title: String,
+    pub priority: Priority,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<String>,
 }
 
 impl Claimed {
@@ -1089,11 +1131,48 @@ impl Claimed {
         if let Some(error) = &self.question_error {
             value["question_error"] = error.as_str().into();
         }
+        if !self.higher_priority.is_empty() {
+            value["higher_priority"] = serde_json::to_value(&self.higher_priority)?;
+        }
+        if !self.holding.is_empty() {
+            value["holding"] = serde_json::to_value(&self.holding)?;
+        }
         Ok(value)
     }
 
-    /// The stderr warning for an overlapping claim.
-    pub fn warning(&self) -> Option<String> {
+    /// The stderr warnings of a claim: overlapping files, more important ready
+    /// work, other leases this session holds.
+    pub fn warnings(&self) -> Vec<String> {
+        let id = &self.task.id;
+        let mut warnings: Vec<String> = self.overlap_warning().into_iter().collect();
+        if !self.higher_priority.is_empty() {
+            let names: Vec<String> = self
+                .higher_priority
+                .iter()
+                .map(|r| {
+                    let track = r
+                        .track
+                        .as_deref()
+                        .map(|t| format!(", {t}"))
+                        .unwrap_or_default();
+                    format!("{} ({}{track})", r.id, r.priority.as_str())
+                })
+                .collect();
+            warnings.push(format!(
+                "warning: more important work is ready: {}; `task next` hands it out before {id}",
+                names.join(", ")
+            ));
+        }
+        if !self.holding.is_empty() {
+            warnings.push(format!(
+                "warning: this session also holds {}; work on one task at a time",
+                self.holding.join(", ")
+            ));
+        }
+        warnings
+    }
+
+    fn overlap_warning(&self) -> Option<String> {
         if self.overlaps.is_empty() {
             return None;
         }
@@ -1122,7 +1201,34 @@ pub(crate) fn claim(
     now: i64,
 ) -> Result<Claimed> {
     let task = store.claim(id, session, lease_secs, now)?;
+    // From now on, what changes for the role reaches this session's
+    // `task_complete`; a failure here never undoes the committed claim.
+    if let Err(e) = store.open_inbox(session, &task.role, now) {
+        eprintln!("airlock: inbox: {e:#}");
+    }
     let tasks = store.tasks(now)?;
+    let tracks = store.tracks()?;
+    let claimed_rank = rank(&task, &tracks);
+    // Age alone never warns: only a higher track or task priority does.
+    let higher_priority = ready_in_order(&tasks, &tracks, &task.role)
+        .into_iter()
+        .filter(|v| rank(v.task, &tracks) > claimed_rank)
+        .map(|v| Ranked {
+            id: v.task.id.clone(),
+            title: v.task.title.clone(),
+            priority: v.task.priority,
+            track: v.task.track.clone(),
+        })
+        .collect();
+    let holding = tasks
+        .iter()
+        .filter(|t| {
+            t.id != task.id
+                && t.state == TaskState::InProgress
+                && t.claimed_by.as_deref() == Some(session)
+        })
+        .map(|t| t.id.clone())
+        .collect();
     let analysis = overlap::analyze(&tasks);
     let overlaps = analysis.conflicts(id);
     if overlaps.is_empty() {
@@ -1131,6 +1237,8 @@ pub(crate) fn claim(
             overlaps,
             question_id: None,
             question_error: None,
+            higher_priority,
+            holding,
         });
     }
     let held: Vec<String> = overlaps
@@ -1169,6 +1277,119 @@ pub(crate) fn claim(
         overlaps,
         question_id,
         question_error,
+        higher_priority,
+        holding,
+    })
+}
+
+/// A completed task, what changed for its role meanwhile, and the next package.
+pub(crate) struct Finished {
+    pub completion: Completion,
+    pub role: String,
+    /// The session's inbox for the task's role, read and advanced
+    pub inbox: std::result::Result<Inbox, String>,
+    /// What `task next` hands out now for the task's role
+    pub next: std::result::Result<Option<WorkPackage>, String>,
+}
+
+impl Finished {
+    /// The result of CLI `task done --json` and MCP `task_complete`.
+    pub fn to_json(&self) -> Result<Value> {
+        let task = &self.completion.task;
+        let mut value = json!({
+            "task_id": task.id,
+            "state": task.state,
+            "now_ready": self.completion.now_ready,
+        });
+        match &self.inbox {
+            Ok(inbox) => value["inbox"] = serde_json::to_value(inbox)?,
+            Err(e) => value["inbox_error"] = e.as_str().into(),
+        }
+        match &self.next {
+            Ok(next) => value["next"] = serde_json::to_value(next)?,
+            Err(e) => value["next_error"] = e.as_str().into(),
+        }
+        Ok(value)
+    }
+
+    pub fn text(&self) -> String {
+        let task = &self.completion.task;
+        let mut text = match task.state {
+            TaskState::InReview => format!("Submitted {} for review", task.id),
+            _ => format!("Completed {}", task.id),
+        };
+        if !self.completion.now_ready.is_empty() {
+            text.push_str(&format!(
+                "\nNow ready: {}",
+                self.completion.now_ready.join(", ")
+            ));
+        }
+        match &self.inbox {
+            Ok(inbox) if !inbox.items.is_empty() => {
+                text.push_str("\nSince your last look:");
+                for line in inbox_text(&self.role, inbox).lines() {
+                    text.push_str(&format!("\n  {line}"));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => text.push_str(&format!("\nCould not read the inbox: {e}")),
+        }
+        match &self.next {
+            Ok(Some(next)) => {
+                let track = next
+                    .track
+                    .as_deref()
+                    .map(|t| format!(", {t}"))
+                    .unwrap_or_default();
+                text.push_str(&format!(
+                    "\nNext: {} ({}{track}) {}",
+                    next.id,
+                    next.priority.as_str(),
+                    next.title
+                ));
+            }
+            Ok(None) => text.push_str(&format!("\nNext: nothing ready for {}", self.role)),
+            Err(e) => text.push_str(&format!("\nCould not find the next task: {e}")),
+        }
+        text
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Completes a task, then reads the session's inbox and the next package for
+/// the task's role (Spec 01 §2.1, §2.6). The completion is committed first:
+/// failing to read either afterwards is reported, never returned as error.
+pub(crate) fn finish(
+    store: &mut Store,
+    project: &Project,
+    id: &str,
+    session: &str,
+    notes: Option<&str>,
+    review: bool,
+    force: bool,
+    now: i64,
+) -> Result<Finished> {
+    let completion = store.complete(id, session, notes, review, force, now)?;
+    let role = completion.task.role.clone();
+    let coordinating = !project
+        .config
+        .roles
+        .get(&role)
+        .is_some_and(|r| r.clean_room);
+    let inbox = store
+        .inbox(session, &role, coordinating, false, now)
+        .map_err(|e| format!("{e:#}"));
+    let next = (|| -> Result<Option<WorkPackage>> {
+        let tasks = store.tasks(now)?;
+        let tracks = store.tracks()?;
+        Ok(next_ready(&tasks, &tracks, &role).map(|v| WorkPackage::from(&v)))
+    })()
+    .map_err(|e| format!("{e:#}"));
+    Ok(Finished {
+        completion,
+        role,
+        inbox,
+        next,
     })
 }
 

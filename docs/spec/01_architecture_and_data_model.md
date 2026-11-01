@@ -116,6 +116,10 @@ A ready task whose `touch` shares a path with an **occupying** task (`in_progres
 
 An overlap never blocks a claim. Claiming a task that shares paths with occupying tasks succeeds, returns the `overlaps`, and records a question for the lead from the claiming session: topic `overlap:<task id>`, naming the shared paths, the occupying tasks, their status and holder, and asking whether to continue or release. While that session has an open question on the topic, claiming again reuses it unchanged, so its text describes the first claim. The question is recorded after the claim is committed: if recording it fails, the claim still succeeds and reports the overlaps with a `question_error` instead of a `question_id`. The session keeps working; the lead answers in the question channel or releases the task.
 
+#### One Task at a Time
+
+A session works on one task at a time and takes the next one from Airlock, not from a plan of its own: a more important task may appear while it works. Completing a task (`task done`, MCP `task_complete`) therefore returns the session's inbox for the task's role (§2.6) and the next package `task next` hands out. A claim warns, without refusing, when a ready task of the role ranks strictly higher by track or task priority (age alone does not count), and when the session already holds a lease on another task.
+
 ### 2.2 Question (Airlock Communication)
 
 A structured behavioral inquiry across a session boundary, e.g. an engine session asking for clarification of a spec:
@@ -231,7 +235,7 @@ The **inbox** of a session for a role lists the events for that role since the s
 - questions: id and topic; for `question_asked` (coordinating roles only) the question, while it is still open; for `question_answered` the current answer, its spec file, and whether it was a correction.
 - tracks: name and current priority.
 
-Each task, question, and track appears once, as its latest event, oldest first. Reading advances the session's cursor, kept per session **and** role; `peek` reads without advancing. A session without a cursor starts at the newest event: a new session gets its briefing, not the history. Reading the inbox counts as a read in the activity log (§3.5), logged with the number of items as its target.
+Each task, question, and track appears once, as its latest event, oldest first. Reading advances the session's cursor, kept per session **and** role; `peek` reads without advancing. A session without a cursor starts at the newest event: a new session gets its briefing, not the history. The briefing and a claim start the cursor when the session has none, so what changes while it works reaches its next `task done`. Reading the inbox counts as a read in the activity log (§3.5), logged with the number of items as its target.
 
 Events and cursors are session state like claims: never exported (Spec 05 §3.2), untouched by `import`, and events are pruned after 30 days by the next write.
 
