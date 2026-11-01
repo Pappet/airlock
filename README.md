@@ -12,7 +12,7 @@ a CLI for people, an MCP server for agents, and a live dashboard for both.
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](Cargo.toml)
 [![MCP](https://img.shields.io/badge/MCP-18%20tools-8A2BE2.svg)](docs/spec/03_mcp_protocol.md)
 
-<img src="docs/images/dashboard.png" alt="The Airlock dashboard: a board grouped by track, with running leases and open questions" width="920">
+<img src="docs/images/social-preview.png" alt="The Airlock dashboard: a board grouped by track, with running leases and open questions" width="920">
 
 </div>
 
