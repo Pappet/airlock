@@ -224,6 +224,31 @@ fn dashboard_has_hero_band() {
 }
 
 #[test]
+fn dashboard_cards_follow_the_colour_budget() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let js = get("/app.js").body;
+    assert!(
+        js.contains("badge--conflict"),
+        "red only for an overlap with a running task"
+    );
+    assert!(
+        !js.contains("with running"),
+        "plain overlaps are no longer red"
+    );
+    let css = get("/style.css").body;
+    assert!(css.contains(".badge--conflict"));
+    assert!(
+        !css.contains("border-left: 3px solid var(--prio"),
+        "no priority stripe on cards"
+    );
+    assert!(
+        !css.contains("padding-top: var(--space-2); border-top"),
+        "no lines between swimlane rows"
+    );
+}
+
+#[test]
 fn dashboard_assets_know_tracks() {
     let s = Server::start();
     let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");

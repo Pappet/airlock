@@ -303,12 +303,14 @@ function overlapBadges(id) {
   const a = analysisById(id);
   if (!a) return [];
   const badges = [];
-  if (a.unknown) badges.push(h("span", { class: "badge badge--unknown", title: "No touch list: overlap unknown" }, "? no touch data"));
+  if (a.unknown) badges.push(h("span", { class: "badge badge--unknown", title: "No touch list: overlap unknown" }, "? no touch list"));
   if (a.overlaps.length) {
+    // Colour budget: red only when the other task is running right now.
     const running = a.overlaps.filter((o) => o.occupied).map((o) => o.id);
     const title = a.overlaps.map((o) => `${o.id}: ${o.paths.join(", ")}`).join("\n");
-    badges.push(h("span", { class: "badge badge--overlap", title }, `⚠ ${a.overlaps.length} overlap${a.overlaps.length > 1 ? "s" : ""}`));
-    if (running.length) badges.push(h("span", { class: "badge badge--overlap", title }, `⚠ with running ${running.join(", ")}`));
+    badges.push(running.length
+      ? h("span", { class: "badge badge--conflict", title }, `⚠ running ${running.join(", ")}`)
+      : h("span", { class: "badge", title }, `⧉ ${a.overlaps.length}`));
   }
   return badges;
 }
@@ -320,18 +322,18 @@ function card(task, extraClass = "", onclick, showTrack = true) {
     "button",
     {
       type: "button",
-      class: `card p-${task.priority} ${running ? "is-running" : ""} ${extraClass}`,
+      class: `card ${running ? "is-running" : ""} ${extraClass}`,
       "data-id": task.id,
       onclick: onclick || (() => openDetail(task.id)),
     },
     h("div", { class: "card__head" },
-      h("span", { class: "card__id" }, running ? `▶ ${task.id}` : task.id),
+      h("span", { class: "card__id" }, running ? h("span", { class: "pulse live", "aria-hidden": "true" }) : null, task.id),
       pips(task.priority)),
     h("div", { class: "card__title" }, task.title),
     h("div", { class: "card__meta" },
       task.role,
       showTrack && task.track ? ` · ${task.track}` : "",
-      task.claimed_by ? ` · ${task.claimed_by}` : "",
+      task.claimed_by ? [" · ", h("span", { class: "card__who" }, task.claimed_by)] : "",
       minutes !== null ? ` · ${minutes} min` : ""),
     h("div", { class: "badges" },
       task.blocked_by.length ? h("span", { class: "badge", title: "blocked by" }, `← ${task.blocked_by.join(", ")}`) : null,
@@ -748,8 +750,8 @@ function flatBoard(tasks) {
   return h("div", { class: "columns" },
     STATUS_COLUMNS.map(([status, name]) => {
       const items = tasks.filter((t) => t.status === status).sort(byNextOrder);
-      return h("section", { class: "column" },
-        h("div", { class: "label" }, h("span", {}, name), h("span", {}, items.length)),
+      return h("section", { class: `column${status === "in_progress" ? " column--run" : ""}` },
+        h("div", { class: "label" }, h("span", {}, name), h("b", {}, items.length)),
         items.length ? items.map((t) => card(t)) : h("div", { class: "muted" }, "—"));
     }));
 }
@@ -767,16 +769,18 @@ function swimlanes(tasks) {
   for (const [status, name] of STATUS_COLUMNS) {
     cells.push(h("div", { class: "label swim__colh" }, h("span", {}, name), h("span", {}, tasks.filter((t) => t.status === status).length)));
   }
+  let row = 0;
   for (const lane of lanes) {
     const own = tasks.filter((t) => (t.track || "") === lane.name);
     if (!own.length) continue;
-    cells.push(h("div", { class: "swim__lane", title: lane.description || null },
+    const alt = row++ % 2 ? " swim__row--alt" : "";
+    cells.push(h("div", { class: `swim__lane${alt}`, title: lane.description || null },
       priorityChip(lane.priority),
       h("b", { class: lane.name ? "" : "muted" }, lane.name || "no track"),
       lane.description ? h("span", { class: "muted swim__desc" }, lane.description) : null));
     for (const [status] of STATUS_COLUMNS) {
       const items = own.filter((t) => t.status === status).sort(byPriority);
-      cells.push(h("div", { class: "swim__cell" }, items.map((t) => card(t, "", undefined, false))));
+      cells.push(h("div", { class: `swim__cell${alt}` }, items.map((t) => card(t, "", undefined, false))));
     }
   }
   return h("div", { class: "swim-wrap" }, h("div", { class: "swim" }, cells));
@@ -810,7 +814,7 @@ function stagesView() {
   for (let stage = 1; stage <= maxStage; stage++) {
     const items = open.filter((a) => a.stage === stage);
     columns.push(h("section", { class: "column" },
-      h("div", { class: "label" }, h("span", {}, stage === 1 ? "Stage 1 · now" : `Stage ${stage}`), h("span", {}, items.length)),
+      h("div", { class: "label" }, h("span", {}, stage === 1 ? "Stage 1 · now" : `Stage ${stage}`), h("b", {}, items.length)),
       items.map((a) => {
         const task = taskById(a.id);
         let cls = "";
@@ -1013,7 +1017,8 @@ function pathList(paths, overlapping) {
   if (!paths.length) return h("div", { class: "muted" }, "—");
   return h("ul", {}, paths.map((p) => {
     const others = overlapping.get(p);
-    return h("li", {}, p, others ? h("span", { class: "badge badge--overlap" }, `⚠ ${others.join(", ")}`) : null);
+    const running = others?.some((id) => id.startsWith("▶"));
+    return h("li", {}, p, others ? h("span", { class: `badge${running ? " badge--conflict" : ""}` }, `${running ? "⚠" : "⧉"} ${others.join(", ")}`) : null);
   }));
 }
 
@@ -1163,10 +1168,13 @@ function heroNow() {
 }
 
 // Track, minimum-priority, and grouping controls; Board and Review only.
+const WIDE = matchMedia("(min-width: 1101px)");
+
 function renderFilters() {
   const slot = $("board-filters");
   const active = state.tab === "board" || state.tab === "review";
-  const key = JSON.stringify([active, state.tab === "board", state.tracks.map((t) => t.name), state.trackFilter, state.minPriority, state.groupByTrack]);
+  const wide = WIDE.matches;
+  const key = JSON.stringify([active, wide, state.tab === "board", state.tracks.map((t) => t.name), state.trackFilter, state.minPriority, state.groupByTrack]);
   if (slot.dataset.key === key) return;
   slot.dataset.key = key;
   const focused = slot.contains(document.activeElement) ? document.activeElement.id : null;
@@ -1213,7 +1221,10 @@ function renderFilters() {
       }, "group by track")
     : null;
 
-  slot.replaceChildren(track, min, group);
+  // Below 1100px the three controls fold into a "filter" pill (concept §6).
+  slot.replaceChildren(h("details", { class: "filter-pop", open: wide },
+    h("summary", { class: "pill" }, "filter ▾"),
+    h("div", { class: "filter-pop__body" }, track, min, group)));
   if (focused) $(focused)?.focus();
 }
 
@@ -1254,6 +1265,7 @@ function start() {
       }
     }, 0);
   });
+  WIDE.addEventListener("change", () => render());
   let resizeTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
