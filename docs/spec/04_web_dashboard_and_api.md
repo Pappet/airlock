@@ -16,6 +16,7 @@ The API can mutate project state and exposes every question and answer, so it mu
 - **Access token.** On startup the server generates a random 256-bit token (64 hex digits) and prints the dashboard URL as `http://127.0.0.1:<port>/#token=<token>`. Every `/api/*` request must carry `Authorization: Bearer <token>`, else `401`. The dashboard reads the token from the URL fragment (which browsers never send to servers), keeps it in `sessionStorage`, and removes it from the address bar. A restarted server has a new token: opening its new URL in the same tab reloads the dashboard, and a rejected token is shown as such instead of being retried.
 - **DNS-rebinding defense.** Requests whose `Host` header is not `127.0.0.1:<port>`, `localhost:<port>`, or `[::1]:<port>` are rejected with `403` — for every path, including the dashboard assets.
 - **CSRF defense.** Requests with any method but `GET` and `HEAD` must have `Content-Type: application/json`, else `415`; requests with an `Origin` header other than `http://<Host>` are rejected with `403`. No CORS headers are sent. Assets carry a `Content-Security-Policy` of `default-src 'self'`.
+- **Client header.** The dashboard's requests carry `X-Airlock-Client: dashboard`. It is a label for the activity log (§3.11, Spec 01 §3.5), not authentication: the token above is what protects the API, and any caller can send the header. It makes the dashboard's own `GET` requests (polling after events) invisible in the log and attributes its writes to the session `dashboard`; every other caller is logged as `rest`.
 - **No command execution.** The `verify` field is displayed, never executed — neither by the server nor by the dashboard. This holds for all of Airlock.
 
 ---
@@ -35,7 +36,7 @@ The API can mutate project state and exposes every question and answer, so it mu
 Lists tasks in `In Review` with their notes; **Approve** and **Reject** (feedback required) map to `task approve` / `task reject`. Tasks that need a human check (hardware tests, manual QA, PR review) are routed here by completing them with `--review`.
 
 ### 3.3 Questions Inbox
-Lists questions by status. The project lead can answer, revise, and resolve them (optionally recording the spec file that codifies the answer).
+Lists questions by status. The project lead can answer, revise, and resolve them (optionally recording the spec file that codifies the answer). Revising an answered question is a correction (Spec 01 §2.2): a question that was corrected carries a "corrected" chip, whose tooltip names who corrected it and how many earlier answers are kept. Resolved questions are shown read only; correcting one is done over MCP, CLI, or `POST /api/questions/{id}/answer`, which accept it.
 
 ### 3.4 Live Leases
 Shows active leases with session id and remaining time; expired leases are marked as such. A lead can force-release a lease.
@@ -56,7 +57,7 @@ Open tasks in columns by dependency stage: stage 1 holds every open task without
 Rows are paths touched by two or more open tasks, most shared first, then by path; columns are the open tasks touching them. Cells of occupying tasks are marked running. Tasks without `touch` data are listed below the matrix. The matrix always covers all roles, since overlap across roles collides just the same.
 
 ### 3.8 Dashboard Session
-Answers and force-releases from the dashboard are recorded under the session id `dashboard`.
+Answers and force-releases from the dashboard are recorded under the session id `dashboard`, in the activity log as well (§3.11).
 
 ### 3.9 Tracks Tab
 The first tab in the tab bar; the default tab remains the Board. Read only: tracks and tasks are created and changed by agents over CLI and MCP.
@@ -74,6 +75,16 @@ The first tab in the tab bar; the default tab remains the Board. Read only: trac
 
 ### 3.10 Priority Display
 Fixed colors on every surface: `critical` red, `high` orange, `normal` cyan, `low` grey. Cards carry a colored left stripe and pips instead of a number: `●●●●` critical, `●●●○` high, `●●○○` normal, `●○○○` low. The task detail shows a priority chip and the track.
+
+### 3.11 Activity Tab
+The second tab in the tab bar, after Tracks. It shows what the activity log (Spec 01 §3.5) holds and answers: what needs attention, who works on what, what waits on whom, and what happened in which order. Read only: problems cannot be acknowledged or dismissed (Spec 01 §3.7), and nothing on the tab changes project state.
+
+- **Problems panel** (top left): every current problem of the 30-day window, newest first, with the kind's icon (failures and error bursts in red, the others as warnings), its message, a repeat count, and the time since its last occurrence; "No problems in the last 30 days." when there are none. Selecting a problem narrows the logbook to the calls behind it; selecting it again, or "show all", clears that. A process problem (`old_process`) has no calls behind it and is not selectable.
+- **State panel** (top right): the claimed tasks (`in_progress`) with claiming session, track, and lease minutes left (or "lease expired"), and the **blockers**: blocked tasks grouped by the open prerequisites they wait on, with each prerequisite's role and holder, or "nobody on it" when it is unclaimed. Both come from the live task list, not from the log.
+- **Session chips:** one per session seen in the window, with its role, its number of calls per channel (MCP, CLI, REST), and the time since its last call; selecting one narrows the logbook to the session, "all" clears it.
+- **Logbook:** the calls newest first, grouped by day; each row has time, session, channel badge, command with target and the names changed, and for failures the error. Rows behind a problem are highlighted, red for failures and bursts. A tooltip shows the agent, pid, build, and a clean-room mark. Filters: all, writes only, failures & problems, MCP, CLI, REST. The newest 500 calls are loaded.
+- **Role filter:** the tab follows it like the other tabs. With a role selected, calls, sessions, problems, claims, and blockers of other roles, and calls and problems without a role (human CLI, unbound MCP, REST), are hidden; with no role selected they all show.
+- **Live:** the tab reloads on the SSE event `activity` (§4) and when it is opened again.
 
 ---
 
@@ -93,9 +104,14 @@ All endpoints exchange JSON and require the bearer token (§2). Request bodies u
 | `POST` | `/api/tasks/{id}/reject` | Reject a task under review (`notes` required) |
 | `GET` | `/api/tracks` | Tracks with counts, highest priority first: the bare array of `track_list` entries (`name`, `priority`, `description`, `created_at`, `updated_at`, `counts` with `blocked`, `ready`, `in_progress`, `in_review`, `done`). Tracks are read only over REST |
 | `GET` | `/api/questions?topic=&status=` | List questions |
-| `POST` | `/api/questions/{id}/answer` | Answer or revise |
+| `POST` | `/api/questions/{id}/answer` | Answer an open question, or correct the answer of an answered or resolved one (Spec 01 §2.2): the status stays, earlier answers move to `history`, and the question carries `corrected_at` and `corrected_by` |
 | `POST` | `/api/questions/{id}/resolve` | Resolve |
 | `GET` | `/api/overlaps` | Overlap and stage analysis (§3.5–3.7): `tasks` (`id`, `status`, `stage`, `unknown`, `overlaps` of `{ id, occupied, paths }`), `files` (`path`, `tasks`, `occupied_by`), `no_touch` |
-| `GET` | `/api/events` | Server-Sent Events: `task_changed`, `question_changed`, `track_changed` with data `{ "id": <entity id> }` (the track name; a rename emits it for the old and the new name); `resync` when the client fell behind |
+| `GET` | `/api/activity?session=&role=&channel=&since=&writes=&failures=&limit=` | Calls of the activity log (Spec 01 §3.5), newest first, as an array of entries (`id`, `at`, `session`, `role`, `clean_room`, `channel`, `agent`, `command`, `target`, `changed`, `write`, `ok`, `error`, `pid`, `build`). `channel` is `mcp`, `cli`, or `rest`; `since` is `30m`, `2h`, `1d`, or unix seconds; `writes=true` keeps calls that change state, `failures=true` failed ones; `limit` defaults to 500. A bad filter is `400`. An absent log is `[]` |
+| `GET` | `/api/activity/problems?session=&role=` | The current problems (Spec 01 §3.7) of the 30-day window, newest first: `kind`, `session`, `role`, `command`, `target`, `message`, `count`, `first_at`, `last_at`, `entry_ids` |
+| `GET` | `/api/activity/sessions` | Sessions seen in the window, most recently active first: `session`, `role` (of its latest call), `last_at`, `calls` (`{ mcp, cli, rest }`) |
+| `GET` | `/api/events` | Server-Sent Events: `task_changed`, `question_changed`, `track_changed` with data `{ "id": <entity id> }` (the track name; a rename emits it for the old and the new name); `activity` with data `{ "id": <id of the newest log entry> }` whenever calls were logged; `resync` when the client fell behind |
 
-Claiming and completing tasks are session operations and stay with the CLI and MCP. Because other processes write to the same store, the server detects changes by polling SQLite's `PRAGMA data_version` (once per second) and emits SSE events accordingly; it also re-checks when the earliest lease expires, since leases run out without a write. The browser's `EventSource` cannot send the `Authorization` header, so the dashboard reads `/api/events` as a `fetch` stream.
+Claiming and completing tasks are session operations and stay with the CLI and MCP. Because other processes write to the same store, the server detects changes by polling SQLite's `PRAGMA data_version` (once per second) and emits SSE events accordingly; it also re-checks when the earliest lease expires, since leases run out without a write. The same poll follows the activity log's newest entry id for the `activity` event. The server registers itself in the process registry (Spec 01 §3.6) as kind `serve` and refreshes it every 60 seconds.
+
+Every accepted API request is recorded in the activity log (Spec 01 §3.5) under the command `<METHOD> <route pattern>` (for example `POST /api/tasks/{id}/approve`), as session `dashboard` when it carries `X-Airlock-Client: dashboard` and `rest` otherwise, without a role. Not recorded: `/api/events`, the `/api/activity*` endpoints, `GET` requests with the dashboard header, requests refused by the security checks of §2, and paths that match no route. To summarise a request for the log, Airlock reads its body first; a logged request with a body over 1 MiB is refused with `413 request body too large` before it reaches its handler (no endpoint takes bodies anywhere near that size). The browser's `EventSource` cannot send the `Authorization` header, so the dashboard reads `/api/events` as a `fetch` stream.

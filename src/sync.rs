@@ -96,7 +96,12 @@ fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot> {
     let version = value.get("format_version").and_then(|v| v.as_u64());
     match version {
         Some(1) => Ok(serde_json::from_value::<SnapshotV1>(value)?.into()),
-        Some(2) => Ok(serde_json::from_value(value)?),
+        Some(2 | 3) => {
+            // Version 2 differs only by lacking answer history, which defaults to none.
+            let mut snapshot: Snapshot = serde_json::from_value(value)?;
+            snapshot.format_version = FORMAT_VERSION;
+            Ok(snapshot)
+        }
         Some(other) => bail!(unsupported(other)),
         None => bail!("snapshot has no `format_version`"),
     }

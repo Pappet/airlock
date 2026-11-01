@@ -426,4 +426,26 @@ pub struct Question {
     pub created_at: i64,
     /// Unix timestamp (seconds) of the latest answer
     pub answered_at: Option<i64>,
+    /// Unix timestamp (seconds) of the latest correction of the answer
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrected_at: Option<i64>,
+    /// Session that made the latest correction
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrected_by: Option<String>,
+    /// Earlier answers replaced by corrections, oldest first
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<AnswerVersion>,
+}
+
+/// An answer that a correction replaced.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnswerVersion {
+    /// The replaced answer
+    pub answer: String,
+    /// Session that gave it
+    pub answered_by: Option<String>,
+    /// Unix timestamp (seconds) when it was given
+    pub answered_at: Option<i64>,
+    /// Spec file in which it was codified
+    pub spec_file: Option<String>,
 }

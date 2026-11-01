@@ -1,8 +1,9 @@
 //! MCP server over stdio (Spec 03), driven through the real binary.
 
+use airlock::activity::{ActivityLog, Channel, Filter};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -41,6 +42,18 @@ impl Env {
             "cargo test",
         ]);
         env
+    }
+
+    /// The activity log of the (only) project in the hub.
+    fn activity(&self) -> ActivityLog {
+        let projects = self.hub.join("projects");
+        let dir = std::fs::read_dir(&projects)
+            .unwrap()
+            .next()
+            .expect("a project in the hub")
+            .unwrap()
+            .path();
+        ActivityLog::open(&dir.join("activity.db")).unwrap()
     }
 
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
@@ -636,4 +649,270 @@ fn clean_room_sessions_get_no_track_tools() {
     for id in [2, 3] {
         assert_eq!(s.get(id)["error"]["code"], -32602);
     }
+}
+
+/// MCP entries of the log in call order (the log reads newest first); the
+/// CLI calls that set a test up are logged too, but are not what these check.
+fn logged(env: &Env) -> Vec<airlock::activity::Entry> {
+    let filter = Filter {
+        channel: Some(Channel::Mcp),
+        ..Filter::default()
+    };
+    let mut entries = env.activity().entries(&filter).unwrap();
+    entries.reverse();
+    entries
+}
+
+#[test]
+fn every_tool_call_is_logged_with_session_role_and_result() {
+    let env = Env::new();
+    env.cli(&[
+        "task", "add", "Plan", "--role", "lead", "--do", "x", "--verify", "y",
+    ]);
+    env.session(
+        &["--role", "lead", "--session", "lead-1"],
+        &[
+            call(1, "task_claim", json!({ "task_id": "L-1" })),
+            call(2, "task_complete", json!({ "task_id": "L-1" })),
+            call(3, "task_claim", json!({ "task_id": "L-1" })),
+            call(
+                4,
+                "task_update",
+                json!({ "task_id": "S-1", "title": "T", "priority": "high" }),
+            ),
+        ],
+    );
+    let entries = logged(&env);
+    assert_eq!(entries.len(), 4, "{entries:?}");
+    for entry in &entries {
+        assert_eq!(entry.channel, Channel::Mcp);
+        assert_eq!(entry.session, "lead-1");
+        assert_eq!(entry.role.as_deref(), Some("lead"));
+        assert!(!entry.clean_room);
+        assert!(entry.write);
+        assert!(entry.pid > 0);
+        assert_eq!(entry.build, airlock::activity::build());
+    }
+    assert_eq!(entries[0].command, "task_claim");
+    assert_eq!(entries[0].target.as_deref(), Some("L-1"));
+    assert!(entries[0].ok && entries[0].error.is_none());
+    assert!(entries[1].ok);
+    assert!(!entries[2].ok, "claiming a done task fails");
+    let error = entries[2].error.as_deref().unwrap();
+    assert!(error.contains("L-1"), "the store's error text: {error}");
+    assert_eq!(entries[3].command, "task_update");
+    assert_eq!(entries[3].target.as_deref(), Some("S-1"));
+    assert_eq!(entries[3].changed, ["priority: high", "title"]);
+}
+
+#[test]
+fn clean_room_hidden_tool_is_logged_as_failure() {
+    let env = Env::new();
+    env.session(
+        &["--role", "engine", "--session", "engine-1"],
+        &[call(1, "task_create", json!({}))],
+    );
+    let entries = logged(&env);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].command, "task_create");
+    assert!(entries[0].clean_room);
+    assert!(!entries[0].ok);
+    assert!(
+        entries[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("unknown tool"),
+        "{entries:?}"
+    );
+}
+
+#[test]
+fn session_start_and_prompt_are_logged_as_briefings() {
+    let env = Env::new();
+    env.session(
+        &["--role", "engine", "--session", "engine-1"],
+        &[
+            call(1, "session_start", json!({})),
+            request(2, "prompts/get", json!({ "name": "start" })),
+        ],
+    );
+    let entries = logged(&env);
+    let commands: Vec<_> = entries.iter().map(|e| e.command.as_str()).collect();
+    assert_eq!(commands, ["session_start", "prompt start"]);
+    for entry in &entries {
+        assert!(entry.ok && !entry.write, "{entry:?}");
+        assert_eq!(entry.session, "engine-1");
+    }
+    assert!(env.activity().last_briefing("engine-1").unwrap().is_some());
+}
+
+#[test]
+fn mcp_log_holds_no_free_text() {
+    let env = Env::new();
+    env.cli(&["question", "ask", "Why?", "--topic", "plan.md"]);
+    env.session(
+        &["--session", "lead-1"],
+        &[
+            call(
+                1,
+                "task_create",
+                json!({ "title": "SECRET-TITLE", "role": "engine", "do": "SECRET-DO-TEXT",
+                        "verify": "SECRET-VERIFY",
+                        "read": ["SECRET-READ"] }),
+            ),
+            call(
+                2,
+                "question_answer",
+                json!({ "question_id": 1, "answer": "SECRET-ANSWER", "spec_file": "SECRET-SPEC" }),
+            ),
+            call(3, "task_claim", json!({ "task_id": "S-1" })),
+            call(
+                4,
+                "task_complete",
+                json!({ "task_id": "S-1", "notes": "SECRET-NOTES" }),
+            ),
+            call(
+                5,
+                "track_create",
+                json!({ "name": "t", "description": "SECRET-DESCRIPTION" }),
+            ),
+        ],
+    );
+    let entries = logged(&env);
+    assert_eq!(entries.len(), 5);
+    // Error messages are kept verbatim and may echo input, so every call here
+    // must succeed for the scan below to prove anything about arguments.
+    assert!(entries.iter().all(|e| e.ok), "{entries:?}");
+    assert_eq!(entries[1].target.as_deref(), Some("#1"));
+    assert_eq!(entries[1].changed, ["answer", "spec_file"]);
+    // Scan the raw bytes of every file the log lives in: the database and
+    // its write-ahead log, whichever holds the pages.
+    drop(entries);
+    let log_dir = std::fs::read_dir(env.hub.join("projects"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut scanned = 0;
+    for file in std::fs::read_dir(&log_dir).unwrap() {
+        let file = file.unwrap().path();
+        if !file
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("activity.db")
+        {
+            continue;
+        }
+        scanned += 1;
+        let bytes = std::fs::read(&file).unwrap();
+        for secret in ["SECRET", "Why?"] {
+            assert!(
+                !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
+                "{} holds {secret}",
+                file.display()
+            );
+        }
+    }
+    assert!(scanned >= 1);
+}
+
+#[test]
+fn mcp_process_registers_while_running() {
+    let env = Env::new();
+    let mut child = env
+        .command(
+            &env.project,
+            &["mcp", "--session", "lead-1", "--role", "lead"],
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    writeln!(stdin, "{}", request(1, "ping", json!({}))).unwrap();
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    assert!(line.contains("\"result\""), "{line}");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let running = env.activity().processes(now).unwrap();
+    assert_eq!(running.len(), 1, "{running:?}");
+    assert_eq!(running[0].kind, "mcp");
+    assert_eq!(running[0].session.as_deref(), Some("lead-1"));
+    assert_eq!(running[0].role.as_deref(), Some("lead"));
+    assert_eq!(running[0].pid, child.id());
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    assert!(env.activity().processes(now).unwrap().is_empty());
+}
+
+#[test]
+fn agent_is_taken_from_client_info() {
+    let env = Env::new();
+    env.session(
+        &["--session", "lead-1"],
+        &[
+            call(1, "track_list", json!({})),
+            request(
+                2,
+                "initialize",
+                json!({ "protocolVersion": "2025-06-18", "capabilities": {},
+                        "clientInfo": { "name": "claude-code", "version": "2" } }),
+            ),
+            call(3, "track_list", json!({})),
+        ],
+    );
+    let entries = logged(&env);
+    assert_eq!(entries[0].agent, None);
+    assert_eq!(entries[1].agent.as_deref(), Some("claude-code"));
+}
+
+#[test]
+fn question_answer_on_resolved_question_corrects_it() {
+    let env = Env::new();
+    let s = env.session(
+        &["--session", "lead-1"],
+        &[
+            call(
+                1,
+                "question_ask",
+                json!({ "topic": "melee.md", "question": "Arc?" }),
+            ),
+            call(
+                2,
+                "question_answer",
+                json!({ "question_id": 1, "answer": "Rounded." }),
+            ),
+            call(3, "question_resolve", json!({ "question_id": 1 })),
+            call(
+                4,
+                "question_answer",
+                json!({ "question_id": 1, "answer": "Truncated." }),
+            ),
+        ],
+    );
+    let corrected = s.ok(4);
+    assert_eq!(corrected["status"], "resolved");
+    assert_eq!(corrected["answer"], "Truncated.");
+    assert_eq!(corrected["history"][0]["answer"], "Rounded.");
+    assert_eq!(corrected["corrected_by"], "lead-1");
+
+    let entries = logged(&env);
+    assert_eq!(
+        entries[1].changed,
+        ["answer"],
+        "first answer is not a correction"
+    );
+    assert_eq!(entries[3].command, "question_answer");
+    assert!(entries[3].ok, "{:?}", entries[3]);
+    assert_eq!(entries[3].changed, ["answer", "correction"]);
 }

@@ -1,6 +1,6 @@
 //! Hub store: transitions, leases, validation, concurrency (Spec 01 §2, §3.2).
 
-use airlock::core::{Priority, QuestionStatus, TaskState};
+use airlock::core::{AnswerVersion, Priority, QuestionStatus, TaskState};
 use airlock::store::{NewTask, NotFound, Store, TaskEdit, TrackEdit};
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
@@ -268,7 +268,7 @@ fn question_lifecycle() {
 
     let resolved = store.resolve(1, None, 15).unwrap();
     assert_eq!(resolved.status, QuestionStatus::Resolved);
-    assert!(err(store.answer(1, "late", "lead", None, 16)).contains("already resolved"));
+    assert!(err(store.resolve(1, None, 16)).contains("already resolved"));
     assert!(err(store.question(9).map(|_| ())).contains("no question #9"));
 
     let ids: Vec<u64> = store.questions().unwrap().iter().map(|q| q.id).collect();
@@ -948,4 +948,132 @@ fn tracks_in_use_cannot_be_removed() {
     assert!(store.tracks().unwrap().is_empty());
     let gone = store.remove_track("core", 8).unwrap_err();
     assert!(gone.downcast_ref::<NotFound>().is_some());
+}
+
+#[test]
+fn correcting_a_resolved_answer_keeps_status_and_history() {
+    let (_dir, mut store) = open();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store
+        .answer(1, "first", "lead", Some("docs/spec/melee.md"), 11)
+        .unwrap();
+    store.resolve(1, None, 12).unwrap();
+
+    let corrected = store.answer(1, "second", "lead-1", None, 13).unwrap();
+    assert_eq!(corrected.status, QuestionStatus::Resolved);
+    assert_eq!(corrected.answer.as_deref(), Some("second"));
+    assert_eq!(corrected.answered_by.as_deref(), Some("lead-1"));
+    assert_eq!(corrected.answered_at, Some(13));
+    assert_eq!(corrected.corrected_at, Some(13));
+    assert_eq!(corrected.corrected_by.as_deref(), Some("lead-1"));
+    assert_eq!(
+        corrected.history,
+        [AnswerVersion {
+            answer: "first".into(),
+            answered_by: Some("lead".into()),
+            answered_at: Some(11),
+            spec_file: Some("docs/spec/melee.md".into()),
+        }]
+    );
+    assert_eq!(store.question(1).unwrap(), corrected, "persisted");
+    assert_eq!(store.questions().unwrap(), [corrected]);
+}
+
+#[test]
+fn answering_an_open_question_is_not_a_correction() {
+    let (_dir, mut store) = open();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    let answered = store.answer(1, "first", "lead", None, 11).unwrap();
+    assert_eq!(answered.status, QuestionStatus::Answered);
+    assert_eq!(answered.corrected_at, None);
+    assert_eq!(answered.corrected_by, None);
+    assert!(answered.history.is_empty());
+}
+
+#[test]
+fn two_corrections_keep_both_earlier_answers() {
+    let (_dir, mut store) = open();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    for (i, text) in ["first", "second", "third"].into_iter().enumerate() {
+        store.answer(1, text, "lead", None, 11 + i as i64).unwrap();
+    }
+    let q = store.question(1).unwrap();
+    assert_eq!(q.status, QuestionStatus::Answered);
+    assert_eq!(q.answer.as_deref(), Some("third"));
+    assert_eq!(q.corrected_at, Some(13));
+    let earlier: Vec<&str> = q.history.iter().map(|v| v.answer.as_str()).collect();
+    assert_eq!(earlier, ["first", "second"], "oldest first");
+}
+
+#[test]
+fn answered_questions_from_older_databases_can_be_corrected_after_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    legacy_db(&path, 3, &[]);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO questions (topic, asked_by, question, status, answer, answered_by, created_at, answered_at)
+             VALUES ('melee.md', 'engine-1', 'Arc?', 'resolved', 'old', 'lead', 1, 2)",
+            [],
+        )
+        .unwrap();
+
+    let mut store = Store::open(&path).unwrap();
+    let before = store.question(1).unwrap();
+    assert_eq!(before.corrected_at, None);
+    assert!(before.history.is_empty());
+
+    let corrected = store.answer(1, "new", "lead", None, 10).unwrap();
+    assert_eq!(corrected.status, QuestionStatus::Resolved);
+    assert_eq!(corrected.history[0].answer, "old");
+    assert_eq!(corrected.history[0].answered_at, Some(2));
+}
+
+#[test]
+fn old_processes_cannot_replace_an_answer_without_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    let mut store = Store::open(&path).unwrap();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store.answer(1, "first", "lead", None, 11).unwrap();
+    drop(store);
+
+    // What an airlock process from before the migration would still do.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let update = conn
+        .execute(
+            "UPDATE questions SET status = 'answered', answer = 'overwritten', answered_by = 'lead',
+                    answered_at = 12 WHERE id = 1",
+            [],
+        )
+        .expect_err("an answer change without history must be refused");
+    assert!(
+        update.to_string().contains("restart old airlock processes"),
+        "{update}"
+    );
+    // Other columns of an answered question still change freely.
+    conn.execute("UPDATE questions SET status = 'resolved' WHERE id = 1", [])
+        .unwrap();
+    drop(conn);
+
+    // The normal correction path passes, also twice within one second.
+    let mut store = Store::open(&path).unwrap();
+    store.answer(1, "second", "lead-1", None, 13).unwrap();
+    let q = store.answer(1, "third", "lead-1", None, 13).unwrap();
+    assert_eq!(q.answer.as_deref(), Some("third"));
+    assert_eq!(q.status, QuestionStatus::Resolved);
+    let earlier: Vec<&str> = q.history.iter().map(|v| v.answer.as_str()).collect();
+    assert_eq!(earlier, ["first", "second"]);
+    drop(store);
+
+    // Earlier history does not cover the current answer.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let again = conn
+        .execute("UPDATE questions SET answer = 'lost' WHERE id = 1", [])
+        .expect_err("history of earlier answers does not cover the current one");
+    assert!(
+        again.to_string().contains("restart old airlock processes"),
+        "{again}"
+    );
 }

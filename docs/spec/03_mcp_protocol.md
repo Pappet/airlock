@@ -23,7 +23,14 @@ Example client configuration (Claude Code `.mcp.json`):
 - Protocol revisions `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`. `initialize` echoes the client's requested revision if supported, otherwise offers the newest. The result carries `capabilities.tools`, `serverInfo`, and `instructions` describing the claim/heartbeat/complete workflow.
 - Methods: `initialize`, `ping`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`. The server advertises the `tools` and `prompts` capabilities; its one prompt, `start`, is the session briefing (Spec 06 §3.2). Notifications (e.g. `notifications/initialized`) get no response, and neither do responses sent by the client (the server issues no requests). JSON-RPC batches are not supported.
 - The server does not track the lifecycle: calls before `initialize` are served as well. Clients are expected to initialize first; the leniency only keeps local tooling simple.
+- `initialize` records the client's `clientInfo.name` as the `agent` of the server's activity log entries (§1.2).
 - Errors: unparsable input → `-32700`; a non-object message, or a message with an `id` but without a string `method` that is not a response → `-32600`; unknown method → `-32601`; unknown or hidden tool, or non-object `arguments` → `-32602`.
+
+### 1.2 Activity Log and Process Registry
+
+Every `tools/call` and every `prompts/get` of the `start` prompt is recorded in the activity log (Spec 01 §3.5), as one entry per call: the tool name as `command` (`prompt start` for the prompt), the session and role of the server, whether the role is clean-room, `channel: mcp`, the `clientInfo.name` from `initialize` as `agent`, a `target` (task id, question id, track name) where the arguments name one, and the argument names as `changed`. Argument values are not recorded except the short enumerated ones of Spec 01 §3.5; `do`, `verify`, notes, question and answer text, and descriptions never reach the log. Failures are recorded with their message, including calls to a tool hidden from a clean-room role and unknown tools. Writing the log never changes a response: a failure only prints `airlock: activity log: <error>` on stderr. Protocol methods other than these two (`ping`, `tools/list`, …) are not recorded. No tool exposes the log, and the clean-room tool set (§2.1) is unchanged.
+
+At startup, a server that resolved its project registers itself in the process registry (Spec 01 §3.6) with its session and role, refreshes the entry every 60 seconds, and removes it when stdin closes.
 
 ---
 
@@ -53,9 +60,9 @@ Without `--role`, all tools are exposed and `role` parameters are required where
 A successful call returns its result as `structuredContent` (always a JSON object) and, for clients without structured output, the same JSON as a text content block. Invalid or missing arguments and failed operations are returned as tool results with `isError: true` and a one-line message (e.g. ``task `E-6d` is claimed by engine-2 (lease expires in 12 min)``), so the model can correct itself.
 
 ### 3.0 `session_start`
-The session briefing (Spec 06 §3): role, rules, reading list, claimed work, next package, answered questions. Agents call it first. Part of the clean-room tool set.
+The session briefing (Spec 06 §3): role, rules, reading list, claimed work, next package, answered questions, changed answers. Agents call it first. Part of the clean-room tool set.
 - **Parameters:** none
-- **Returns:** the structured briefing in `structuredContent`; the text content is the briefing as Markdown rather than JSON.
+- **Returns:** the structured briefing in `structuredContent`; the text content is the briefing as Markdown rather than JSON. Next to `answered_questions`, `structuredContent` carries `corrected_answers`: the session's resolved questions whose answer was corrected since its previous briefing (Spec 06 §3.1), each with the new `answer`, `corrected_at`, `corrected_by`, and `history`. The Markdown shows them under "Answer changed".
 
 ### 3.1 `task_next`
 Returns the next ready task for a role (Spec 01 §2.1 selection order: track priority, task priority, age) without claiming it.
@@ -112,7 +119,7 @@ Tracks are named lines of work with their own priority (Spec 01 §2.5). None of 
 
 ### 3.12 `question_answer`
 - **Parameters:** `question_id` (integer), `answer` (string), `spec_file` (string, optional)
-- **Returns:** the updated question.
+- **Returns:** the updated question. Answering a question that already has an answer, `answered` or `resolved`, is a **correction** (Spec 01 §2.2): the new answer replaces the current one, `history` lists the earlier answers (each `{ answer, answered_by, answered_at, spec_file }`, oldest first), `corrected_at` and `corrected_by` are set, and the status is unchanged. A question that was never corrected carries none of the three fields. The tool is not part of the clean-room set, so only non-clean-room sessions can answer or correct. The successful call is logged with `correction` among its `changed` names, which raises an `answer_corrected` problem (Spec 01 §3.7).
 
 ### 3.13 `question_resolve`
 - **Parameters:** `question_id` (integer), `spec_file` (string, optional)

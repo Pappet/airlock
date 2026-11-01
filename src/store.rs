@@ -7,8 +7,8 @@
 //! seconds) so behavior is testable without a clock.
 
 use crate::core::{
-    Priority, Question, QuestionStatus, Task, TaskState, TaskStatus, Track, check_dependencies,
-    check_task_prefix, check_track_name, dependents, task_number,
+    AnswerVersion, Priority, Question, QuestionStatus, Task, TaskState, TaskStatus, Track,
+    check_dependencies, check_task_prefix, check_track_name, dependents, task_number,
 };
 use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
 
 const SCHEMA_V1: &str = "
 CREATE TABLE tasks (
@@ -104,6 +104,37 @@ BEGIN
 END;
 ";
 
+/// Answer corrections: the replaced answers are kept per question, oldest
+/// first, and the question records who corrected it last and when. A trigger
+/// refuses to replace an answer unless the newest history row holds it, so an
+/// airlock process from before the migration, still running, cannot overwrite
+/// an answer and lose the earlier text.
+const SCHEMA_V5: &str = "
+ALTER TABLE questions ADD COLUMN corrected_at INTEGER;
+ALTER TABLE questions ADD COLUMN corrected_by TEXT;
+CREATE TABLE answer_history (
+    question_id INTEGER NOT NULL REFERENCES questions (id),
+    seq         INTEGER NOT NULL,
+    answer      TEXT NOT NULL,
+    answered_by TEXT,
+    answered_at INTEGER,
+    spec_file   TEXT,
+    PRIMARY KEY (question_id, seq)
+) STRICT;
+CREATE TRIGGER questions_answer_history BEFORE UPDATE OF answer ON questions
+WHEN OLD.answer IS NOT NULL
+ AND NOT EXISTS (
+     SELECT 1 FROM answer_history h
+      WHERE h.question_id = OLD.id
+        AND h.seq = (SELECT max(seq) FROM answer_history WHERE question_id = OLD.id)
+        AND h.answer = OLD.answer
+        AND h.answered_by IS OLD.answered_by
+        AND h.answered_at IS OLD.answered_at)
+BEGIN
+    SELECT RAISE(ABORT, 'answer history missing for a replaced answer; restart old airlock processes');
+END;
+";
+
 const SELECT_TASKS: &str = "
 SELECT id, title, role, state, priority,
        (SELECT json_group_array(blocked_by)
@@ -115,7 +146,8 @@ const SELECT_TRACKS: &str =
     "SELECT name, priority, description, created_at, updated_at FROM tracks";
 
 const SELECT_QUESTIONS: &str = "
-SELECT id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at
+SELECT id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at,
+       corrected_at, corrected_by
   FROM questions";
 
 /// Fields of a task to be created. The store assigns the id
@@ -265,7 +297,11 @@ impl Store {
             .conn
             .prepare(&format!("{SELECT_QUESTIONS} ORDER BY id DESC"))?;
         let rows = stmt.query_map([], question_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut questions: Vec<Question> = rows.collect::<rusqlite::Result<_>>()?;
+        for question in &mut questions {
+            question.history = load_history(&self.conn, question.id)?;
+        }
+        Ok(questions)
     }
 
     pub fn question(&self, id: u64) -> Result<Question> {
@@ -700,6 +736,9 @@ impl Store {
         Ok(question)
     }
 
+    /// Records the answer. On a question that already has one (answered or
+    /// resolved) this is a correction: the current answer moves to the
+    /// history, the status stays, and `corrected_at`/`corrected_by` are set.
     pub fn answer(
         &mut self,
         id: u64,
@@ -710,17 +749,36 @@ impl Store {
     ) -> Result<Question> {
         let tx = self.write(now)?;
         let question = load_question(&tx, id)?;
-        ensure!(
-            question.status != QuestionStatus::Resolved,
-            "question #{id} is already resolved"
-        );
-        tx.execute(
-            "UPDATE questions
-                SET status = 'answered', answer = ?1, answered_by = ?2, answered_at = ?3,
-                    spec_file = coalesce(?4, spec_file)
-              WHERE id = ?5",
-            params![answer, session, now, spec_file, sql_id(id)?],
-        )?;
+        if let Some(previous) = &question.answer {
+            tx.execute(
+                "INSERT INTO answer_history (question_id, seq, answer, answered_by, answered_at, spec_file)
+                 VALUES (?1, (SELECT coalesce(max(seq), 0) + 1 FROM answer_history WHERE question_id = ?1),
+                         ?2, ?3, ?4, ?5)",
+                params![
+                    sql_id(id)?,
+                    previous,
+                    question.answered_by,
+                    question.answered_at,
+                    question.spec_file
+                ],
+            )?;
+            tx.execute(
+                "UPDATE questions
+                    SET answer = ?1, answered_by = ?2, answered_at = ?3,
+                        spec_file = coalesce(?4, spec_file),
+                        corrected_at = ?3, corrected_by = ?2
+                  WHERE id = ?5",
+                params![answer, session, now, spec_file, sql_id(id)?],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE questions
+                    SET status = 'answered', answer = ?1, answered_by = ?2, answered_at = ?3,
+                        spec_file = coalesce(?4, spec_file)
+                  WHERE id = ?5",
+                params![answer, session, now, spec_file, sql_id(id)?],
+            )?;
+        }
         let question = load_question(&tx, id)?;
         tx.commit()?;
         Ok(question)
@@ -776,7 +834,8 @@ impl Store {
         )?;
         // Tasks reference tracks, so tasks go first and come back last.
         tx.execute_batch(
-            "DELETE FROM task_deps; DELETE FROM tasks; DELETE FROM tracks; DELETE FROM questions;",
+            "DELETE FROM task_deps; DELETE FROM tasks; DELETE FROM tracks;
+             DELETE FROM answer_history; DELETE FROM questions;",
         )?;
         for track in &snapshot.tracks {
             tx.execute(
@@ -826,8 +885,8 @@ impl Store {
         }
         for q in &snapshot.questions {
             tx.execute(
-                "INSERT INTO questions (id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO questions (id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at, corrected_at, corrected_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     sql_id(q.id)?,
                     q.topic,
@@ -838,9 +897,25 @@ impl Store {
                     q.answered_by,
                     q.spec_file,
                     q.created_at,
-                    q.answered_at
+                    q.answered_at,
+                    q.corrected_at,
+                    q.corrected_by
                 ],
             )?;
+            for (seq, version) in (1_i64..).zip(&q.history) {
+                tx.execute(
+                    "INSERT INTO answer_history (question_id, seq, answer, answered_by, answered_at, spec_file)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        sql_id(q.id)?,
+                        seq,
+                        version.answer,
+                        version.answered_by,
+                        version.answered_at,
+                        version.spec_file
+                    ],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -987,13 +1062,33 @@ fn ensure_track(conn: &Connection, name: &str) -> Result<()> {
 }
 
 fn load_question(conn: &Connection, id: u64) -> Result<Question> {
-    conn.query_row(
-        &format!("{SELECT_QUESTIONS} WHERE id = ?1"),
-        [sql_id(id)?],
-        question_from_row,
-    )
-    .optional()?
-    .ok_or_else(|| NotFound(format!("no question #{id}")).into())
+    let mut question = conn
+        .query_row(
+            &format!("{SELECT_QUESTIONS} WHERE id = ?1"),
+            [sql_id(id)?],
+            question_from_row,
+        )
+        .optional()?
+        .ok_or_else(|| NotFound(format!("no question #{id}")))?;
+    question.history = load_history(conn, id)?;
+    Ok(question)
+}
+
+/// The answers a question's corrections replaced, oldest first.
+fn load_history(conn: &Connection, id: u64) -> Result<Vec<AnswerVersion>> {
+    let mut stmt = conn.prepare(
+        "SELECT answer, answered_by, answered_at, spec_file FROM answer_history
+          WHERE question_id = ?1 ORDER BY seq",
+    )?;
+    let rows = stmt.query_map([sql_id(id)?], |row| {
+        Ok(AnswerVersion {
+            answer: row.get(0)?,
+            answered_by: row.get(1)?,
+            answered_at: row.get(2)?,
+            spec_file: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 fn find<'a>(tasks: &'a [Task], id: &str) -> Result<&'a Task> {
@@ -1180,5 +1275,8 @@ fn question_from_row(row: &Row<'_>) -> rusqlite::Result<Question> {
         spec_file: row.get(7)?,
         created_at: row.get(8)?,
         answered_at: row.get(9)?,
+        corrected_at: row.get(10)?,
+        corrected_by: row.get(11)?,
+        history: Vec::new(),
     })
 }

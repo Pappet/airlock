@@ -4,6 +4,10 @@ Validation of the onboarding flow (Spec 06) with real agent harnesses on the Ope
 
 Do not copy analysis material (decompiled output, `re/` content) into this file, task notes, or questions.
 
+## Evidence
+
+Runs 1 to 3 were reconstructed by reading the harnesses' transcripts by hand. Later runs take their evidence from Airlock's own activity log instead (Spec 01 §3.5): `airlock activity --since 2h` lists every call of the run in order, with channel, session, command, target, and the exact error of each refusal; `--session <id>` follows one agent, `--failures` shows the refusals, and `--problems` lists what Airlock itself flagged (clean-room sessions writing through the CLI, bursts of errors, corrected answers, `airlock mcp` processes from before an upgrade). `--json` gives the same for pasting into a run record. The Activity tab of the dashboard shows it live. The log holds no task text or answers, so it can be quoted here, but it covers only what passed through Airlock: what an agent decided or said stays in its transcript.
+
 ## Scenarios
 
 | | Scenario | Checks |

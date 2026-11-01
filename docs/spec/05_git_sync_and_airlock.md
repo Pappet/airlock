@@ -65,7 +65,7 @@ The snapshot (`src/snapshot.rs`) contains semantic project state only. **Session
 
 ```json
 {
-  "format_version": 2,
+  "format_version": 3,
   "project_id": "<uuid>",
   "roles": { "<name>": { "description": "...", "clean_room": false } },
   "tracks": [ … ],
@@ -91,7 +91,9 @@ The snapshot (`src/snapshot.rs`) contains semantic project state only. **Session
 
 **Track records** (`tracks`, sorted by name): `name`, `priority` (as for tasks), `description`, `created_at`. `updated_at` is not exported.
 
-**Questions** are exported with all fields (Spec 01 §2.2).
+**Questions** are exported with all fields (Spec 01 §2.2). Format 3 adds the answer history: `corrected_at` (integer), `corrected_by` (string), and `history`, a list of the answers that corrections replaced, oldest first, each `{ answer, answered_by, answered_at, spec_file }` (`answered_by`, `answered_at`, and `spec_file` are `null` when unknown). The three fields are omitted for a question that was never corrected, so such a question serializes exactly as in format 2.
+
+The **activity log** and the process registry (Spec 01 §3.5, §3.6) are not part of the snapshot: they are machine-local session history, not project state. `sync` never reads them and `import` never touches them.
 
 ### 3.3 Deterministic Serialization
 Re-running `airlock sync` on unchanged state must produce a zero diff:
@@ -102,10 +104,13 @@ Re-running `airlock sync` on unchanged state must produce a zero diff:
 
 `tests/snapshot.rs` pins the exact bytes with a golden file; any change to it is a format change and requires bumping `format_version`.
 
-The Markdown views (`src/views.rs`) are rendered from the snapshot itself, not from live state, so they follow the same rules: sorted, no timestamps, and unchanged by claims (a claimed task appears as ready). Files whose content is unchanged are not rewritten; changed files are written atomically (temp file, `fsync`, rename). Single-line fields (ids, titles, roles, topics, session ids) have their whitespace collapsed in headings and table cells, so input with newlines cannot break the document structure.
+The Markdown views (`src/views.rs`) are rendered from the snapshot itself, not from live state, so they follow the same rules: sorted, free of timestamps except the date of an answer correction, and unchanged by claims (a claimed task appears as ready). Files whose content is unchanged are not rewritten; changed files are written atomically (temp file, `fsync`, rename). Single-line fields (ids, titles, roles, topics, session ids) have their whitespace collapsed in headings and table cells, so input with newlines cannot break the document structure.
+
+**`QUESTIONS.md` and corrections.** A question shows its current answer as `- **Answer** (<session>): …`. A corrected question adds, directly below it, `- **Corrected** (<session>, <YYYY-MM-DD>)` (UTC date of the latest correction; this is the only date the views carry), and then one `- **Earlier answer** (<session>): …` line per entry of `history`, newest first. `- **Codified in:**` follows. The author falls back to `unknown` when the history entry has none. A question that was never corrected renders exactly as before.
 
 ### 3.4 Import (`airlock import`)
-- Format 1 snapshots (integer priorities, no tracks) are still read: priorities convert as 30 and up `high`, 10 to 29 `normal`, below 10 `low`, and there are no tracks. The next `sync` writes format 2.
+- Format 1 snapshots (integer priorities, no tracks) are still read: priorities convert as 30 and up `high`, 10 to 29 `normal`, below 10 `low`, and there are no tracks. The next `sync` writes the current format.
+- Format 2 snapshots (no answer history) are read as is; format 3 adds `corrected_at`, `corrected_by`, and `history` to questions. They are omitted for a question that was never corrected, so those questions export unchanged.
 - The JSON snapshot is the only import source. Markdown files are views and are never parsed to reconstruct state.
 - Before writing, import checks: `format_version` is supported, `project_id` matches the resolved project, roles referenced by tasks exist, track names are valid and unique and every task track is defined in the snapshot, and the dependency graph is valid (unique ids, known prerequisites, no cycles).
 - Import replaces tasks, tracks, and questions and records the snapshot's hash as known in one transaction, then writes the roles to `project.json`. If that last write fails, the data is already imported; re-running the import completes it. Import requires confirmation (`--yes` or interactive prompt). Question ids are kept; new questions continue after the highest id this hub ever used or imported, so ids are never reused.
@@ -136,7 +141,7 @@ Either side was written by this hub, so §3.5 lets `sync` overwrite it with the 
 ### 4.1 What Airlock Provides
 - **Curated work packages:** clean-room sessions receive *Read/Touch/Do/Verify* packages that point only at committed behavioral specs.
 - **A structured question channel:** questions and prose answers, with asker, answerer, timestamps, and the spec file that codified the answer.
-- **An audit trail:** `QUESTIONS.md` records what crossed the boundary, in git history.
+- **An audit trail:** `QUESTIONS.md` records what crossed the boundary, in git history. A corrected answer keeps its earlier versions there (§3.3), so a correction cannot silently replace what an asking session may already have built on.
 - **Role-bound tool sets:** MCP servers bound to a clean-room role expose a restricted tool set (Spec 03 §2.1).
 
 ### 4.2 What Airlock Does Not Provide

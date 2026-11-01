@@ -4,17 +4,20 @@
 //! optionally to one role. Sessions bound to a clean-room role see a reduced
 //! tool set restricted to their own role's tasks and their own questions.
 
+use crate::activity::{self, ActivityLog, Channel, Entry};
 use crate::app::{
     TaskView, TrackView, claim, done_ids, ensure_role, next_ready, project_root, unix_now,
 };
 use crate::briefing::{self, Briefing, Via, WorkPackage};
-use crate::core::{Priority, QuestionStatus, Task, dependents};
+use crate::core::{Priority, Question, QuestionStatus, Task, dependents};
 use crate::hub::{Hub, Project};
 use crate::store::{NewTask, Store, TaskEdit, TrackEdit};
 use crate::sync;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// Supported protocol revisions, newest first. The tool API is the same in all of them.
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -44,6 +47,8 @@ pub struct Server {
     session: String,
     role: Option<String>,
     store: Store,
+    /// The client's name from `initialize`, recorded with every logged call.
+    agent: Option<String>,
 }
 
 impl Server {
@@ -58,11 +63,22 @@ impl Server {
             session,
             role,
             store,
+            agent: None,
         })
     }
 
     /// Serves requests from `input` until it closes, one JSON message per line.
-    pub fn run(&mut self, input: impl BufRead, mut output: impl Write) -> Result<()> {
+    /// While it runs, the server is listed in the project's process registry.
+    pub fn run(&mut self, input: impl BufRead, output: impl Write) -> Result<()> {
+        let registration = self.register();
+        let result = self.serve(input, output);
+        if let Some(registration) = registration {
+            registration.end();
+        }
+        result
+    }
+
+    fn serve(&mut self, input: impl BufRead, mut output: impl Write) -> Result<()> {
         for line in input.lines() {
             let line = line.context("reading from stdin")?;
             if line.trim().is_empty() {
@@ -83,6 +99,48 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// Lists this server in the process registry and starts its heartbeat.
+    /// A failure is reported and the server runs unregistered.
+    fn register(&self) -> Option<Registration> {
+        let path = ActivityLog::path_for(&self.project.database);
+        let registered = ActivityLog::open(&path).and_then(|mut log| {
+            let process =
+                log.register("mcp", Some(&self.session), self.role.as_deref(), unix_now())?;
+            Ok((log, process))
+        });
+        let (log, process) = match registered {
+            Ok(registered) => registered,
+            Err(e) => {
+                eprintln!("airlock: activity log: {e:#}");
+                return None;
+            }
+        };
+        let id = process.id;
+        let (stop, stopped) = mpsc::channel::<()>();
+        let heartbeat = std::thread::spawn(move || {
+            // Its own connection: the one in `log` belongs to the caller.
+            let mut log = match ActivityLog::open(&path) {
+                Ok(log) => log,
+                Err(e) => {
+                    eprintln!("airlock: activity log: heartbeat: {e:#}");
+                    return;
+                }
+            };
+            while stopped
+                .recv_timeout(Duration::from_secs(activity::TOUCH_SECS))
+                .is_err_and(|e| e == mpsc::RecvTimeoutError::Timeout)
+            {
+                let _ = log.touch(&process, unix_now());
+            }
+        });
+        Some(Registration {
+            log,
+            id,
+            stop,
+            heartbeat,
+        })
     }
 
     /// Handles one message; returns the response, or `None` for notifications.
@@ -126,7 +184,12 @@ impl Server {
         })
     }
 
-    fn initialize(&self, params: &Value) -> Value {
+    fn initialize(&mut self, params: &Value) -> Value {
+        self.agent = params
+            .pointer("/clientInfo/name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
         let requested = params.get("protocolVersion").and_then(Value::as_str);
         let version = requested
             .filter(|v| PROTOCOL_VERSIONS.contains(v))
@@ -159,9 +222,12 @@ impl Server {
             Some(name) => return Err((INVALID_PARAMS, format!("unknown prompt `{name}`"))),
             None => return Err((INVALID_PARAMS, "missing prompt name".to_string())),
         }
-        let brief = self
+        let result = self
             .briefing()
-            .map_err(|e| (INTERNAL_ERROR, format!("{e:#}")))?;
+            .map_err(|e| (INTERNAL_ERROR, format!("{e:#}")));
+        let error = result.as_ref().err().map(|(_, message)| message.as_str());
+        self.log_call("prompt start", None, Vec::new(), error);
+        let brief = result?;
         Ok(json!({
             "description": "Airlock session briefing",
             "messages": [{
@@ -176,11 +242,14 @@ impl Server {
 
     fn briefing(&mut self) -> Result<Briefing> {
         self.project.config = self.hub.load_config(&self.project.id)?;
+        // Read before this briefing is logged, so it is the one before this.
+        let previous = activity::last_briefing_quietly(&self.project.database, &self.session);
         briefing::build(
             &self.store,
             &self.project,
             &self.session,
             self.role.as_deref(),
+            previous,
             unix_now(),
         )
     }
@@ -190,14 +259,45 @@ impl Server {
             .get("name")
             .and_then(Value::as_str)
             .ok_or((INVALID_PARAMS, "missing tool name".to_string()))?;
+        let empty = Map::new();
+        let args = match params.get("arguments") {
+            None | Some(Value::Null) => Some(&empty),
+            Some(Value::Object(args)) => Some(args),
+            Some(_) => None,
+        };
+        let result = self.run_tool(name, args);
+        // Read from the outcome: the returned question says whether this call corrected it.
+        let correction = name == "question_answer"
+            && result.as_ref().is_ok_and(|result| {
+                result["isError"] == false
+                    && serde_json::from_value::<Question>(result["structuredContent"].clone())
+                        .is_ok_and(|q| activity::corrects(&q))
+            });
+        let (target, mut changed) = args.map_or((None, Vec::new()), |args| {
+            activity::summarize_json(name, args)
+        });
+        let error = match &result {
+            Err((_, message)) => Some(message.as_str()),
+            Ok(result) if result["isError"] == true => result["content"][0]["text"].as_str(),
+            Ok(_) => None,
+        };
+        if correction && error.is_none() {
+            changed.push("correction".to_string());
+        }
+        self.log_call(name, target, changed, error);
+        result
+    }
+
+    fn run_tool(
+        &mut self,
+        name: &str,
+        args: Option<&Map<String, Value>>,
+    ) -> Result<Value, (i64, String)> {
         if !self.tool_available(name) {
             return Err((INVALID_PARAMS, format!("unknown tool `{name}`")));
         }
-        let empty = Map::new();
-        let args = match params.get("arguments") {
-            None | Some(Value::Null) => &empty,
-            Some(Value::Object(args)) => args,
-            Some(_) => return Err((INVALID_PARAMS, "arguments must be an object".to_string())),
+        let Some(args) = args else {
+            return Err((INVALID_PARAMS, "arguments must be an object".to_string()));
         };
         if name == "session_start" {
             // The briefing reads best as Markdown; the structure is in structuredContent.
@@ -224,6 +324,35 @@ impl Server {
                 "isError": true,
             }),
         })
+    }
+
+    /// Records one call in the activity log; `error` is `None` for a success.
+    /// Logging never changes the response: a failure only reaches stderr.
+    fn log_call(
+        &self,
+        command: &str,
+        target: Option<String>,
+        changed: Vec<String>,
+        error: Option<&str>,
+    ) {
+        let entry = Entry {
+            id: 0,
+            at: unix_now(),
+            session: self.session.clone(),
+            role: self.role.clone(),
+            clean_room: self.clean_room(),
+            channel: Channel::Mcp,
+            agent: self.agent.clone(),
+            command: command.to_string(),
+            target,
+            changed,
+            write: activity::is_write(command),
+            ok: error.is_none(),
+            error: error.map(str::to_string),
+            pid: std::process::id(),
+            build: activity::build().to_string(),
+        };
+        activity::record_quietly(&self.project.database, &entry);
     }
 
     fn call(&mut self, name: &str, args: &Map<String, Value>) -> Result<Value> {
@@ -487,6 +616,25 @@ impl Server {
     }
 }
 
+/// This server's row in the process registry and the thread keeping it fresh.
+struct Registration {
+    log: ActivityLog,
+    id: u64,
+    stop: mpsc::Sender<()>,
+    heartbeat: std::thread::JoinHandle<()>,
+}
+
+impl Registration {
+    /// Stops the heartbeat and removes the registry row.
+    fn end(mut self) {
+        drop(self.stop);
+        let _ = self.heartbeat.join();
+        if let Err(e) = self.log.unregister(self.id) {
+            eprintln!("airlock: activity log: {e:#}");
+        }
+    }
+}
+
 fn tool_definitions(role_bound: bool) -> Vec<Value> {
     let task_id = json!({ "type": "string", "description": "Task id, e.g. \"E-6d\"" });
     let lease = json!({ "type": "integer", "minimum": 1, "description": "Lease duration in minutes (default: project setting)" });
@@ -628,7 +776,7 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
         ),
         tool(
             "question_answer",
-            "Answer or revise the answer to a question, in behavioral prose.",
+            "Answer a question in behavioral prose. Answering one that already has an answer, resolved or not, corrects it; the earlier answer is kept.",
             json!({
                 "question_id": question_id,
                 "answer": { "type": "string" },

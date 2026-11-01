@@ -9,12 +9,13 @@ use crate::core::{GraphError, Priority, Question, Task, TaskState, Track, check_
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Current snapshot format version. Version 2 added tracks and named priorities.
-pub const FORMAT_VERSION: u32 = 2;
+/// Current snapshot format version. Version 2 added tracks and named
+/// priorities; version 3 added answer corrections and their history.
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Format versions `airlock import` reads. Version 1 (integer priorities, no
-/// tracks) is converted on load.
-pub const SUPPORTED_VERSIONS: [u32; 2] = [1, FORMAT_VERSION];
+/// tracks) is converted on load; version 2 (no answer history) loads as is.
+pub const SUPPORTED_VERSIONS: [u32; 3] = [1, 2, FORMAT_VERSION];
 
 /// The canonical, lossless export of one project's state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

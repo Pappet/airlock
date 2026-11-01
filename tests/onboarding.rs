@@ -868,3 +868,116 @@ fn doctor_checks_claude_local_scope_against_every_worktree() {
     );
     assert!(has("not valid JSON"), "{warnings:?}");
 }
+
+/// Runs `session_start` for the bound engine worktree and returns the response.
+fn engine_session_start(env: &Env) -> Value {
+    let (responses, _) = mcp_session(
+        env,
+        &env.engine,
+        &[],
+        &[
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "t", "version": "0" } } }),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "session_start", "arguments": {} } }),
+        ],
+    );
+    responses[1]["result"].clone()
+}
+
+#[test]
+fn briefing_shows_answer_changed_until_the_next_briefing() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine"]);
+    env.ok(
+        &env.engine,
+        &["question", "ask", "Arc?", "--topic", "melee.md"],
+    );
+    env.ok(&env.main, &["question", "answer", "1", "Rounded."]);
+    env.ok(&env.main, &["question", "resolve", "1"]);
+
+    let first = engine_session_start(&env);
+    let text = first["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("Answer changed"), "{text}");
+    assert_eq!(first["structuredContent"]["corrected_answers"], json!([]));
+
+    // No pause after the first briefing: a correction in its very second still shows.
+    env.ok(&env.main, &["question", "answer", "1", "Truncated."]);
+    // Log times are whole seconds: the second briefing must fall after the
+    // correction, or the third could not tell the correction was already shown.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    let second = engine_session_start(&env);
+    let text = second["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("## Answer changed"), "{text}");
+    assert!(text.contains("#1 (melee.md)") && text.contains("Truncated."));
+    let corrected = &second["structuredContent"]["corrected_answers"];
+    assert_eq!(corrected[0]["id"], 1);
+    assert_eq!(corrected[0]["answer"], "Truncated.");
+    assert_eq!(corrected[0]["history"][0]["answer"], "Rounded.");
+    assert_eq!(second["structuredContent"]["answered_questions"], json!([]));
+
+    let third = engine_session_start(&env);
+    let text = third["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("Answer changed"), "{text}");
+    assert_eq!(third["structuredContent"]["corrected_answers"], json!([]));
+}
+
+#[test]
+fn corrected_answer_still_unresolved_is_marked_not_repeated() {
+    let env = Env::new();
+    env.ok(&env.engine, &["use", "engine"]);
+    env.ok(
+        &env.engine,
+        &["question", "ask", "Arc?", "--topic", "melee.md"],
+    );
+    env.ok(&env.main, &["question", "answer", "1", "Rounded."]);
+    env.ok(&env.main, &["question", "answer", "1", "Truncated."]);
+
+    let text = env.ok(&env.engine, &["start"]);
+    assert!(!text.contains("Answer changed"), "{text}");
+    assert_eq!(text.matches("Truncated.").count(), 1, "{text}");
+    assert!(text.contains("## Answers to your questions"));
+    assert!(text.contains("**#1 (melee.md)** (corrected)"), "{text}");
+
+    let brief = env.json(&env.engine, &["start"]);
+    assert_eq!(brief["corrected_answers"], json!([]));
+    assert_eq!(brief["answered_questions"][0]["id"], 1);
+}
+
+#[test]
+fn a_correction_in_the_second_of_the_previous_briefing_is_shown() {
+    use airlock::briefing;
+    use airlock::config::ProjectConfig;
+    use airlock::hub::Project;
+    use airlock::store::Store;
+
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("airlock.db");
+    let mut store = Store::open(&database).unwrap();
+    store.ask("melee.md", "Arc?", "engine-1", 1_000).unwrap();
+    store.answer(1, "Rounded.", "lead", None, 1_001).unwrap();
+    store.resolve(1, None, 1_002).unwrap();
+    store.answer(1, "Truncated.", "lead", None, 1_003).unwrap();
+    let corrected_at = store.question(1).unwrap().corrected_at.unwrap();
+    assert_eq!(corrected_at, 1_003);
+
+    let project = Project {
+        id: "p".into(),
+        config: ProjectConfig::default(),
+        root: None,
+        database,
+        binding: None,
+    };
+    let build =
+        |previous| briefing::build(&store, &project, "engine-1", None, previous, 2_000).unwrap();
+    // The previous briefing happened in the very second of the correction.
+    let same_second = build(Some(corrected_at));
+    assert_eq!(same_second.corrected_answers.len(), 1);
+    assert!(
+        same_second
+            .markdown(briefing::Via::Cli)
+            .contains("## Answer changed")
+    );
+    // One second later it was already seen; a first briefing shows everything.
+    assert!(build(Some(corrected_at + 1)).corrected_answers.is_empty());
+    assert_eq!(build(None).corrected_answers.len(), 1);
+}

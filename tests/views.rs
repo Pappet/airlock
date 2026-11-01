@@ -3,7 +3,7 @@
 mod common;
 
 use airlock::config::ProjectConfig;
-use airlock::core::{Priority, QuestionStatus, TaskState};
+use airlock::core::{AnswerVersion, Priority, QuestionStatus, TaskState};
 use airlock::snapshot::Snapshot;
 use airlock::views;
 use common::{question, task};
@@ -121,4 +121,44 @@ fn single_line_fields_cannot_break_the_structure() {
     let questions = views::questions(&snapshot);
     assert!(questions.contains("\n## melee # injected\n"));
     assert!(questions.contains("- **Asked by:** engine - fake\n"));
+}
+
+#[test]
+fn questions_md_marks_corrections_and_lists_earlier_answers() {
+    let mut q = question(1);
+    q.status = QuestionStatus::Resolved;
+    q.answer = Some("third".into());
+    q.answered_by = Some("lead-2".into());
+    // 2023-11-14 22:13:20 UTC
+    q.corrected_at = Some(1_700_000_000);
+    q.corrected_by = Some("lead-2".into());
+    q.history = vec![
+        AnswerVersion {
+            answer: "first".into(),
+            answered_by: Some("lead".into()),
+            answered_at: None,
+            spec_file: None,
+        },
+        AnswerVersion {
+            answer: "second\nline".into(),
+            answered_by: None,
+            answered_at: None,
+            spec_file: None,
+        },
+    ];
+    q.spec_file = Some("docs/spec/melee.md".into());
+    let corrected = Snapshot::new("p", &ProjectConfig::default(), &[], &[], &[q]);
+    let text = views::questions(&corrected);
+    assert!(
+        text.contains(
+            "- **Answer** (lead-2): third\n- **Corrected** (lead-2, 2023-11-14)\n\
+             - **Earlier answer** (unknown): second\n  line\n\
+             - **Earlier answer** (lead): first\n\
+             - **Codified in:** `docs/spec/melee.md`\n"
+        ),
+        "{text}"
+    );
+
+    // Questions without history render as before.
+    assert!(!views::questions(&snapshot()).contains("Corrected"));
 }

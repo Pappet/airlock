@@ -363,3 +363,98 @@ fn tasks_take_and_lose_tracks() {
         "a track cannot be set and cleared at once"
     );
 }
+
+#[test]
+fn activity_cli_parses_filters() {
+    use airlock::activity::{Channel, Since};
+
+    let cli = parse(&["activity"]);
+    let Command::Activity {
+        role,
+        channel,
+        since,
+        problems,
+        writes,
+        failures,
+        limit,
+    } = cli.command
+    else {
+        panic!("wrong command");
+    };
+    assert!(role.is_none() && channel.is_none() && since.is_none());
+    assert!(!problems && !writes && !failures);
+    assert_eq!(limit, 50);
+
+    let cli = parse(&[
+        "--json",
+        "activity",
+        "--session",
+        "s1",
+        "--role",
+        "engine",
+        "--channel",
+        "cli",
+        "--since",
+        "2h",
+        "--problems",
+        "--writes",
+        "--failures",
+        "--limit",
+        "7",
+    ]);
+    assert_eq!(cli.session.as_deref(), Some("s1"), "the global --session");
+    assert!(cli.json);
+    let Command::Activity {
+        role,
+        channel,
+        since,
+        problems,
+        writes,
+        failures,
+        limit,
+    } = cli.command
+    else {
+        panic!("wrong command");
+    };
+    assert_eq!(role.as_deref(), Some("engine"));
+    assert_eq!(channel, Some(Channel::Cli));
+    assert_eq!(since, Some(Since::Ago(7200)));
+    assert!(problems && writes && failures);
+    assert_eq!(limit, 7);
+}
+
+#[test]
+fn since_accepts_minutes_hours_days_and_unix_seconds() {
+    use airlock::activity::Since;
+
+    for (text, expected) in [
+        ("30m", Since::Ago(1_800)),
+        ("2h", Since::Ago(7_200)),
+        ("1d", Since::Ago(86_400)),
+        ("1700000000", Since::At(1_700_000_000)),
+    ] {
+        assert_eq!(text.parse::<Since>().unwrap(), expected, "{text}");
+    }
+    assert_eq!(Since::Ago(7_200).resolve(10_000), 2_800);
+    assert_eq!(Since::At(5).resolve(10_000), 5);
+
+    for bad in [
+        "",
+        "h",
+        "2w",
+        "-5m",
+        "1.5h",
+        "soon",
+        "99999999999999999999d",
+    ] {
+        let error = bad.parse::<Since>().unwrap_err();
+        assert!(
+            error.contains("30m") && error.contains("2h") && error.contains("1d"),
+            "{bad}: {error}"
+        );
+    }
+    assert!(
+        Cli::try_parse_from(["airlock", "activity", "--since", "soon"]).is_err(),
+        "the CLI refuses it too"
+    );
+}

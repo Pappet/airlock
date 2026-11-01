@@ -92,6 +92,8 @@ pub struct Briefing {
     pub others: Vec<OtherClaim>,
     /// The session's own questions that are answered but not resolved
     pub answered_questions: Vec<Question>,
+    /// The session's resolved questions whose answer was corrected since its previous briefing
+    pub corrected_answers: Vec<Question>,
 }
 
 /// Which interface the command hints in the Markdown refer to.
@@ -101,11 +103,17 @@ pub enum Via {
     Mcp,
 }
 
+/// `previous_briefing` is when the session last got a briefing (unix
+/// seconds); answers corrected at or after it are reported as changed (times
+/// are whole seconds, so a same-second correction is shown rather than lost;
+/// the price is that it may be shown again in the next briefing). `None` means
+/// no earlier briefing is known, so every correction counts.
 pub fn build(
     store: &Store,
     project: &Project,
     session: &str,
     role: Option<&str>,
+    previous_briefing: Option<i64>,
     now: i64,
 ) -> Result<Briefing> {
     let tasks = store.tasks(now)?;
@@ -139,10 +147,23 @@ pub fn build(
             lease_minutes_left: t.lease_minutes_left(now),
         })
         .collect();
-    let answered_questions = store
+    let own_questions: Vec<Question> = store
         .questions()?
         .into_iter()
-        .filter(|q| q.asked_by == session && q.status == QuestionStatus::Answered)
+        .filter(|q| q.asked_by == session)
+        .collect();
+    let corrected_answers = own_questions
+        .iter()
+        .filter(|q| {
+            q.status == QuestionStatus::Resolved
+                && q.corrected_at
+                    .is_some_and(|at| previous_briefing.is_none_or(|previous| at >= previous))
+        })
+        .cloned()
+        .collect();
+    let answered_questions = own_questions
+        .into_iter()
+        .filter(|q| q.status == QuestionStatus::Answered)
         .collect();
 
     Ok(Briefing {
@@ -160,6 +181,7 @@ pub fn build(
         next,
         others,
         answered_questions,
+        corrected_answers,
     })
 }
 
@@ -261,21 +283,25 @@ impl Briefing {
             );
         }
 
+        if !self.corrected_answers.is_empty() {
+            out.push_str(
+                "\n## Answer changed\n\nThese answers were corrected after you last saw them. \
+                 The new answer replaces the old one; adjust work built on the old one.\n\n",
+            );
+            for q in &self.corrected_answers {
+                question_item(&mut out, q, "");
+            }
+        }
+
         if !self.answered_questions.is_empty() {
             out.push_str("\n## Answers to your questions\n\n");
             for q in &self.answered_questions {
-                let _ = writeln!(
-                    out,
-                    "- **#{} ({})** {}\n  → {}",
-                    q.id,
-                    q.topic,
-                    q.question.trim_end().replace('\n', "\n  "),
-                    q.answer
-                        .as_deref()
-                        .unwrap_or("")
-                        .trim_end()
-                        .replace('\n', "\n  ")
-                );
+                let mark = if q.corrected_at.is_some() {
+                    " (corrected)"
+                } else {
+                    ""
+                };
+                question_item(&mut out, q, mark);
             }
         }
 
@@ -302,6 +328,22 @@ impl Briefing {
         );
         out
     }
+}
+
+/// One question with its answer as a list item; `mark` follows the id heading.
+fn question_item(out: &mut String, q: &Question, mark: &str) {
+    let _ = writeln!(
+        out,
+        "- **#{} ({})**{mark} {}\n  → {}",
+        q.id,
+        q.topic,
+        q.question.trim_end().replace('\n', "\n  "),
+        q.answer
+            .as_deref()
+            .unwrap_or("")
+            .trim_end()
+            .replace('\n', "\n  ")
+    );
 }
 
 fn package(out: &mut String, p: &WorkPackage, suffix: &str) {
