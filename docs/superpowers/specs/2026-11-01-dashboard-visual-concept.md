@@ -90,7 +90,7 @@ Effekt auf dem openshr-Board: Rot erscheint auf 3 bis 6 Karten statt auf 40. Dan
 
 **Activity.** Drei Zonen. Oben links „Needs attention“ als Panel mit Glyph-Spalte (`✕` error, `▲` tertiary), Session secondary, Text, Zeit rechts Mono. Oben rechts „Claimed“ und „Blocked · waiting on“ als ausgerichtete Zebra-Tabelle; darunter „Sessions“ als Tabelle (`Session Rolle MCP CLI REST zuletzt`), deren Zeilen zugleich der Session-Filter des Logbooks sind (gewählte Zeile mit secondary-Ring); `nobody on it` gedimmt, tertiary nur bei high/critical-Track. Logbook darunter mit Filter-Pills, Zeilen ohne Linien, Fehlerzeile mit rotem Hauch.
 
-**Review und Questions.** Zweispaltig nach §5.5 Split-Panel: links die Liste (ID, Topic/Datei, Fragesteller, Alter, kompakt), rechts der gewählte Eintrag mit Antwortfeld. Die 960px-Spalte mit leerem Rest entfällt. Formulare: Textarea ohne Rand, Caret primary, Fokus = Ghost-Rand primary + Glow.
+**Review und Questions.** Zweispaltig nach §5.5 Split-Panel: links die Liste (ID, Titel bzw. Frage abgeschnitten, Status; Review: Pips), rechts der gewählte Eintrag mit Topic, Fragesteller, Alter und Antwortfeld. Zeilen sind Toggle-Buttons (`aria-pressed`), die gewählte Zeile hebt sich eine Tonstufe mit secondary-Ring. Die 960px-Spalte mit leerem Rest entfällt. Formulare: Textarea ohne Rand, Caret primary, Fokus = Ghost-Rand primary + Glow.
 
 **Leases.** Dieselben Lease-Reihen wie im Hero, nur mit vollem Titel, Progress-Notiz umbrochen in einem `pre`-Block auf `lowest`, und den Buttons (`Release`, `Force release`) als Ghost-Buttons rechts. Kein horizontaler Überlauf mehr.
 

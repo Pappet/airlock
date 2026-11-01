@@ -930,13 +930,11 @@ function splitView({ rows, selected, onSelect, detail, emptyLabel, emptyText }) 
   if (!rows.length) return empty(emptyLabel, emptyText);
   const id = rows.some((r) => r.id === selected) ? selected : rows[0].id;
   return h("div", { class: "split" },
-    h("aside", { class: "split__list", role: "listbox" },
+    h("aside", { class: "split__list", role: "group", "aria-label": "Items" },
       rows.map((r) => h("button", {
         type: "button",
         class: "split__row",
-        role: "option",
         "aria-pressed": String(r.id === id),
-        "aria-selected": String(r.id === id),
         onclick: () => onSelect(r.id),
       }, r.cells))),
     h("section", { class: "split__detail" }, detail(id)));
