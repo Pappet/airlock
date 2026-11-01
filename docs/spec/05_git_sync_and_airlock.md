@@ -91,7 +91,9 @@ The snapshot (`src/snapshot.rs`) contains semantic project state only. **Session
 
 **Track records** (`tracks`, sorted by name): `name`, `priority` (as for tasks), `description`, `created_at`. `updated_at` is not exported.
 
-**Questions** are exported with all fields (Spec 01 §2.2).
+**Questions** are exported with all fields (Spec 01 §2.2). Format 3 adds the answer history: `corrected_at` (integer), `corrected_by` (string), and `history`, a list of the answers that corrections replaced, oldest first, each `{ answer, answered_by, answered_at, spec_file }` (`answered_by`, `answered_at`, and `spec_file` are `null` when unknown). The three fields are omitted for a question that was never corrected, so such a question serializes exactly as in format 2.
+
+The **activity log** and the process registry (Spec 01 §3.5, §3.6) are not part of the snapshot: they are machine-local session history, not project state. `sync` never reads them and `import` never touches them.
 
 ### 3.3 Deterministic Serialization
 Re-running `airlock sync` on unchanged state must produce a zero diff:
@@ -103,6 +105,8 @@ Re-running `airlock sync` on unchanged state must produce a zero diff:
 `tests/snapshot.rs` pins the exact bytes with a golden file; any change to it is a format change and requires bumping `format_version`.
 
 The Markdown views (`src/views.rs`) are rendered from the snapshot itself, not from live state, so they follow the same rules: sorted, free of timestamps except the date of an answer correction, and unchanged by claims (a claimed task appears as ready). Files whose content is unchanged are not rewritten; changed files are written atomically (temp file, `fsync`, rename). Single-line fields (ids, titles, roles, topics, session ids) have their whitespace collapsed in headings and table cells, so input with newlines cannot break the document structure.
+
+**`QUESTIONS.md` and corrections.** A question shows its current answer as `- **Answer** (<session>): …`. A corrected question adds, directly below it, `- **Corrected** (<session>, <YYYY-MM-DD>)` (UTC date of the latest correction; this is the only date the views carry), and then one `- **Earlier answer** (<session>): …` line per entry of `history`, newest first. `- **Codified in:**` follows. The author falls back to `unknown` when the history entry has none. A question that was never corrected renders exactly as before.
 
 ### 3.4 Import (`airlock import`)
 - Format 1 snapshots (integer priorities, no tracks) are still read: priorities convert as 30 and up `high`, 10 to 29 `normal`, below 10 `low`, and there are no tracks. The next `sync` writes the current format.
@@ -137,7 +141,7 @@ Either side was written by this hub, so §3.5 lets `sync` overwrite it with the 
 ### 4.1 What Airlock Provides
 - **Curated work packages:** clean-room sessions receive *Read/Touch/Do/Verify* packages that point only at committed behavioral specs.
 - **A structured question channel:** questions and prose answers, with asker, answerer, timestamps, and the spec file that codified the answer.
-- **An audit trail:** `QUESTIONS.md` records what crossed the boundary, in git history.
+- **An audit trail:** `QUESTIONS.md` records what crossed the boundary, in git history. A corrected answer keeps its earlier versions there (§3.3), so a correction cannot silently replace what an asking session may already have built on.
 - **Role-bound tool sets:** MCP servers bound to a clean-room role expose a restricted tool set (Spec 03 §2.1).
 
 ### 4.2 What Airlock Does Not Provide

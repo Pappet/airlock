@@ -14,7 +14,7 @@ The CLI gives human developers, shell scripts, and CI runners direct access to a
 |---|---|---|
 | `-C <dir>` | — | Run as if started in `<dir>` (Spec 06 §2.4) |
 | `--project <id-or-name>` | `AIRLOCK_PROJECT` | Select the project explicitly (see 2.2) |
-| `--session <id>` | `AIRLOCK_SESSION` | Session id for claims, questions, and answers; default: the worktree binding's session (Spec 06 §2.3), else `human:$USER` |
+| `--session <id>` | `AIRLOCK_SESSION` | Session id for claims, questions, and answers; default: the worktree binding's session (Spec 06 §2.3), else `human:$USER`. `airlock activity` takes it as a filter |
 | `--json` | — | Print machine-readable JSON instead of human-readable text |
 
 Global options may appear before or after the subcommand.
@@ -31,7 +31,19 @@ The directory containing the marker is the **project root** for this invocation;
 
 - Human output goes to stdout; diagnostics go to stderr.
 - With `--json`, a successful command prints exactly one JSON document on stdout. Effective task status is included as `status` next to the stored `state`. On failure, stdout is empty and the message goes to stderr.
+- Every command except `init`, `doctor`, `mcp`, `serve`, `setup`, and `activity` is recorded in the activity log (§2.4).
 - Exit codes: `0` success, `1` operational error (unknown task, lost claim race, invalid transition, unknown project), `2` usage error (clap).
+
+### 2.4 Activity Log and Agent Recognition
+
+Once the project is resolved, each CLI invocation leaves an entry in the activity log (Spec 01 §3.5): session, role, command, target, the names of the arguments given, and the result or error. A failure to write the entry prints `airlock: activity log: <error>` to stderr and never changes the command's outcome or exit code. The CLI cannot tell an agent from the user by its session id alone, since a worktree binding gives both the same session. The entry's `agent` field is therefore taken from the process environment:
+
+| Variable | Result |
+|---|---|
+| `AI_AGENT` | the text before its first `_` (`claude-code_2.1` gives `claude-code`) |
+| `CLAUDECODE=1` | `claude-code`, when `AI_AGENT` is absent or empty |
+
+A harness that sets neither shows as a plain CLI call; the log then has no `agent` for it, and its calls are still listed and still count toward problems.
 
 ---
 
@@ -124,7 +136,7 @@ Submits a question; prints its id.
 Lists questions, newest first.
 
 #### `airlock question answer <id> "<answer>" [--spec <file>]`
-Answers a question. On a question that already has an answer, including a resolved one, this is a correction: the earlier answer is kept in the question's history, the status stays, and the question records who corrected it and when.
+Answers a question. On a question that already has an answer (`answered` or `resolved`) this is a **correction**: the new answer replaces the current one, the earlier answer is kept in the question's history, the status stays (a resolved question stays resolved), and the question records who corrected it and when (Spec 01 §2.2). A given `--spec` replaces the recorded spec file; without it, the recorded one stays. `--json` prints the question with `history`, `corrected_at`, and `corrected_by` where they apply. The session that asked sees the correction in its next briefing (Spec 06 §3.1).
 
 #### `airlock question resolve <id> [--spec <file>]`
 Closes an answered question, optionally recording the spec file that now codifies the answer.
@@ -152,3 +164,19 @@ Replaces the project's tasks, tracks, questions, and roles with a snapshot (defa
 | `airlock role list` / `role set <name> …` / `role remove <name>` | Manage roles, their instructions, and their reading list |
 | `airlock doctor` | Check binary, project, worktrees, bindings, and harness configurations; exits `1` on errors |
 | `airlock setup <claude\|antigravity\|dsh> [--role <role>]` | Print the MCP configuration of this worktree for a harness |
+
+### 3.7 `airlock activity`
+
+```
+airlock activity [--session <id>] [--role <role>] [--channel <mcp|cli|rest>]
+                 [--since <30m|2h|1d|unix seconds>] [--writes] [--failures]
+                 [--limit <n>] [--problems] [--json]
+```
+
+Prints the activity log (Spec 01 §3.5), newest first, grouped under a date heading (UTC), one line per call: time, session, channel, command, target, the names changed, and for failures the error. It is the terminal view of the dashboard's Activity tab (Spec 04 §3.11) and the source of evidence for validation runs (`docs/walkthroughs/agent-validation.md`).
+
+- `--session` is the global option (§2.1), so `AIRLOCK_SESSION` narrows the output too; a worktree binding does not (without either, all sessions are shown).
+- `--role`, `--channel`, `--since` (`30m`, `2h`, `1d`, or unix seconds; the unit is minutes, hours, or days ago), `--writes` (only calls that change state), and `--failures` (only failed calls) each narrow the result; `--limit` caps the number of calls (default 50).
+- `--problems` lists the problems of the whole 30-day window instead of calls (Spec 01 §3.7), narrowed only by `--session` and `--role`; the other filters do not apply to problems.
+- `--json` prints the entries (or problems) as one array with the fields of Spec 01 §3.5.
+- With nothing to show it prints `No activity.` (`No problems.` for `--problems`; `[]` with `--json`). Reading the log is itself not logged.

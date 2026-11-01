@@ -63,8 +63,11 @@ A briefing is computed from the live store for one session and role:
 - the session's claimed tasks with their work packages and remaining lease time; a work package shows `**Track:** … · **Priority:** …` after its title (only `**Priority:**` for a task without a track);
 - otherwise the next ready work package of the role (Spec 01 §2.1), with an overlap note when it shares files with running work;
 - tasks of the same role held by *other* sessions, with session and remaining lease time, so a session can tell live work from a lease about to expire;
-- the session's own questions that have been answered but not resolved;
+- the session's own questions that have been answered but not resolved; one whose answer was corrected is marked `(corrected)` and shows the new answer;
+- **Answer changed:** the session's own *resolved* questions whose answer was corrected since its previous briefing, with the new answer. The section is headed `## Answer changed` in the Markdown and is `corrected_answers` in the structured form, and it appears only when there is such a question;
 - a fixed workflow reminder: claim before starting, heartbeat during long work, complete when *Verify* passes, ask instead of guessing.
+
+**Which corrections are new.** The briefing stays a read. "Since the previous briefing" is taken from the activity log (Spec 01 §3.5): the time of the session's latest *successful* briefing (`session_start`, the `start` prompt, or `airlock start`) before the current one. A resolved question counts when its `corrected_at` is at or after that time; if the session has no earlier briefing in the log, every correction of its resolved questions counts. Times are whole seconds, so a correction made in the same second as the previous briefing is shown rather than lost, and may then appear once more in the next briefing. A briefing that fails does not use up a correction. Several instances sharing one session id share these notices, as they share the session. A correction of a question that is still `answered` needs no extra section: it appears among the answered questions with the `(corrected)` mark. Clean-room sessions see corrections of their own questions only, as they see their own answers. The briefing call itself is logged like any other (a read).
 
 Without a role, the briefing omits the role parts and the next package and says how to bind one.
 
