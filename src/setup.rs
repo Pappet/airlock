@@ -1,4 +1,5 @@
-//! `airlock setup <harness>`: prints MCP configurations for agent harnesses (Spec 06 §6).
+//! `airlock setup <harness>`: prints MCP configurations and Claude Code hooks for agent
+//! harnesses (Spec 06 §6).
 
 use crate::app::{Output, ensure_role, project_root};
 use crate::cli::Harness;
@@ -59,6 +60,18 @@ pub(crate) fn run(
         session.clone(),
     ];
 
+    // The hook briefs the same identity the MCP server acts as: role and session come from the
+    // binding when it matches, otherwise they are passed like `local_args` above.
+    let mut hook_args: Vec<String> = vec!["-C".into(), root.clone(), "start".into()];
+    if !from_binding {
+        hook_args.extend([
+            "--role".into(),
+            role.clone(),
+            "--session".into(),
+            session.clone(),
+        ]);
+    }
+
     // stdout carries only the file content, so redirecting it is always safe; hints go to stderr.
     let (args, text, hint) = match harness {
         Harness::Claude => {
@@ -69,6 +82,28 @@ pub(crate) fn run(
                  Claude Code applies local-scope servers to every worktree of the repository."
             );
             (local_args, serde_json::to_string_pretty(&mcp_json)?, hint)
+        }
+        Harness::ClaudeHooks => {
+            let command = std::iter::once(&bin)
+                .chain(&hook_args)
+                .map(|a| shell_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let settings = json!({
+                "hooks": {
+                    "SessionStart": [{
+                        "matcher": "startup|resume|clear|compact",
+                        "hooks": [{ "type": "command", "command": command, "timeout": 15 }]
+                    }]
+                }
+            });
+            let hint = format!(
+                "Save as {root}/.claude/settings.local.json if that file does not exist; otherwise merge \
+                 the `hooks` key into it. The file is local to this worktree and not committed. Claude Code \
+                 then runs `airlock start` when a session starts, resumes, is cleared, or is compacted, \
+                 and adds the briefing to the model's context."
+            );
+            (hook_args, serde_json::to_string_pretty(&settings)?, hint)
         }
         Harness::Antigravity => {
             let entry = json!({ "mcpServers": { format!("airlock-{role}"): { "command": bin, "args": global_args } } });
@@ -109,7 +144,94 @@ pub(crate) fn run(
     )
 }
 
+/// A word for a POSIX shell command line: unchanged when it holds only safe characters,
+/// otherwise single-quoted.
+pub(crate) fn shell_quote(s: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_-./:@=+,%".contains(c);
+    if !s.is_empty() && s.chars().all(safe) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+/// Splits a POSIX shell command line into words (single and double quotes, backslash escapes);
+/// enough to read back what `shell_quote` writes and what people type by hand.
+pub(crate) fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                word.extend(chars.by_ref().take_while(|&c| c != '\''));
+            }
+            '"' => {
+                in_word = true;
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' => word.extend(chars.next()),
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                word.extend(chars.next());
+            }
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    words
+}
+
 /// A YAML single-quoted scalar.
 fn yaml_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shell_quote, shell_words};
+
+    #[test]
+    fn quoted_words_read_back() {
+        let words = [
+            "/usr/bin/airlock",
+            "/home/me/My Projects/it's here",
+            "",
+            "C:\\Users\\me\\airlock.exe",
+            "lead@openshr",
+        ];
+        let line = words
+            .iter()
+            .map(|w| shell_quote(w))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(shell_words(&line), words);
+        assert_eq!(shell_quote("lead@openshr"), "lead@openshr");
+    }
+
+    #[test]
+    fn hand_typed_lines_split_like_a_shell() {
+        assert_eq!(
+            shell_words(r#"airlock -C "/a b" start  --role\ x 'y z'"#),
+            ["airlock", "-C", "/a b", "start", "--role x", "y z"]
+        );
+    }
 }
