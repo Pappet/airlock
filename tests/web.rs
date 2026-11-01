@@ -328,7 +328,8 @@ fn dashboard_drawer_is_glass_with_sticky_head() {
     let css = get("/style.css").body;
     assert!(css.contains("backdrop-filter: blur(16px)"), "glass drawer");
     assert!(
-        css.contains(".drawer__head {\n  position: sticky"),
+        css.replace("\r\n", "\n")
+            .contains(".drawer__head {\n  position: sticky"),
         "sticky head"
     );
     assert!(
