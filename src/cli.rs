@@ -76,7 +76,7 @@ pub enum Command {
     },
     /// Check the installation, worktrees, bindings, and harness configurations
     Doctor,
-    /// Print the MCP configuration of this worktree for an agent harness
+    /// Print the MCP configuration (or Claude Code hooks) of this worktree for an agent harness
     Setup {
         #[arg(value_enum)]
         harness: Harness,
@@ -259,7 +259,10 @@ pub struct TaskSpec {
 /// Agent harnesses `airlock setup` knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Harness {
+    /// `.mcp.json` for Claude Code
     Claude,
+    /// `.claude/settings.local.json` with a SessionStart hook that runs `airlock start`
+    ClaudeHooks,
     Antigravity,
     Dsh,
 }
