@@ -497,7 +497,7 @@ table.matrix { border-collapse: separate; border-spacing: 2px; font-family: var(
 .split__id { font-family: var(--font-mono); font-size: 0.78rem; font-weight: 600; }
 .split__text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .split__status { font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--on-surface-variant); white-space: nowrap; }
-.split__status.is-open { color: var(--secondary); }
+.split__status.is-open, .label.is-open { color: var(--secondary); }
 .split__detail { min-width: 0; padding: var(--space-4) var(--space-6); }
 .split__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
 .split__title { margin: var(--space-2) 0 var(--space-4); font-family: var(--font-display); font-weight: 600; font-size: 1.4rem; line-height: 1.2; letter-spacing: -0.01em; }

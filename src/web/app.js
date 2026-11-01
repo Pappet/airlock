@@ -978,6 +978,8 @@ function reviewDetail(task) {
   ];
 }
 
+const QUESTION_STATUS = { open: "● open", answered: "◐ answered", resolved: "✓ resolved" };
+
 function questionsView() {
   const filters = ["open", "answered", "resolved", "all"];
   const items = state.questions.filter((q) => state.questionFilter === "all" || q.status === state.questionFilter);
@@ -989,20 +991,35 @@ function questionsView() {
         "aria-pressed": String(state.questionFilter === f),
         onclick: () => { state.questionFilter = f; render(); },
       }, `${f} ${f === "all" ? state.questions.length : state.questions.filter((q) => q.status === f).length}`))),
-    items.length ? h("div", { class: "list" }, items.map(questionItem)) : empty("No questions", `No ${state.questionFilter === "all" ? "" : state.questionFilter + " "}questions.`));
+    splitView({
+      rows: items.map((q) => ({
+        id: q.id,
+        cells: [
+          h("span", { class: "split__id" }, `#${q.id}`),
+          h("span", { class: "split__text" }, q.question),
+          h("span", { class: `split__status${q.status === "open" ? " is-open" : ""}` }, QUESTION_STATUS[q.status] || q.status),
+        ],
+      })),
+      selected: state.questionSelected,
+      onSelect: (id) => { state.questionSelected = id; render(); },
+      detail: (id) => questionDetail(state.questions.find((q) => q.id === id)),
+      emptyLabel: "No questions",
+      emptyText: `No ${state.questionFilter === "all" ? "" : state.questionFilter + " "}questions.`,
+    }));
 }
 
-function questionItem(q) {
-  const head = h("div", { class: "item__head" },
-    h("span", { class: "card__id" }, `#${q.id}`),
+function questionDetail(q) {
+  const t = now();
+  const meta = h("div", { class: "split__meta" },
+    h("span", { class: "split__id" }, `#${q.id}`),
     h("span", { class: "label" }, q.topic),
-    h("span", { class: "label" }, q.status === "open" ? "● open" : q.status === "answered" ? "◐ answered" : "✓ resolved"),
+    h("span", { class: `label${q.status === "open" ? " is-open" : ""}` }, QUESTION_STATUS[q.status] || q.status),
     q.corrected_at ? h("span", { class: "chip", title: `Corrected by ${q.corrected_by || "unknown"}; ${(q.history || []).length} earlier answer(s) kept` }, "corrected") : null,
-    h("span", { class: "muted mono" }, `asked by ${q.asked_by}`));
-  const body = [h("p", {}, q.question)];
-  if (q.answer) body.push(h("p", { class: "muted" }, `→ ${q.answer}`, q.answered_by ? ` (${q.answered_by})` : ""));
+    h("span", { class: "muted mono" }, `asked by ${q.asked_by} · ${ago(q.created_at, t)}`));
+  const body = [h("p", { class: "split__body" }, q.question)];
+  if (q.answer) body.push(h("p", { class: "split__body muted" }, `→ ${q.answer}`, q.answered_by ? ` (${q.answered_by})` : ""));
   if (q.spec_file) body.push(h("p", { class: "muted mono" }, `spec: ${q.spec_file}`));
-  if (q.status === "resolved") return h("article", { class: "item" }, head, body);
+  if (q.status === "resolved") return [meta, body];
 
   const answer = h("textarea", { "aria-label": `Answer to question ${q.id}`, placeholder: "Answer in behavioral prose" });
   answer.value = q.answer || "";
@@ -1016,8 +1033,7 @@ function questionItem(q) {
     ? h("button", { type: "button", class: "btn btn--approve", onclick: () => act(
         api("POST", `/api/questions/${q.id}/resolve`, { spec_file: spec.value }), `Resolved #${q.id}`) }, "✓ Resolve")
     : null;
-  return h("article", { class: "item" }, head, body,
-    h("div", { class: "actions" }, h("div", { class: "field" }, answer, spec), send, resolve));
+  return [meta, body, h("div", { class: "actions" }, h("div", { class: "field" }, answer, spec), send, resolve)];
 }
 
 function leasesView() {
