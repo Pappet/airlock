@@ -341,6 +341,58 @@ fn heartbeat_notes_become_progress_until_completion() {
 }
 
 #[test]
+fn a_restarted_mcp_server_resumes_the_session() {
+    // Server A works in a bound worktree and exits (its client lost its context);
+    // server B starts in the same worktree and carries on under the same session.
+    let env = Env::new();
+    env.cli(&["use", "engine", "--session", "engine-1"]);
+    let a = env.session(
+        &[],
+        &[
+            call(1, "task_claim", json!({ "task_id": "E-1" })),
+            call(
+                2,
+                "task_heartbeat",
+                json!({ "task_id": "E-1", "notes": "renderer done; next: input" }),
+            ),
+        ],
+    );
+    assert!(a.ok(1)["lease_expires_at"].is_i64());
+
+    let b = env.session(
+        &[],
+        &[
+            call(1, "session_start", json!({})),
+            call(2, "task_claim", json!({ "task_id": "E-1" })),
+            call(
+                3,
+                "task_complete",
+                json!({ "task_id": "E-1", "notes": "done" }),
+            ),
+        ],
+    );
+    let brief = b.ok(1);
+    assert_eq!(brief["session"], "engine-1");
+    assert_eq!(brief["claimed"][0]["id"], "E-1");
+    assert_eq!(
+        brief["claimed"][0]["progress"],
+        "renderer done; next: input"
+    );
+    assert_eq!(brief["next"], Value::Null);
+    let text = b.get(1)["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("## Your claimed work")
+            && text.contains("- **Progress:** renderer done; next: input"),
+        "{text}"
+    );
+    assert!(
+        b.tool_error(2).contains("already claimed by this session"),
+        "no second claim"
+    );
+    assert_eq!(b.ok(3)["state"], "done");
+}
+
+#[test]
 fn task_update_edits_content_and_needs_force_for_started_tasks() {
     let env = Env::new();
     let s = env.session(

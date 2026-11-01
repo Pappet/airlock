@@ -434,6 +434,45 @@ fn session_defaults_to_environment() {
 }
 
 #[test]
+fn a_restarted_session_resumes_its_claim() {
+    // Every CLI call is its own process: the second half plays a new session in the
+    // same bound worktree after the first one lost its context.
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    add(&env, &project, "E-1", &[]);
+    add(&env, &project, "E-2", &[]);
+    env.ok(&project, &["use", "engine"]);
+    env.ok(&project, &["task", "claim", "E-1"]);
+    env.ok(
+        &project,
+        &["task", "heartbeat", "E-1", "--notes", "half done"],
+    );
+
+    let brief = env.json(&project, &["start"]);
+    assert_eq!(brief["claimed"][0]["id"], "E-1");
+    assert_eq!(brief["claimed"][0]["progress"], "half done");
+    assert!(brief["claimed"][0]["lease_minutes_left"].as_i64().unwrap() > 0);
+    assert_eq!(
+        brief["next"],
+        serde_json::Value::Null,
+        "no new package while E-1 is held"
+    );
+    let out = env.run(&project, &["task", "claim", "E-1"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("already claimed by this session; use `task heartbeat`"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    env.ok(&project, &["task", "done", "E-1", "--notes", "finished"]);
+    let brief = env.json(&project, &["start"]);
+    assert_eq!(brief["claimed"], serde_json::json!([]));
+    assert_eq!(brief["next"]["id"], "E-2");
+}
+
+#[test]
 fn concurrent_claims_from_separate_processes_have_one_winner() {
     let env = Env::new();
     let project = env.dir("project");
