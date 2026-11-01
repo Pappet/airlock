@@ -158,7 +158,10 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                     (None, binding) => binding.as_ref().map(|b| b.role.clone()),
                 };
-                let brief = briefing::build(&store, &project, &session, role.as_deref(), now)?;
+                // Read before this briefing is logged, so it is the one before this.
+                let previous = activity::last_briefing_quietly(&project.database, &session);
+                let brief =
+                    briefing::build(&store, &project, &session, role.as_deref(), previous, now)?;
                 out.print(&brief, || brief.markdown(briefing::Via::Cli))
             }
             Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),

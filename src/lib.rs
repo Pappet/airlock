@@ -13,6 +13,7 @@ pub mod init;
 pub mod layout;
 pub mod mcp;
 pub mod overlap;
+pub mod problems;
 pub mod setup;
 pub mod snapshot;
 pub mod store;

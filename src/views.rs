@@ -127,6 +127,17 @@ pub fn questions(snapshot: &Snapshot) -> String {
     out
 }
 
+/// `YYYY-MM-DD HH:MM` of a unix timestamp in UTC.
+pub(crate) fn utc_minute(unix_secs: i64) -> String {
+    let minute_of_day = unix_secs.rem_euclid(86_400) / 60;
+    format!(
+        "{} {:02}:{:02}",
+        utc_date(unix_secs),
+        minute_of_day / 60,
+        minute_of_day % 60
+    )
+}
+
 /// `YYYY-MM-DD` of a unix timestamp in UTC (proleptic Gregorian calendar).
 fn utc_date(unix_secs: i64) -> String {
     let days = unix_secs.div_euclid(86_400) + 719_468;

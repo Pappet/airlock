@@ -236,11 +236,14 @@ impl Server {
 
     fn briefing(&mut self) -> Result<Briefing> {
         self.project.config = self.hub.load_config(&self.project.id)?;
+        // Read before this briefing is logged, so it is the one before this.
+        let previous = activity::last_briefing_quietly(&self.project.database, &self.session);
         briefing::build(
             &self.store,
             &self.project,
             &self.session,
             self.role.as_deref(),
+            previous,
             unix_now(),
         )
     }

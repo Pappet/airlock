@@ -425,6 +425,21 @@ pub fn record_quietly(database: &Path, entry: &Entry) {
     }
 }
 
+/// When `session` last ran a briefing command in the project whose hub
+/// database is `database`. A log that cannot be opened or read counts as no
+/// briefing yet (`None`); the failure is reported on stderr.
+pub fn last_briefing_quietly(database: &Path, session: &str) -> Option<i64> {
+    let result = ActivityLog::open(&ActivityLog::path_for(database))
+        .and_then(|log| log.last_briefing(session));
+    match result {
+        Ok(at) => at,
+        Err(e) => {
+            eprintln!("airlock: activity log: {e:#}");
+            None
+        }
+    }
+}
+
 /// Build identity of this binary: `<version>+<unix seconds at build>`.
 pub fn build() -> &'static str {
     env!("AIRLOCK_BUILD")
