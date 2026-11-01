@@ -46,6 +46,8 @@ const state = {
   selected: null,
   detail: null,
   questionFilter: "open",
+  reviewSelected: null,
+  questionSelected: null,
   live: false,
   // Activity tab: `key` is the entries path last requested; `entries` stays
   // null until the first answer. `session`, `filter` and `problem` are the
@@ -922,29 +924,59 @@ function hoverColumn(table, col, on) {
   for (const row of table.tBodies[0].rows) row.cells[col + 1].classList.toggle("col-hover", on);
 }
 
+// Split panel: compact rows on the left, the selected item on the right.
+// `rows` = [{ id, cells }]; an unknown `selected` falls back to the first row.
+function splitView({ rows, selected, onSelect, detail, emptyLabel, emptyText }) {
+  if (!rows.length) return empty(emptyLabel, emptyText);
+  const id = rows.some((r) => r.id === selected) ? selected : rows[0].id;
+  return h("div", { class: "split" },
+    h("aside", { class: "split__list", role: "group", "aria-label": "Items" },
+      rows.map((r) => h("button", {
+        type: "button",
+        class: "split__row",
+        "aria-pressed": String(r.id === id),
+        onclick: () => onSelect(r.id),
+      }, r.cells))),
+    h("section", { class: "split__detail" }, detail(id)));
+}
+
 function reviewView() {
   const items = state.tasks.filter((t) => t.status === "in_review" && matchesFilters(t));
-  if (!items.length) return empty("Review queue empty", "Tasks completed with `--review` appear here, unless a filter hides them.");
-  return h("div", { class: "list" }, items.map((task) => {
-    const feedback = h("textarea", { placeholder: "Feedback (required to reject)", "aria-label": `Feedback for ${task.id}` });
-    const reject = h("button", { type: "button", class: "btn btn--danger", disabled: true, onclick: () => act(
-      api("POST", `/api/tasks/${encodeURIComponent(task.id)}/reject`, { notes: feedback.value }), `Rejected ${task.id}`) }, "✕ Reject");
-    feedback.addEventListener("input", () => { reject.disabled = !feedback.value.trim(); });
-    return h("article", { class: "item" },
-      h("div", { class: "item__head" },
-        h("button", { type: "button", class: "link card__id", onclick: () => openDetail(task.id) }, task.id),
-        h("span", { class: "item__title" }, task.title),
-        h("span", { class: "label" }, task.role),
-        pips(task.priority),
-        h("span", { class: "label" }, task.track || "no track")),
-      task.notes ? h("p", {}, task.notes) : h("p", { class: "muted" }, "No notes."),
-      h("div", { class: "actions" },
-        h("div", { class: "field" }, feedback),
-        h("button", { type: "button", class: "btn btn--approve", onclick: () => act(
-          api("POST", `/api/tasks/${encodeURIComponent(task.id)}/approve`, {}), `Approved ${task.id}`) }, "✓ Approve"),
-        reject));
-  }));
+  return splitView({
+    rows: items.map((task) => ({
+      id: task.id,
+      cells: [h("span", { class: "split__id" }, task.id), h("span", { class: "split__text" }, task.title), pips(task.priority)],
+    })),
+    selected: state.reviewSelected,
+    onSelect: (id) => { state.reviewSelected = id; render(); },
+    detail: (id) => reviewDetail(taskById(id)),
+    emptyLabel: "Review queue empty",
+    emptyText: "Tasks completed with `--review` appear here, unless a filter hides them.",
+  });
 }
+
+function reviewDetail(task) {
+  const feedback = h("textarea", { placeholder: "Feedback (required to reject)", "aria-label": `Feedback for ${task.id}` });
+  const reject = h("button", { type: "button", class: "btn btn--danger", disabled: true, onclick: () => act(
+    api("POST", `/api/tasks/${encodeURIComponent(task.id)}/reject`, { notes: feedback.value }), `Rejected ${task.id}`) }, "✕ Reject");
+  feedback.addEventListener("input", () => { reject.disabled = !feedback.value.trim(); });
+  return [
+    h("div", { class: "split__meta" },
+      h("button", { type: "button", class: "link split__id", onclick: () => openDetail(task.id) }, task.id),
+      h("span", { class: "label" }, task.role),
+      pips(task.priority),
+      h("span", { class: "label" }, task.track || "no track")),
+    h("h2", { class: "split__title" }, task.title),
+    task.notes ? h("p", { class: "split__body" }, task.notes) : h("p", { class: "muted" }, "No notes."),
+    h("div", { class: "actions" },
+      h("div", { class: "field" }, feedback),
+      h("button", { type: "button", class: "btn btn--approve", onclick: () => act(
+        api("POST", `/api/tasks/${encodeURIComponent(task.id)}/approve`, {}), `Approved ${task.id}`) }, "✓ Approve"),
+      reject),
+  ];
+}
+
+const QUESTION_STATUS = { open: "● open", answered: "◐ answered", resolved: "✓ resolved" };
 
 function questionsView() {
   const filters = ["open", "answered", "resolved", "all"];
@@ -957,20 +989,35 @@ function questionsView() {
         "aria-pressed": String(state.questionFilter === f),
         onclick: () => { state.questionFilter = f; render(); },
       }, `${f} ${f === "all" ? state.questions.length : state.questions.filter((q) => q.status === f).length}`))),
-    items.length ? h("div", { class: "list" }, items.map(questionItem)) : empty("No questions", `No ${state.questionFilter === "all" ? "" : state.questionFilter + " "}questions.`));
+    splitView({
+      rows: items.map((q) => ({
+        id: q.id,
+        cells: [
+          h("span", { class: "split__id" }, `#${q.id}`),
+          h("span", { class: "split__text" }, q.question),
+          h("span", { class: `split__status${q.status === "open" ? " is-open" : ""}` }, QUESTION_STATUS[q.status] || q.status),
+        ],
+      })),
+      selected: state.questionSelected,
+      onSelect: (id) => { state.questionSelected = id; render(); },
+      detail: (id) => questionDetail(state.questions.find((q) => q.id === id)),
+      emptyLabel: "No questions",
+      emptyText: `No ${state.questionFilter === "all" ? "" : state.questionFilter + " "}questions.`,
+    }));
 }
 
-function questionItem(q) {
-  const head = h("div", { class: "item__head" },
-    h("span", { class: "card__id" }, `#${q.id}`),
+function questionDetail(q) {
+  const t = now();
+  const meta = h("div", { class: "split__meta" },
+    h("span", { class: "split__id" }, `#${q.id}`),
     h("span", { class: "label" }, q.topic),
-    h("span", { class: "label" }, q.status === "open" ? "● open" : q.status === "answered" ? "◐ answered" : "✓ resolved"),
+    h("span", { class: `label${q.status === "open" ? " is-open" : ""}` }, QUESTION_STATUS[q.status] || q.status),
     q.corrected_at ? h("span", { class: "chip", title: `Corrected by ${q.corrected_by || "unknown"}; ${(q.history || []).length} earlier answer(s) kept` }, "corrected") : null,
-    h("span", { class: "muted mono" }, `asked by ${q.asked_by}`));
-  const body = [h("p", {}, q.question)];
-  if (q.answer) body.push(h("p", { class: "muted" }, `→ ${q.answer}`, q.answered_by ? ` (${q.answered_by})` : ""));
+    h("span", { class: "muted mono" }, `asked by ${q.asked_by} · ${ago(q.created_at, t)}`));
+  const body = [h("p", { class: "split__body" }, q.question)];
+  if (q.answer) body.push(h("p", { class: "split__body muted" }, `→ ${q.answer}`, q.answered_by ? ` (${q.answered_by})` : ""));
   if (q.spec_file) body.push(h("p", { class: "muted mono" }, `spec: ${q.spec_file}`));
-  if (q.status === "resolved") return h("article", { class: "item" }, head, body);
+  if (q.status === "resolved") return [meta, body];
 
   const answer = h("textarea", { "aria-label": `Answer to question ${q.id}`, placeholder: "Answer in behavioral prose" });
   answer.value = q.answer || "";
@@ -984,8 +1031,7 @@ function questionItem(q) {
     ? h("button", { type: "button", class: "btn btn--approve", onclick: () => act(
         api("POST", `/api/questions/${q.id}/resolve`, { spec_file: spec.value }), `Resolved #${q.id}`) }, "✓ Resolve")
     : null;
-  return h("article", { class: "item" }, head, body,
-    h("div", { class: "actions" }, h("div", { class: "field" }, answer, spec), send, resolve));
+  return [meta, body, h("div", { class: "actions" }, h("div", { class: "field" }, answer, spec), send, resolve)];
 }
 
 function leasesView() {
