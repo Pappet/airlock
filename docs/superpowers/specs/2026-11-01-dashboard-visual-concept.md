@@ -88,7 +88,7 @@ Effekt auf dem openshr-Board: Rot erscheint auf 3 bis 6 Karten statt auf 40. Dan
 
 **Files.** Matrix bleibt. Zellen: Treffer neutral (`surface-container-high` Punkt), Rot nur wenn ein *laufender* Task die Datei hält, Grün wenn der gewählte Task sie hält. Datei-Zähler rechts neben dem Pfad in `on-surface-variant`, Rot nur über einem Schwellwert (z. B. ≥ 10 offene Tasks). Spaltenköpfe sticky.
 
-**Activity.** Drei Zonen. Oben links „Needs attention“ als Panel mit Glyph-Spalte (`✕` error, `▲` tertiary), Session secondary, Text, Zeit rechts Mono. Oben rechts „Sessions“ als Tabelle (`Session Rolle MCP CLI REST zuletzt`) und „Blocked · waiting on“ als ausgerichtete Zebra-Tabelle; `nobody on it` gedimmt, tertiary nur bei high/critical-Track. Logbook darunter mit Filter-Pills, Zeilen ohne Linien, Fehlerzeile mit rotem Hauch.
+**Activity.** Drei Zonen. Oben links „Needs attention“ als Panel mit Glyph-Spalte (`✕` error, `▲` tertiary), Session secondary, Text, Zeit rechts Mono. Oben rechts „Claimed“ und „Blocked · waiting on“ als ausgerichtete Zebra-Tabelle; darunter „Sessions“ als Tabelle (`Session Rolle MCP CLI REST zuletzt`), deren Zeilen zugleich der Session-Filter des Logbooks sind (gewählte Zeile mit secondary-Ring); `nobody on it` gedimmt, tertiary nur bei high/critical-Track. Logbook darunter mit Filter-Pills, Zeilen ohne Linien, Fehlerzeile mit rotem Hauch.
 
 **Review und Questions.** Zweispaltig nach §5.5 Split-Panel: links die Liste (ID, Topic/Datei, Fragesteller, Alter, kompakt), rechts der gewählte Eintrag mit Antwortfeld. Die 960px-Spalte mit leerem Rest entfällt. Formulare: Textarea ohne Rand, Caret primary, Fokus = Ghost-Rand primary + Glow.
 

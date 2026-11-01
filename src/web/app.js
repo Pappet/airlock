@@ -499,12 +499,12 @@ function mergeEntries(a, b) {
   return [...byId.values()].sort((x, y) => y.at - x.at || y.id - x.id);
 }
 
-// Session bar chips: [{ session, role, calls: [[channel, n]] (non-zero only), ago }].
+// Session rows: [{ session, role, calls: [[channel, n]] (every channel, n may be 0), ago }].
 function sessionChips(sessions, now) {
   return sessions.map((s) => ({
     session: s.session,
     role: s.role,
-    calls: CHANNELS.filter((c) => s.calls[c] > 0).map((c) => [c, s.calls[c]]),
+    calls: CHANNELS.map((c) => [c, s.calls[c] || 0]),
     ago: ago(s.last_at, now),
   }));
 }
@@ -588,15 +588,23 @@ function channelBadge(channel) {
 
 function problemText(p) {
   const who = p.session && !p.message.includes(p.session) ? `${p.session} · ` : "";
-  if (p.kind !== "failure") return `${who}${p.message}`;
-  return `${who}${p.command || "call"}${p.target ? ` ${p.target}` : ""} → ${p.message}`;
+  return who + problemBody(p);
+}
+
+// The message without the session, which the row shows in its own colour.
+function problemBody(p) {
+  if (p.kind !== "failure") return p.message;
+  return `${p.command || "call"}${p.target ? ` ${p.target}` : ""} → ${p.message}`;
 }
 
 function problemRow(p, selected, t) {
   const severe = SEVERE.has(p.kind);
   const content = [
     h("span", { class: `act-glyph ${severe ? "bad" : "warn"}`, "aria-hidden": "true" }, severe ? "✕" : "▲"),
-    h("span", { class: "act-problem__text" }, problemText(p), p.count > 1 ? h("span", { class: "muted" }, ` · ${p.count}×`) : null),
+    h("span", { class: "act-problem__text" },
+      p.session && !p.message.includes(p.session) ? [h("span", { class: "act-session" }, p.session), " · "] : null,
+      problemBody(p),
+      p.count > 1 ? h("span", { class: "muted" }, ` · ${p.count}×`) : null),
     h("span", { class: "act-when" }, when(p.last_at, t)),
   ];
   if (!p.entry_ids.length) return h("div", { class: "act-problem" }, content);
@@ -670,8 +678,10 @@ function statePanel() {
 function sessionBar(t) {
   const a = state.activity;
   const pick = (session) => () => { a.session = session; a.problem = null; render(); };
+  // Aligned rows that double as the logbook's session filter (concept §3 Activity).
   return h("div", { class: "act-sessions", role: "group", "aria-label": "Sessions" },
-    h("button", { type: "button", class: "act-chip", "aria-pressed": String(!a.session), onclick: pick(null) }, h("b", {}, "all")),
+    h("div", { class: "label" }, "Sessions"),
+    h("button", { type: "button", class: "act-chip act-chip--all", "aria-pressed": String(!a.session), onclick: pick(null) }, h("b", {}, "all sessions")),
     sessionChips(a.sessions.filter(roleVisible), t).map((c) => h("button", {
       type: "button",
       class: "act-chip",
@@ -679,9 +689,9 @@ function sessionBar(t) {
       onclick: pick(a.session === c.session ? null : c.session),
     },
       h("b", {}, c.session),
-      c.role ? h("span", { class: "muted" }, c.role) : null,
-      c.calls.map(([channel, n]) => h("span", {}, channelBadge(channel), ` ${n}`)),
-      h("span", { class: "muted" }, c.ago))));
+      h("span", { class: "muted" }, c.role || "—"),
+      c.calls.map(([channel, n]) => n ? h("span", { class: `ch ch--${channel}` }, `${channel.toUpperCase()} ${n}`) : h("span", { class: "act-chip__none" }, "·")),
+      h("span", { class: "muted act-chip__ago" }, c.ago))));
 }
 
 function logRow(e, mark) {
