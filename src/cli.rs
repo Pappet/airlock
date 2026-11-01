@@ -73,6 +73,10 @@ pub enum Command {
         /// Role to brief [default: the worktree binding's]; for a second role in a shared checkout
         #[arg(long, env = "AIRLOCK_ROLE")]
         role: Option<String>,
+        /// Name commands as CLI calls or as MCP tools (for an agent that works through MCP,
+        /// e.g. a Claude Code SessionStart hook)
+        #[arg(long, value_enum, default_value = "cli")]
+        hints: Hints,
     },
     /// Check the installation, worktrees, bindings, and harness configurations
     Doctor,
@@ -258,6 +262,15 @@ pub struct TaskSpec {
     /// Track the task belongs to; create it first with `airlock track add`
     #[arg(long)]
     pub track: Option<String>,
+}
+
+/// How the briefing names commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Hints {
+    /// `airlock task claim <id>`
+    Cli,
+    /// `task_claim`
+    Mcp,
 }
 
 /// Agent harnesses `airlock setup` knows.

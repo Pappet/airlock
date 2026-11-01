@@ -62,7 +62,14 @@ pub(crate) fn run(
 
     // The hook briefs the same identity the MCP server acts as: role and session come from the
     // binding when it matches, otherwise they are passed like `local_args` above.
-    let mut hook_args: Vec<String> = vec!["-C".into(), root.clone(), "start".into()];
+    // Claude Code works through the MCP server, so the briefing names MCP tools.
+    let mut hook_args: Vec<String> = vec![
+        "-C".into(),
+        root.clone(),
+        "start".into(),
+        "--hints".into(),
+        "mcp".into(),
+    ];
     if !from_binding {
         hook_args.extend([
             "--role".into(),
