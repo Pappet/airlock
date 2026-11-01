@@ -242,7 +242,7 @@ WAL mode allows many readers and one writer at a time. Correctness under concurr
 
 ### 3.4 Schema Migration
 
-The store carries a schema version and upgrades older databases in place on first open. Version 5 adds answer corrections (§2.2): the nullable columns `questions.corrected_at` and `questions.corrected_by`, and the table `answer_history` (one row per replaced answer, numbered per question). Existing questions are unchanged. As with every migration, an older airlock binary refuses a store at a newer version: restart `airlock mcp` and `airlock serve` processes after upgrading. The activity log (§3.5) is a separate database with its own schema version; older binaries do not know it and ignore it.
+The store carries a schema version and upgrades older databases in place on first open. Version 5 adds answer corrections (§2.2): the nullable columns `questions.corrected_at` and `questions.corrected_by`, and the table `answer_history` (one row per replaced answer, numbered per question). Existing questions are unchanged. A trigger on `questions` refuses to replace an answer unless the newest `answer_history` row of that question holds it, which the correction path always writes first. As with every migration, an older airlock binary refuses a store at a newer version when it opens it; an older process that opened the store before the upgrade keeps running, and the trigger stops it from overwriting an answer without history: its answer fails with "restart old airlock processes". Restart `airlock mcp` and `airlock serve` processes after upgrading. The activity log (§3.5) is a separate database with its own schema version; older binaries do not know it and ignore it.
 
 Version 4 adds tracks and the priority scale:
 

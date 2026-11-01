@@ -105,7 +105,10 @@ END;
 ";
 
 /// Answer corrections: the replaced answers are kept per question, oldest
-/// first, and the question records who corrected it last and when.
+/// first, and the question records who corrected it last and when. A trigger
+/// refuses to replace an answer unless the newest history row holds it, so an
+/// airlock process from before the migration, still running, cannot overwrite
+/// an answer and lose the earlier text.
 const SCHEMA_V5: &str = "
 ALTER TABLE questions ADD COLUMN corrected_at INTEGER;
 ALTER TABLE questions ADD COLUMN corrected_by TEXT;
@@ -118,6 +121,18 @@ CREATE TABLE answer_history (
     spec_file   TEXT,
     PRIMARY KEY (question_id, seq)
 ) STRICT;
+CREATE TRIGGER questions_answer_history BEFORE UPDATE OF answer ON questions
+WHEN OLD.answer IS NOT NULL
+ AND NOT EXISTS (
+     SELECT 1 FROM answer_history h
+      WHERE h.question_id = OLD.id
+        AND h.seq = (SELECT max(seq) FROM answer_history WHERE question_id = OLD.id)
+        AND h.answer = OLD.answer
+        AND h.answered_by IS OLD.answered_by
+        AND h.answered_at IS OLD.answered_at)
+BEGIN
+    SELECT RAISE(ABORT, 'answer history missing for a replaced answer; restart old airlock processes');
+END;
 ";
 
 const SELECT_TASKS: &str = "

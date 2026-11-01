@@ -1029,3 +1029,51 @@ fn answered_questions_from_older_databases_can_be_corrected_after_migration() {
     assert_eq!(corrected.history[0].answer, "old");
     assert_eq!(corrected.history[0].answered_at, Some(2));
 }
+
+#[test]
+fn old_processes_cannot_replace_an_answer_without_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    let mut store = Store::open(&path).unwrap();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store.answer(1, "first", "lead", None, 11).unwrap();
+    drop(store);
+
+    // What an airlock process from before the migration would still do.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let update = conn
+        .execute(
+            "UPDATE questions SET status = 'answered', answer = 'overwritten', answered_by = 'lead',
+                    answered_at = 12 WHERE id = 1",
+            [],
+        )
+        .expect_err("an answer change without history must be refused");
+    assert!(
+        update.to_string().contains("restart old airlock processes"),
+        "{update}"
+    );
+    // Other columns of an answered question still change freely.
+    conn.execute("UPDATE questions SET status = 'resolved' WHERE id = 1", [])
+        .unwrap();
+    drop(conn);
+
+    // The normal correction path passes, also twice within one second.
+    let mut store = Store::open(&path).unwrap();
+    store.answer(1, "second", "lead-1", None, 13).unwrap();
+    let q = store.answer(1, "third", "lead-1", None, 13).unwrap();
+    assert_eq!(q.answer.as_deref(), Some("third"));
+    assert_eq!(q.status, QuestionStatus::Resolved);
+    let earlier: Vec<&str> = q.history.iter().map(|v| v.answer.as_str()).collect();
+    assert_eq!(earlier, ["first", "second"]);
+    drop(store);
+
+    // Earlier history does not cover the current answer.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let again = conn
+        .execute("UPDATE questions SET answer = 'lost' WHERE id = 1", [])
+        .expect_err("history of earlier answers does not cover the current one");
+    assert!(
+        again.to_string().contains("restart old airlock processes"),
+        "{again}"
+    );
+}
