@@ -9,7 +9,10 @@
 //! and turns changes into server-sent events.
 
 use crate::activity::{self, ActivityLog, Channel, Entry};
-use crate::app::{TaskView, TrackView, done_ids, ensure_role, unix_now};
+use crate::activity::{Filter as ActivityFilter, Since};
+use crate::app::{
+    TaskView, TrackView, current_problems, done_ids, ensure_role, existing_activity_log, unix_now,
+};
 use crate::core::{Priority, QuestionStatus, TaskStatus, dependents};
 use crate::hub::Project;
 use crate::overlap;
@@ -25,9 +28,9 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::de::{DeserializeOwned, Error as _};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::io::Write;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -202,6 +205,9 @@ fn router(state: Shared) -> Router {
         .route("/api/questions/{id}/answer", post(answer_question))
         .route("/api/questions/{id}/resolve", post(resolve_question))
         .route("/api/overlaps", get(show_overlaps))
+        .route("/api/activity", get(list_activity))
+        .route("/api/activity/problems", get(list_problems))
+        .route("/api/activity/sessions", get(list_sessions))
         .route("/api/events", get(events))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
         // Inside `guard`: requests it rejects stay unlogged.
@@ -836,6 +842,135 @@ async fn show_overlaps(State(state): State<Shared>) -> ApiResult {
     .await
 }
 
+/// Longest `GET /api/activity` list unless `limit` says otherwise.
+const ACTIVITY_LIMIT: usize = 500;
+
+/// Query of `GET /api/activity`; `since` takes `30m`, `2h`, `1d` or unix seconds.
+#[derive(Deserialize)]
+struct ActivityQuery {
+    session: Option<String>,
+    role: Option<String>,
+    channel: Option<Channel>,
+    since: Option<String>,
+    writes: Option<bool>,
+    failures: Option<bool>,
+    limit: Option<usize>,
+}
+
+/// Runs `f` on the project's activity log on a blocking thread. A log that
+/// does not exist yet reads as empty (`[]`).
+async fn with_activity<F>(state: &Shared, f: F) -> ApiResult
+where
+    F: FnOnce(&mut ActivityLog, i64) -> Result<Value> + Send + 'static,
+{
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let internal =
+            |e: anyhow::Error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"));
+        match existing_activity_log(&state.project.database).map_err(internal)? {
+            Some(mut log) => f(&mut log, unix_now()).map(axum::Json).map_err(internal),
+            None => Ok(axum::Json(json!([]))),
+        }
+    })
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+async fn list_activity(
+    State(state): State<Shared>,
+    filter: Result<Query<ActivityQuery>, QueryRejection>,
+) -> ApiResult {
+    let q = query(filter)?;
+    let since = q
+        .since
+        .as_deref()
+        .map(str::parse::<Since>)
+        .transpose()
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    with_activity(&state, move |log, now| {
+        let entries = log.entries(&ActivityFilter {
+            session: q.session,
+            role: q.role,
+            channel: q.channel,
+            since: since.map(|s| s.resolve(now)),
+            writes_only: q.writes.unwrap_or(false),
+            failures_only: q.failures.unwrap_or(false),
+            limit: Some(q.limit.unwrap_or(ACTIVITY_LIMIT)),
+        })?;
+        Ok(serde_json::to_value(entries)?)
+    })
+    .await
+}
+
+/// Query of `GET /api/activity/problems`.
+#[derive(Deserialize)]
+struct ProblemQuery {
+    session: Option<String>,
+    role: Option<String>,
+}
+
+async fn list_problems(
+    State(state): State<Shared>,
+    filter: Result<Query<ProblemQuery>, QueryRejection>,
+) -> ApiResult {
+    let q = query(filter)?;
+    with_activity(&state, move |log, now| {
+        let found = current_problems(log, now, q.session.as_deref(), q.role.as_deref())?;
+        Ok(serde_json::to_value(found)?)
+    })
+    .await
+}
+
+/// One row of `GET /api/activity/sessions`.
+#[derive(Serialize)]
+struct SessionSummary {
+    session: String,
+    /// Role of the session's latest call
+    role: Option<String>,
+    last_at: i64,
+    calls: Calls,
+}
+
+/// Calls of a session per channel.
+#[derive(Default, Serialize)]
+struct Calls {
+    mcp: u32,
+    cli: u32,
+    rest: u32,
+}
+
+/// Sessions seen in the retention window, most recently active first.
+async fn list_sessions(State(state): State<Shared>) -> ApiResult {
+    with_activity(&state, move |log, now| {
+        // Newest first, so a session's first entry is its latest.
+        let entries = log.entries(&ActivityFilter {
+            since: Some(now - activity::RETENTION_SECS),
+            ..ActivityFilter::default()
+        })?;
+        let mut sessions: Vec<SessionSummary> = Vec::new();
+        let mut index: HashMap<&str, usize> = HashMap::new();
+        for e in &entries {
+            let at = *index.entry(e.session.as_str()).or_insert_with(|| {
+                sessions.push(SessionSummary {
+                    session: e.session.clone(),
+                    role: e.role.clone(),
+                    last_at: e.at,
+                    calls: Calls::default(),
+                });
+                sessions.len() - 1
+            });
+            let calls = &mut sessions[at].calls;
+            match e.channel {
+                Channel::Mcp => calls.mcp += 1,
+                Channel::Cli => calls.cli += 1,
+                Channel::Rest => calls.rest += 1,
+            }
+        }
+        Ok(serde_json::to_value(sessions)?)
+    })
+    .await
+}
+
 async fn events(
     State(state): State<Shared>,
 ) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
@@ -899,7 +1034,9 @@ fn changed<K: Ord + Clone>(old: &BTreeMap<K, String>, new: &BTreeMap<K, String>)
     ids
 }
 
-/// Polls the store once per second and broadcasts what changed (Spec 04 §4).
+/// Polls the store and the activity log once per second and broadcasts what
+/// changed (Spec 04 §4): entity changes as `*_changed`, a growing log as
+/// `activity` with the newest entry's id.
 fn watch(project: &Project, events: &broadcast::Sender<Change>) {
     let store = match Store::open(&project.database) {
         Ok(store) => store,
@@ -907,9 +1044,11 @@ fn watch(project: &Project, events: &broadcast::Sender<Change>) {
     };
     let mut version = store.data_version().ok();
     let mut digest = Digest::load(&store, unix_now()).unwrap_or_default();
+    let mut log = ActivityWatch::new(project);
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let now = unix_now();
+        log.poll(events);
         let current = store.data_version().ok();
         let expired = digest.next_expiry.is_some_and(|t| t <= now);
         if current == version && !expired {
@@ -939,5 +1078,49 @@ fn watch(project: &Project, events: &broadcast::Sender<Change>) {
             });
         }
         digest = next;
+    }
+}
+
+/// Follows the newest id of the activity log. A log that cannot be opened or
+/// read is skipped until the next poll; it never stops the watcher.
+struct ActivityWatch {
+    path: std::path::PathBuf,
+    log: Option<ActivityLog>,
+    last_id: u64,
+}
+
+impl ActivityWatch {
+    fn new(project: &Project) -> Self {
+        let mut watch = Self {
+            path: ActivityLog::path_for(&project.database),
+            log: None,
+            last_id: 0,
+        };
+        watch.last_id = watch.latest().unwrap_or(0);
+        watch
+    }
+
+    /// The newest entry id, opening the log when needed.
+    fn latest(&mut self) -> Option<u64> {
+        if self.log.is_none() {
+            self.log = ActivityLog::open(&self.path).ok();
+        }
+        let latest = self.log.as_ref()?.latest_id();
+        if latest.is_err() {
+            // Reopen next time.
+            self.log = None;
+        }
+        latest.ok()
+    }
+
+    fn poll(&mut self, events: &broadcast::Sender<Change>) {
+        let Some(latest) = self.latest() else { return };
+        if latest > self.last_id {
+            let _ = events.send(Change {
+                kind: "activity",
+                id: latest.into(),
+            });
+        }
+        self.last_id = latest;
     }
 }

@@ -102,7 +102,7 @@ SELECT id, at, session, role, clean_room, channel, agent, command, target, chang
   FROM entries";
 
 /// Where a call came in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
     Mcp,
@@ -159,6 +159,48 @@ pub struct Filter {
     pub writes_only: bool,
     pub failures_only: bool,
     pub limit: Option<usize>,
+}
+
+/// The start of a time window: some time ago, or an absolute time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Since {
+    /// This many seconds before now
+    Ago(i64),
+    /// This unix time
+    At(i64),
+}
+
+impl Since {
+    /// The unix time the window starts at, seen from `now`.
+    pub fn resolve(self, now: i64) -> i64 {
+        match self {
+            Since::Ago(secs) => now - secs,
+            Since::At(at) => at,
+        }
+    }
+}
+
+impl std::str::FromStr for Since {
+    type Err = String;
+
+    /// `<n>m`, `<n>h`, `<n>d`, or plain unix seconds.
+    fn from_str(text: &str) -> Result<Self, String> {
+        let invalid = || format!("invalid time `{text}`: use 30m, 2h, 1d, or unix seconds");
+        let (digits, unit) = match text.chars().last() {
+            Some('m') => (&text[..text.len() - 1], Some(60)),
+            Some('h') => (&text[..text.len() - 1], Some(3_600)),
+            Some('d') => (&text[..text.len() - 1], Some(86_400)),
+            _ => (text, None),
+        };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        let n: i64 = digits.parse().map_err(|_| invalid())?;
+        match unit {
+            Some(unit) => n.checked_mul(unit).map(Since::Ago).ok_or_else(invalid),
+            None => Ok(Since::At(n)),
+        }
+    }
 }
 
 /// A running airlock process; `kind` is `"mcp"` or `"serve"`.
@@ -624,6 +666,7 @@ pub fn summarize_cli(command: &Command) -> (Option<String>, Vec<String>) {
         Command::Init { .. }
         | Command::Doctor
         | Command::Setup { .. }
+        | Command::Activity { .. }
         | Command::Mcp { .. }
         | Command::Serve { .. } => None,
     };

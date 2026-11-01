@@ -139,7 +139,7 @@ pub(crate) fn utc_minute(unix_secs: i64) -> String {
 }
 
 /// `YYYY-MM-DD` of a unix timestamp in UTC (proleptic Gregorian calendar).
-fn utc_date(unix_secs: i64) -> String {
+pub(crate) fn utc_date(unix_secs: i64) -> String {
     let days = unix_secs.div_euclid(86_400) + 719_468;
     let era = days.div_euclid(146_097);
     let day_of_era = days.rem_euclid(146_097);

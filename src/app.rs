@@ -1,14 +1,15 @@
 //! Command execution: resolves project and session, runs the operation, prints the result.
 
-use crate::activity::{self, Channel, Entry};
+use crate::activity::{self, ActivityLog, Channel, Entry, Filter as ActivityFilter};
 use crate::cli::{
     Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec, TrackCommand,
 };
 use crate::core::{Priority, Question, Task, TaskState, TaskStatus, Track, dependents};
 use crate::hub::{Binding, Hub, MARKER_FILE, Project, binding_key};
 use crate::overlap::{self, Overlap};
+use crate::problems::{self, Problem};
 use crate::store::{Completion, NewTask, Store, TaskEdit, TrackEdit};
-use crate::{briefing, doctor, init, mcp, setup, sync, web};
+use crate::{briefing, doctor, init, mcp, setup, sync, views, web};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -116,6 +117,26 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::Setup { harness, role } => return setup::run(&project, harness, role, &out),
         Command::Serve { port } => return web::serve(project, port),
+        Command::Activity {
+            role,
+            channel,
+            since,
+            problems,
+            writes,
+            failures,
+            limit,
+        } => {
+            let filter = ActivityFilter {
+                session: cli.session,
+                role,
+                channel,
+                since: since.map(|s| s.resolve(now)),
+                writes_only: writes,
+                failures_only: failures,
+                limit: Some(limit),
+            };
+            return show_activity(&project, &filter, problems, now, &out);
+        }
         _ => {}
     }
 
@@ -145,6 +166,7 @@ pub fn run(cli: Cli) -> Result<()> {
             | Command::Mcp { .. }
             | Command::Use { .. }
             | Command::Setup { .. }
+            | Command::Activity { .. }
             | Command::Serve { .. } => unreachable!("handled above"),
             Command::Start { role } => {
                 let role = match (role, &project.binding) {
@@ -270,6 +292,134 @@ fn log_cli_call(
         build: activity::build().to_string(),
     };
     activity::record_quietly(&project.database, &entry);
+}
+
+/// The project's activity log, or `None` while nothing has created it yet.
+pub(crate) fn existing_activity_log(database: &Path) -> Result<Option<ActivityLog>> {
+    let path = ActivityLog::path_for(database);
+    if !path.exists() {
+        return Ok(None);
+    }
+    ActivityLog::open(&path).map(Some)
+}
+
+/// The problems of the whole retention window, narrowed to `session` and
+/// `role` where given. Other filters do not apply to problems.
+pub(crate) fn current_problems(
+    log: &mut ActivityLog,
+    now: i64,
+    session: Option<&str>,
+    role: Option<&str>,
+) -> Result<Vec<Problem>> {
+    let entries = log.entries(&ActivityFilter {
+        since: Some(now - activity::RETENTION_SECS),
+        ..ActivityFilter::default()
+    })?;
+    let processes = log.processes(now)?;
+    let mut found = problems::problems(&entries, &processes, activity::build());
+    found.retain(|p| {
+        session.is_none_or(|s| p.session.as_deref() == Some(s))
+            && role.is_none_or(|r| p.role.as_deref() == Some(r))
+    });
+    Ok(found)
+}
+
+/// `airlock activity`: the filtered calls, or with `problems` the problems.
+/// Reading is not itself logged; a missing log reads as empty.
+fn show_activity(
+    project: &Project,
+    filter: &ActivityFilter,
+    problems: bool,
+    now: i64,
+    out: &Output,
+) -> Result<()> {
+    let log = existing_activity_log(&project.database)?;
+    if problems {
+        let found = match log {
+            Some(mut log) => current_problems(
+                &mut log,
+                now,
+                filter.session.as_deref(),
+                filter.role.as_deref(),
+            )?,
+            None => Vec::new(),
+        };
+        return out.print(&found, || problems_text(&found));
+    }
+    let entries = match log {
+        Some(log) => log.entries(filter)?,
+        None => Vec::new(),
+    };
+    out.print(&entries, || entries_text(&entries))
+}
+
+/// One line per call, newest first, under a `── YYYY-MM-DD` header (UTC) for
+/// each day: `HH:MM  session  CHANNEL  command target changed  ✖ error`.
+fn entries_text(entries: &[Entry]) -> String {
+    if entries.is_empty() {
+        return "No activity.".to_string();
+    }
+    let mut lines = Vec::new();
+    let mut day = String::new();
+    for e in entries {
+        let stamp = views::utc_minute(e.at);
+        let (date, time) = stamp.split_once(' ').unwrap_or((&stamp, ""));
+        if date != day {
+            lines.push(format!("── {date}"));
+            day = date.to_string();
+        }
+        let mut what = vec![e.command.clone()];
+        what.extend(e.target.clone());
+        if !e.changed.is_empty() {
+            what.push(e.changed.join(", "));
+        }
+        let mut row = format!(
+            "{time}  {}  {}  {}",
+            e.session,
+            format!("{:?}", e.channel).to_uppercase(),
+            what.join(" ")
+        );
+        if !e.ok {
+            let error = e.error.as_deref().unwrap_or_default();
+            let error = error.split_whitespace().collect::<Vec<_>>().join(" ");
+            row.push_str("  ✖");
+            if !error.is_empty() {
+                row.push(' ');
+                row.push_str(&error);
+            }
+        }
+        lines.push(row);
+    }
+    lines.join("\n")
+}
+
+/// One line per problem, newest first:
+/// `YYYY-MM-DD HH:MM  kind  session  message (×count)`.
+fn problems_text(found: &[Problem]) -> String {
+    if found.is_empty() {
+        return "No problems.".to_string();
+    }
+    found
+        .iter()
+        .map(|p| {
+            let kind = serde_json::to_value(p.kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let times = if p.count > 1 {
+                format!(" (×{})", p.count)
+            } else {
+                String::new()
+            };
+            let message = p.message.split_whitespace().collect::<Vec<_>>().join(" ");
+            format!(
+                "{}  {kind}  {}  {message}{times}",
+                views::utc_minute(p.last_at),
+                p.session.as_deref().unwrap_or("-")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn use_binding(

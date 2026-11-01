@@ -327,7 +327,6 @@ fn unlogged_commands_add_no_entry() {
 }
 
 #[test]
-#[ignore = "`airlock activity` arrives in Task 7; un-ignore it there"]
 fn activity_command_is_not_logged() {
     let env = Env::new();
     env.ok(&["task", "list"]);
@@ -352,4 +351,118 @@ fn answering_an_answered_question_is_logged_as_a_correction() {
     assert_eq!(answers[0].changed, ["answer"]);
     assert_eq!(answers[1].changed, ["answer", "correction"]);
     assert!(answers[1].ok);
+}
+
+#[test]
+fn activity_json_lists_entries_and_problems() {
+    let env = Env::new();
+    env.ok(&["task", "list"]);
+    assert!(!env.run(&["task", "claim", "E-99"]).status.success());
+
+    let failures: Vec<Entry> =
+        serde_json::from_str(&env.ok(&["--json", "activity", "--failures"])).unwrap();
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures[0].command, "task claim");
+    assert_eq!(failures[0].error.as_deref(), Some("no task `E-99`"));
+
+    let all: Vec<Entry> = serde_json::from_str(&env.ok(&["--json", "activity"])).unwrap();
+    assert!(all.len() >= 3, "{all:?}");
+    assert!(all[0].id > all[1].id, "newest first");
+    let limited: Vec<Entry> =
+        serde_json::from_str(&env.ok(&["--json", "activity", "--limit", "1"])).unwrap();
+    assert_eq!(limited, &all[..1]);
+    let writes: Vec<Entry> =
+        serde_json::from_str(&env.ok(&["--json", "activity", "--writes"])).unwrap();
+    assert!(writes.iter().all(|e| e.write) && writes.len() < all.len());
+    let channel: Vec<Entry> =
+        serde_json::from_str(&env.ok(&["--json", "activity", "--channel", "rest"])).unwrap();
+    assert!(channel.is_empty());
+
+    let problems: Vec<serde_json::Value> =
+        serde_json::from_str(&env.ok(&["--json", "activity", "--problems"])).unwrap();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0]["kind"], "failure");
+    assert_eq!(problems[0]["command"], "task claim");
+    // --session and --role narrow the problems afterwards.
+    let session = failures[0].session.clone();
+    let mine: Vec<serde_json::Value> =
+        serde_json::from_str(&env.ok(&["--json", "activity", "--problems", "--session", &session]))
+            .unwrap();
+    assert_eq!(mine.len(), 1);
+    let other: Vec<serde_json::Value> =
+        serde_json::from_str(&env.ok(&["--json", "activity", "--problems", "--session", "nobody"]))
+            .unwrap();
+    assert!(other.is_empty());
+    let by_role: Vec<serde_json::Value> =
+        serde_json::from_str(&env.ok(&["--json", "activity", "--problems", "--role", "engine"]))
+            .unwrap();
+    assert!(by_role.is_empty());
+}
+
+#[test]
+fn activity_text_has_day_headers_rows_and_problem_lines() {
+    let env = Env::new();
+    env.ok(&["use", "engine", "--session", "engine-1"]);
+    env.ok(&["task", "list"]);
+    assert!(!env.run(&["task", "claim", "E-99"]).status.success());
+
+    let text = env.ok(&["activity"]);
+    let day = text.lines().next().unwrap();
+    let date = day.strip_prefix("── ").unwrap_or_else(|| panic!("{day:?}"));
+    assert_eq!(date.len(), "YYYY-MM-DD".len(), "{day:?}");
+    assert!(date.starts_with("20"), "{day:?}");
+    let row = text
+        .lines()
+        .find(|l| l.contains("task claim"))
+        .unwrap_or_else(|| panic!("{text}"));
+    let columns: Vec<&str> = row.split("  ").collect();
+    assert_eq!(columns[0].len(), 5, "HH:MM in {row:?}");
+    assert_eq!(&columns[0][2..3], ":");
+    assert_eq!(columns[1], "engine-1");
+    assert_eq!(columns[2], "CLI");
+    assert_eq!(columns[3], "task claim E-99");
+    assert_eq!(columns[4], "✖ no task `E-99`");
+    let list = text.lines().find(|l| l.contains("task list")).unwrap();
+    assert!(!list.contains('✖'), "{list}");
+    assert_eq!(
+        text.matches("── ").count(),
+        1,
+        "one day header for one day: {text}"
+    );
+
+    let problems = env.ok(&["activity", "--problems"]);
+    // The failure, and the clean-room session that bound itself through the CLI.
+    assert_eq!(problems.lines().count(), 2, "{problems}");
+    let failure = problems
+        .lines()
+        .find(|l| l.contains("  failure  "))
+        .unwrap_or_else(|| panic!("{problems}"));
+    let columns: Vec<&str> = failure.split("  ").collect();
+    assert_eq!(columns[0].len(), "YYYY-MM-DD HH:MM".len(), "{failure:?}");
+    assert_eq!(columns[2], "engine-1");
+    assert_eq!(columns[3], "no task `E-99`");
+    assert!(problems.contains("  clean_room_cli  "), "{problems}");
+}
+
+#[test]
+fn activity_without_a_log_is_empty() {
+    let env = Env::new();
+    let db = env.project_dir().join("activity.db");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+    assert_eq!(env.ok(&["--json", "activity"]).trim(), "[]");
+    assert_eq!(env.ok(&["--json", "activity", "--problems"]).trim(), "[]");
+    assert!(env.ok(&["activity"]).contains("No activity"));
+    assert!(env.ok(&["activity", "--problems"]).contains("No problems"));
+    assert!(!db.exists(), "reading must not create the log");
+}
+
+#[test]
+fn activity_rejects_a_bad_since() {
+    let env = Env::new();
+    let out = env.run(&["activity", "--since", "yesterday"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("30m") && stderr.contains("2h"), "{stderr}");
 }

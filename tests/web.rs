@@ -1070,3 +1070,205 @@ fn correcting_an_answer_over_rest_is_logged_as_a_correction() {
     assert_eq!(answers[0].changed, ["answer"]);
     assert_eq!(answers[1].changed, ["answer", "correction"]);
 }
+
+#[test]
+fn api_activity_filters_and_problems() {
+    let s = Server::start();
+    add_task(&s, "E-1", &[]);
+    s.cli(&["--session", "s1", "task", "list"]);
+    let failed = s
+        .command(&["--session", "s1", "task", "claim", "E-99"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    s.cli(&["--session", "s2", "task", "claim", "E-1"]);
+    assert_eq!(s.api("GET", "/api/tasks", None).status, 200);
+
+    let get = |path: &str| {
+        let r = s.api("GET", path, None);
+        assert_eq!(r.status, 200, "{path}: {}", r.body);
+        r.json()
+    };
+    let commands = |path: &str| -> Vec<String> {
+        get(path)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["command"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let all = get("/api/activity");
+    let all = all.as_array().unwrap();
+    assert_eq!(all.len(), 5, "{all:?}");
+    assert_eq!(all[0]["command"], "GET /api/tasks", "newest first");
+    assert_eq!(all[0]["channel"], "rest");
+    assert_eq!(all[1]["command"], "task claim");
+    assert_eq!(all[1]["session"], "s2");
+    assert_eq!(all[4]["command"], "task add");
+
+    assert_eq!(commands("/api/activity?failures=true"), ["task claim"]);
+    assert_eq!(
+        get("/api/activity?failures=true")[0]["error"],
+        "no task `E-99`"
+    );
+    assert_eq!(commands("/api/activity?session=s1").len(), 2);
+    assert_eq!(commands("/api/activity?channel=rest"), ["GET /api/tasks"]);
+    assert_eq!(commands("/api/activity?channel=cli").len(), 4);
+    assert_eq!(commands("/api/activity?writes=true").len(), 3);
+    assert_eq!(commands("/api/activity?limit=1"), ["GET /api/tasks"]);
+    assert_eq!(commands("/api/activity?since=1h").len(), 5);
+    assert_eq!(commands("/api/activity?since=4102444800").len(), 0);
+    assert_eq!(commands("/api/activity?role=engine").len(), 0);
+    assert_eq!(
+        commands("/api/activity?session=s1&channel=cli&failures=true&limit=5"),
+        ["task claim"]
+    );
+
+    for bad in [
+        "/api/activity?channel=smoke",
+        "/api/activity?since=soon",
+        "/api/activity?limit=many",
+        "/api/activity?writes=maybe",
+    ] {
+        let r = s.api("GET", bad, None);
+        assert_eq!(r.status, 400, "{bad}: {}", r.body);
+        assert!(r.json()["error"].is_string());
+    }
+
+    let problems = get("/api/activity/problems");
+    let problems = problems.as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0]["kind"], "failure");
+    assert_eq!(problems[0]["session"], "s1");
+    assert_eq!(problems[0]["message"], "no task `E-99`");
+    assert_eq!(
+        get("/api/activity/problems?session=s2"),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        get("/api/activity/problems?session=s1")
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let sessions = get("/api/activity/sessions");
+    let sessions = sessions.as_array().unwrap();
+    let by_name = |name: &str| {
+        sessions
+            .iter()
+            .find(|v| v["session"] == name)
+            .unwrap_or_else(|| panic!("{name} in {sessions:?}"))
+    };
+    assert_eq!(sessions.len(), 4, "{sessions:?}");
+    assert_eq!(sessions[0]["session"], "rest", "latest activity first");
+    assert_eq!(sessions[1]["session"], "s2");
+    assert_eq!(
+        by_name("s1")["calls"],
+        serde_json::json!({ "mcp": 0, "cli": 2, "rest": 0 })
+    );
+    assert_eq!(
+        by_name("rest")["calls"],
+        serde_json::json!({ "mcp": 0, "cli": 0, "rest": 1 })
+    );
+    assert!(by_name("s1")["role"].is_null());
+    assert!(by_name("s1")["last_at"].as_i64().unwrap() > 1_700_000_000);
+
+    // None of the reads above were logged.
+    assert_eq!(get("/api/activity").as_array().unwrap().len(), 5);
+}
+
+#[test]
+fn api_activity_is_empty_without_a_log() {
+    let s = Server::start();
+    let dir = std::fs::read_dir(s.hub.join("projects"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    // `serve` registered itself, so the file exists; an empty log still reads as [].
+    assert!(dir.join("activity.db").exists());
+    for path in [
+        "/api/activity",
+        "/api/activity/problems",
+        "/api/activity/sessions",
+    ] {
+        let r = s.api("GET", path, None);
+        assert_eq!(r.status, 200, "{path}: {}", r.body);
+        assert_eq!(r.json(), serde_json::json!([]), "{path}");
+    }
+}
+
+#[test]
+fn sse_emits_activity_event() {
+    let s = Server::start();
+    let mut stream = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /api/events HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\n\r\n",
+        s.host(),
+        s.token
+    )
+    .unwrap();
+    let mut seen = String::new();
+    let mut read_until = |needle: &str, seen: &mut String| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut buf = [0u8; 4096];
+        while !seen.contains(needle) && std::time::Instant::now() < deadline {
+            if let Ok(n) = stream.read(&mut buf) {
+                seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        }
+        assert!(seen.contains(needle), "no {needle:?} in {seen:?}");
+    };
+    read_until("text/event-stream", &mut seen);
+
+    // A read does not touch the store, but it is logged: only the log grows.
+    s.cli(&["task", "list"]);
+    let first = activity_log(&s.hub).latest_id().unwrap();
+    assert!(first > 0);
+    read_until(
+        &format!("event: activity\ndata: {{\"id\":{first}}}"),
+        &mut seen,
+    );
+
+    s.cli(&["task", "list"]);
+    let second = activity_log(&s.hub).latest_id().unwrap();
+    assert!(second > first);
+    read_until(
+        &format!("event: activity\ndata: {{\"id\":{second}}}"),
+        &mut seen,
+    );
+}
+
+#[test]
+fn api_activity_sessions_report_the_latest_role() {
+    let s = Server::start();
+    s.cli(&["role", "set", "engine"]);
+    s.cli(&["use", "engine", "--session", "bound"]);
+    s.cli(&["task", "list"]);
+    s.cli(&["task", "list", "--session", "other"]);
+    let sessions = s.api("GET", "/api/activity/sessions", None).json();
+    let sessions = sessions.as_array().unwrap();
+    assert!(
+        sessions.last().unwrap()["role"].is_null(),
+        "role set had no binding yet"
+    );
+    let find = |name: &str| sessions.iter().find(|v| v["session"] == name).unwrap();
+    assert_eq!(find("bound")["role"], "engine");
+    assert_eq!(find("bound")["calls"]["cli"], 2, "use and task list");
+    assert_eq!(find("other")["role"], "engine", "the worktree's binding");
+    assert_eq!(
+        sessions.last().unwrap()["calls"]["cli"],
+        1,
+        "least recent session last"
+    );
+    let engine = s.api("GET", "/api/activity?role=engine", None).json();
+    assert_eq!(engine.as_array().unwrap().len(), 3);
+}

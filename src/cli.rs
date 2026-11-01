@@ -1,5 +1,6 @@
 //! Command-line interface definition (Spec 02).
 
+use crate::activity::{Channel, Since};
 use crate::core::{Priority, QuestionStatus, TaskStatus};
 use crate::layout::Template;
 use clap::{Args, Parser, Subcommand};
@@ -106,6 +107,31 @@ pub enum Command {
         /// Port on 127.0.0.1 and ::1; 0 picks a free port
         #[arg(long, default_value_t = 3000)]
         port: u16,
+    },
+    /// Show the activity log: who called what, when, and what went wrong
+    Activity {
+        /// Only this role
+        #[arg(long)]
+        role: Option<String>,
+        /// Only calls that came in through this channel
+        #[arg(long, value_enum)]
+        channel: Option<Channel>,
+        /// Only calls since then: 30m, 2h, 1d, or unix seconds
+        #[arg(long)]
+        since: Option<Since>,
+        /// List problems instead of calls: the whole 30-day log, narrowed
+        /// only by --session and --role
+        #[arg(long)]
+        problems: bool,
+        /// Only calls that change something
+        #[arg(long)]
+        writes: bool,
+        /// Only calls that failed
+        #[arg(long)]
+        failures: bool,
+        /// Show at most this many calls, newest first
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
     },
     /// Export the state snapshot and Markdown views into this project root
     Sync {
@@ -412,6 +438,7 @@ impl Command {
                 QuestionCommand::Answer { .. } => "question answer",
                 QuestionCommand::Resolve { .. } => "question resolve",
             },
+            Self::Activity { .. } => "activity",
             Self::Mcp { .. } => "mcp",
             Self::Serve { .. } => "serve",
             Self::Sync { .. } => "sync",
