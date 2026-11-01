@@ -118,9 +118,14 @@ function scheduleReload() {
 }
 
 let activityTimer = null;
+// Off the Activity tab, a new call only marks its data stale; returning to
+// the tab refetches.
 function scheduleActivityReload() {
   clearTimeout(activityTimer);
-  activityTimer = setTimeout(() => { if (state.tab === "activity") loadActivity().catch(showError); }, 150);
+  activityTimer = setTimeout(() => {
+    if (state.tab === "activity") loadActivity().catch(showError);
+    else state.activity.key = null;
+  }, 150);
 }
 
 // Entries for the current filters plus all problems and sessions; a response
@@ -504,13 +509,21 @@ const roleVisible = (item) => !state.role || item.role === state.role;
 // Problems of one kind never share entries, so the oldest entry names one.
 const problemKey = (p) => `${p.kind}:${p.entry_ids[0]}`;
 
+// A session filter whose chip the role filter hides is dropped.
+function dropHiddenSession() {
+  const a = state.activity;
+  if (!a.session || !state.role) return;
+  const session = a.sessions.find((s) => s.session === a.session);
+  if (!session || !roleVisible(session)) a.session = null;
+}
+
 function selectedProblem() {
   const key = state.activity.problem;
   return key ? state.activity.problems.find((p) => p.entry_ids.length && problemKey(p) === key && roleVisible(p)) || null : null;
 }
 
-// A selected problem loads its own entries; otherwise session, role, channel
-// and writes filter on the server.
+// A selected problem loads its own entries; otherwise session, role, channel,
+// writes and failures filter on the server.
 function activityPath() {
   const a = state.activity;
   const q = new URLSearchParams();
@@ -524,6 +537,7 @@ function activityPath() {
     if (state.role) q.set("role", state.role);
     if (CHANNELS.includes(a.filter)) q.set("channel", a.filter);
     if (a.filter === "writes") q.set("writes", "true");
+    if (a.filter === "problems") q.set("failures", "true");
   }
   return `/api/activity?${q}`;
 }
@@ -655,7 +669,6 @@ function logbook(problems, selected, t) {
     entries = a.entries.filter((e) => ids.has(e.id));
   } else {
     entries = a.entries.filter(roleVisible);
-    if (a.filter === "problems") entries = entries.filter((e) => !e.ok || marks.has(e.id));
   }
   const pills = h("div", { class: "filters", role: "group", "aria-label": "Logbook filter" },
     LOG_FILTERS.map(([id, name]) => h("button", {
@@ -1122,7 +1135,10 @@ function renderFilters() {
 function render() {
   if (state.rejected) return;
   renderChrome();
-  if (state.tab === "activity" && state.activity.key !== activityPath()) loadActivity().catch(showError);
+  if (state.tab === "activity") {
+    dropHiddenSession();
+    if (state.activity.key !== activityPath()) loadActivity().catch(showError);
+  }
   const views = { tracks: tracksView, activity: activityView, board: boardView, stages: stagesView, files: filesView, review: reviewView, questions: questionsView, leases: leasesView };
   $("view").replaceChildren(views[state.tab]());
   renderDrawer();
