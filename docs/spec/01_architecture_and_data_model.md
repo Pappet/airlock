@@ -269,7 +269,7 @@ One entry per operation:
 | `command` | MCP: the tool name (`task_claim`), plus `prompt start` for the `start` prompt; CLI: the subcommand path (`task edit`, `question answer`); REST: `<METHOD> <route pattern>` (`POST /api/questions/{id}/answer`, every `GET` is logged as `GET <route>`) |
 | `target` | task id, question id (`#15`), track name, or role name, if the operation has one |
 | `changed` | for writes: a list of the argument names given, e.g. `track`, `priority: high`, `blocked_by`; `correction` is added to a successful answer that corrected an earlier one |
-| `write` | whether the command changes state: false for the reads (`session_start`, `prompt start`, `task_next`, `task_get`, `question_list`, `track_list`, `start`, `task list`, `task next`, `task show`, `track list`, `question list`, `role list`, a `use` that only shows the binding, and every REST `GET`) |
+| `write` | whether the command changes state: false for the reads (`session_start`, `prompt start`, `task_next`, `task_get`, `question_list`, `track_list`, `start`, `task list`, `task next`, `task show`, `track list`, `question list`, `role list`, a `use` that only shows the binding, and every REST `GET` and `HEAD`, which is logged as `GET`) |
 | `ok` | success or failure |
 | `error` | on failure, the error message |
 | `pid`, `build` | process id and build identity (§3.6) of the caller |
@@ -290,7 +290,7 @@ No MCP tool exposes the log.
 
 ### 3.6 Process Registry and Build Identity
 
-A second table of `activity.db` registers the long-running processes. `airlock mcp` and `airlock serve` register on start (kind `mcp` or `serve`, pid, build identity, session, role, start time), refresh a `last_seen` stamp every 60 seconds, and remove their row on a clean exit. A process counts as **live** while its `last_seen` is at most 180 seconds old; stale rows are deleted when the registry is read. There is no pid probing, so the check is portable. A process that cannot register (log unusable, no project resolved) runs unregistered after printing the usual `airlock: activity log: …` line. Processes started before the registry existed never register.
+A second table of `activity.db` registers the long-running processes. `airlock mcp` and `airlock serve` register on start (kind `mcp` or `serve`, pid, build identity, session, role, start time), refresh a `last_seen` stamp every 60 seconds, and remove their row on a clean exit. A process counts as **live** while its `last_seen` is at most 180 seconds old; stale rows are deleted when the registry is read. A live process whose row was deleted during a heartbeat gap (a suspend, a clock jump) puts it back, with the same id and start time, on its next heartbeat. There is no pid probing, so the check is portable. A process that cannot register (log unusable, no project resolved) runs unregistered after printing the usual `airlock: activity log: …` line. Processes started before the registry existed never register.
 
 The **build identity** is `<package version>+<unix build time>`, stamped into the binary at compile time as `AIRLOCK_BUILD` (`build.rs`), e.g. `0.1.0+1793580000`. Every build of the same package version differs by its build time, which is what is compared. Entries record the identity of their caller in `build`.
 

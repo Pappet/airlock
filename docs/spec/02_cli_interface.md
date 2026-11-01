@@ -43,7 +43,7 @@ Once the project is resolved, each CLI invocation leaves an entry in the activit
 | `AI_AGENT` | the text before its first `_` (`claude-code_2.1` gives `claude-code`) |
 | `CLAUDECODE=1` | `claude-code`, when `AI_AGENT` is absent or empty |
 
-A harness that sets neither shows as a plain CLI call; the log then has no `agent` for it, and its calls are still listed and still count toward problems.
+Only these two variables are recognised. Other harnesses, among them DSH and Antigravity, have not been verified to set either; their CLI calls show as plain CLI calls. A harness that sets neither shows as a plain CLI call; the log then has no `agent` for it, and its calls are still listed and still count toward problems (except `use`, which counts only from a recognised agent, Spec 01 §3.7).
 
 ---
 
