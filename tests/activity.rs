@@ -199,11 +199,10 @@ fn last_briefing_ignores_non_briefing_commands() {
 fn processes_are_live_until_they_stop_touching() {
     let dir = TempDir::new().unwrap();
     let mut log = open(&dir);
-    let id = log.register("mcp", Some("s1"), Some("backend"), 0).unwrap();
+    let process = log.register("mcp", Some("s1"), Some("backend"), 0).unwrap();
 
     let live = log.processes(LIVE_SECS).unwrap();
-    assert_eq!(live.len(), 1);
-    assert_eq!(live[0].id, id);
+    assert_eq!(live, [process]);
     assert_eq!(live[0].kind, "mcp");
     assert_eq!(live[0].session.as_deref(), Some("s1"));
     assert_eq!(live[0].role.as_deref(), Some("backend"));
@@ -220,14 +219,40 @@ fn processes_are_live_until_they_stop_touching() {
 fn touch_keeps_a_process_live_and_unregister_removes_it() {
     let dir = TempDir::new().unwrap();
     let mut log = open(&dir);
-    let id = log.register("serve", None, None, 0).unwrap();
-    log.touch(id, 100).unwrap();
+    let process = log.register("serve", None, None, 0).unwrap();
+    log.touch(&process, 100).unwrap();
     let live = log.processes(100 + LIVE_SECS).unwrap();
     assert_eq!(live.len(), 1);
     assert_eq!(live[0].last_seen, 100);
     assert_eq!(live[0].started_at, 0);
-    log.unregister(id).unwrap();
+    log.unregister(process.id).unwrap();
     assert!(log.processes(100).unwrap().is_empty());
+}
+
+#[test]
+fn a_live_process_reappears_after_a_heartbeat_gap() {
+    let dir = TempDir::new().unwrap();
+    let mut log = open(&dir);
+    let process = log.register("mcp", Some("s1"), Some("backend"), 0).unwrap();
+    let other = log.register("serve", None, None, 0).unwrap();
+
+    // A suspend: no heartbeat for longer than LIVE_SECS, and a reader prunes.
+    let resumed = LIVE_SECS + 1;
+    assert!(log.processes(resumed).unwrap().is_empty());
+
+    log.touch(&process, resumed).unwrap();
+    let live = log.processes(resumed).unwrap();
+    assert_eq!(live.len(), 1, "only the touched process is live: {live:?}");
+    assert_eq!(live[0].id, process.id);
+    assert_eq!(live[0].kind, "mcp");
+    assert_eq!(live[0].session.as_deref(), Some("s1"));
+    assert_eq!(live[0].role.as_deref(), Some("backend"));
+    assert_eq!(live[0].started_at, 0);
+    assert_eq!(live[0].last_seen, resumed);
+
+    // A fresh registration never takes a re-inserted id.
+    let fresh = log.register("mcp", None, None, resumed).unwrap();
+    assert!(fresh.id > other.id && fresh.id != process.id);
 }
 
 #[test]

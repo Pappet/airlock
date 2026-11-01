@@ -353,27 +353,51 @@ impl ActivityLog {
         Ok(at)
     }
 
-    /// Register the current process and return its registry id.
+    /// Register the current process and return its registry row. Keep it:
+    /// [`touch`](Self::touch) needs it to re-register after a gap.
     pub fn register(
         &mut self,
         kind: &str,
         session: Option<&str>,
         role: Option<&str>,
         now: i64,
-    ) -> Result<u64> {
+    ) -> Result<Process> {
+        let pid = std::process::id();
         self.conn.execute(
             "INSERT INTO processes (pid, build, kind, session, role, started_at, last_seen)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-            params![std::process::id(), build(), kind, session, role, now],
+            params![pid, build(), kind, session, role, now],
         )?;
-        Ok(self.conn.last_insert_rowid() as u64)
+        Ok(Process {
+            id: self.conn.last_insert_rowid() as u64,
+            pid,
+            build: build().to_string(),
+            kind: kind.to_string(),
+            session: session.map(str::to_string),
+            role: role.map(str::to_string),
+            started_at: now,
+            last_seen: now,
+        })
     }
 
-    /// Heartbeat: mark the process as seen at `now`.
-    pub fn touch(&mut self, id: u64, now: i64) -> Result<()> {
+    /// Heartbeat: mark the process as seen at `now`. A row that a reader
+    /// pruned during a heartbeat gap (a suspend, a clock jump) comes back
+    /// under the same id, so a live process never stays unlisted.
+    pub fn touch(&mut self, process: &Process, now: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE processes SET last_seen = ?2 WHERE id = ?1",
-            params![id as i64, now],
+            "INSERT INTO processes (id, pid, build, kind, session, role, started_at, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT (id) DO UPDATE SET last_seen = excluded.last_seen",
+            params![
+                process.id as i64,
+                process.pid,
+                process.build,
+                process.kind,
+                process.session,
+                process.role,
+                process.started_at,
+                now
+            ],
         )?;
         Ok(())
     }
@@ -384,7 +408,8 @@ impl ActivityLog {
         Ok(())
     }
 
-    /// Processes seen within [`LIVE_SECS`] of `now`; older rows are deleted.
+    /// Processes seen within [`LIVE_SECS`] of `now`; older rows are deleted
+    /// (a live process puts its row back on its next heartbeat).
     pub fn processes(&mut self, now: i64) -> Result<Vec<Process>> {
         self.conn.execute(
             "DELETE FROM processes WHERE last_seen < ?1",

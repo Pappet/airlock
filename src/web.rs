@@ -155,26 +155,31 @@ impl Registration {
 fn register(project: &Project) -> Option<Registration> {
     let path = ActivityLog::path_for(&project.database);
     let registered = ActivityLog::open(&path).and_then(|mut log| {
-        let id = log.register("serve", None, None, unix_now())?;
-        Ok((log, id))
+        let process = log.register("serve", None, None, unix_now())?;
+        Ok((log, process))
     });
-    let (log, id) = match registered {
+    let (log, process) = match registered {
         Ok(registered) => registered,
         Err(e) => {
             eprintln!("airlock: activity log: {e:#}");
             return None;
         }
     };
+    let id = process.id;
     let heartbeat = tokio::spawn(async move {
         // Its own connection: the one in `log` belongs to the shutdown path.
-        let Ok(mut log) = ActivityLog::open(&path) else {
-            return;
+        let mut log = match ActivityLog::open(&path) {
+            Ok(log) => log,
+            Err(e) => {
+                eprintln!("airlock: activity log: heartbeat: {e:#}");
+                return;
+            }
         };
         let period = Duration::from_secs(activity::TOUCH_SECS);
         let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         loop {
             tick.tick().await;
-            let _ = log.touch(id, unix_now());
+            let _ = log.touch(&process, unix_now());
         }
     });
     Some(Registration { log, id, heartbeat })
