@@ -55,6 +55,14 @@ Goal: a Claude Code session that runs out of context, crashes, or is compacted i
 - [x] WO-5: directory entries in `touch` lists count as overlap for the files beneath them.
 - [x] WO-6: documentation housekeeping (`PROJECT_OVERVIEW.md` dependencies and status, tool counts, phase markers).
 
+## Phase 3d: Handoff Between Sessions (planned)
+Goal: sessions learn what changed for their role at the boundary between two tasks and when their turn ends, so the human no longer copies output between lead and engine, and nothing but packages, answers, and review feedback crosses the airlock. Work orders in [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md).
+- [ ] WO-1: events written with each change, a per-session inbox (`airlock inbox`, MCP `inbox`).
+- [ ] WO-2: `task_complete` returns the inbox and the next package; `task_claim` warns about more important ready tasks and a second lease.
+- [ ] WO-3: opt-in Claude Code Stop hook (`setup claude-hooks --auto-continue`) that sends a session back to work when its inbox has news.
+- [ ] WO-4: `inbox_wait` for sessions that run unattended.
+- [ ] WO-5: validation on OpenSHR (Scenario H2) and documentation.
+
 ---
 
 ## Phase 4: Web Dashboard
