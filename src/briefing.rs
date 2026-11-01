@@ -98,6 +98,10 @@ pub struct Briefing {
     pub answered_questions: Vec<Question>,
     /// The session's resolved questions whose answer was corrected since its previous briefing
     pub corrected_answers: Vec<Question>,
+    /// When the session last got a briefing; answers it already saw then are
+    /// shortened to one line in the Markdown
+    #[serde(skip)]
+    pub previous_briefing: Option<i64>,
 }
 
 /// Which interface the command hints in the Markdown refer to.
@@ -186,6 +190,7 @@ pub fn build(
         others,
         answered_questions,
         corrected_answers,
+        previous_briefing,
     })
 }
 
@@ -304,13 +309,47 @@ impl Briefing {
 
         if !self.answered_questions.is_empty() {
             out.push_str("\n## Answers to your questions\n\n");
-            for q in &self.answered_questions {
+            // An answer this session already got in full in an earlier briefing is one
+            // line: repeating every open answer in every briefing (and after every
+            // compaction) would bury the work package.
+            let seen = |q: &Question| {
+                let latest = q.corrected_at.or(q.answered_at);
+                matches!((self.previous_briefing, latest), (Some(previous), Some(at)) if at < previous)
+            };
+            let (earlier, new): (Vec<&Question>, Vec<&Question>) =
+                self.answered_questions.iter().partition(|q| seen(q));
+            for q in new {
                 let mark = if q.corrected_at.is_some() {
                     " (corrected)"
                 } else {
                     ""
                 };
                 question_item(&mut out, q, mark);
+            }
+            if !earlier.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "{}Already shown in an earlier briefing (read one again with {}):\n",
+                    if earlier.len() < self.answered_questions.len() {
+                        "\n"
+                    } else {
+                        ""
+                    },
+                    cmd("question_list", "airlock question show <id>")
+                );
+                for q in earlier {
+                    let spec = q
+                        .spec_file
+                        .as_deref()
+                        .map(|f| format!(" — codified in `{f}`"))
+                        .unwrap_or_default();
+                    let mark = if q.corrected_at.is_some() {
+                        " (corrected)"
+                    } else {
+                        ""
+                    };
+                    let _ = writeln!(out, "- **#{} ({})**{mark}{spec}", q.id, q.topic);
+                }
             }
         }
 

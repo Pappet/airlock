@@ -634,8 +634,9 @@ pub fn summarize_cli(command: &Command) -> (Option<String>, Vec<String>) {
             changed.flag("clear", *clear);
             role.clone()
         }
-        Command::Start { role } => {
+        Command::Start { role, hints } => {
             changed.opt("role", role);
+            changed.flag("hints", *hints == crate::cli::Hints::Mcp);
             None
         }
         Command::Role(sub) => match sub {

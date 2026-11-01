@@ -152,7 +152,9 @@ pub fn run(cli: Cli) -> Result<()> {
     let mut correction = false;
 
     let caller_role = match &command {
-        Command::Start { role: Some(role) }
+        Command::Start {
+            role: Some(role), ..
+        }
         | Command::Task(TaskCommand::Next { role: Some(role) }) => Some(role.clone()),
         _ => project.binding.as_ref().map(|b| b.role.clone()),
     };
@@ -166,7 +168,7 @@ pub fn run(cli: Cli) -> Result<()> {
             | Command::Setup { .. }
             | Command::Activity { .. }
             | Command::Serve { .. } => unreachable!("handled above"),
-            Command::Start { role } => {
+            Command::Start { role, hints } => {
                 let role = match (role, &project.binding) {
                     (Some(role), Some(b)) if b.locked && role != b.role => bail!(
                         "this worktree is locked to role `{}`; `--role {role}` is refused",
@@ -182,7 +184,11 @@ pub fn run(cli: Cli) -> Result<()> {
                 let previous = activity::last_briefing_quietly(&project.database, &session);
                 let brief =
                     briefing::build(&store, &project, &session, role.as_deref(), previous, now)?;
-                out.print(&brief, || brief.markdown(briefing::Via::Cli))
+                let via = match hints {
+                    crate::cli::Hints::Cli => briefing::Via::Cli,
+                    crate::cli::Hints::Mcp => briefing::Via::Mcp,
+                };
+                out.print(&brief, || brief.markdown(via))
             }
             Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),
             Command::Task(sub) => task(&mut store, &project, &session, sub, now, &out),

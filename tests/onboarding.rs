@@ -398,6 +398,67 @@ fn start_briefs_claims_next_work_and_answers() {
 }
 
 #[test]
+fn answers_already_shown_are_one_line_and_hints_can_name_mcp_tools() {
+    let env = Env::new();
+    env.add_engine_task("E-1");
+    env.ok(&env.engine, &["use", "engine"]);
+    env.ok(
+        &env.engine,
+        &["question", "ask", "Arc width?", "--topic", "melee.md"],
+    );
+    env.ok(
+        &env.main,
+        &[
+            "question",
+            "answer",
+            "1",
+            "LONG-ANSWER-TEXT",
+            "--spec",
+            "docs/spec/melee.md",
+        ],
+    );
+
+    // The first briefing after the answer shows it in full. Times are whole seconds:
+    // only a briefing strictly later than the answer counts as having shown it.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let text = env.ok(&env.engine, &["start"]);
+    assert!(text.contains("LONG-ANSWER-TEXT"), "{text}");
+    let text = env.ok(&env.engine, &["start"]);
+    assert!(!text.contains("LONG-ANSWER-TEXT"), "{text}");
+    assert!(
+        text.contains("Already shown in an earlier briefing (read one again with `airlock question show <id>`)")
+            && text.contains("- **#1 (melee.md)** — codified in `docs/spec/melee.md`"),
+        "{text}"
+    );
+    let brief = env.json(&env.engine, &["start"]);
+    assert_eq!(
+        brief["answered_questions"][0]["answer"], "LONG-ANSWER-TEXT",
+        "the structured form keeps everything"
+    );
+
+    // A new answer is shown in full again, next to the one-liner.
+    env.ok(
+        &env.engine,
+        &["question", "ask", "Second?", "--topic", "melee.md"],
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    env.ok(&env.main, &["question", "answer", "2", "NEW-ANSWER"]);
+    let text = env.ok(&env.engine, &["start", "--hints", "mcp"]);
+    assert!(
+        text.contains("NEW-ANSWER") && !text.contains("LONG-ANSWER-TEXT"),
+        "{text}"
+    );
+    assert!(
+        text.contains("`task_claim`") && !text.contains("airlock task claim"),
+        "{text}"
+    );
+    assert!(
+        text.contains("read one again with `question_list`"),
+        "{text}"
+    );
+}
+
+#[test]
 fn the_package_names_its_track_and_priority() {
     let env = Env::new();
     env.ok(
@@ -810,15 +871,15 @@ fn setup_prints_claude_hooks() {
     let command = hook_command(&settings);
     assert!(command.contains("airlock"), "{command}");
     assert!(
-        command.ends_with(" start"),
-        "role and session come from the binding: {command}"
+        command.ends_with(" start --hints mcp"),
+        "role and session come from the binding; the briefing names MCP tools: {command}"
     );
     assert!(command.contains(" -C "), "{command}");
     assert!(!command.contains("--role"), "{command}");
 
     let json = env.json(&env.engine, &["setup", "claude-hooks"]);
     assert_eq!(json["command"], bin);
-    assert_eq!(json["args"], json!(["-C", root, "start"]));
+    assert_eq!(json["args"], json!(["-C", root, "start", "--hints", "mcp"]));
 
     let spec = env.json(&env.engine, &["setup", "claude-hooks", "--role", "spec"]);
     assert_eq!(
@@ -827,6 +888,8 @@ fn setup_prints_claude_hooks() {
             "-C",
             root,
             "start",
+            "--hints",
+            "mcp",
             "--role",
             "spec",
             "--session",
