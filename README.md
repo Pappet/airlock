@@ -2,7 +2,7 @@
 
 A local-first coordinator for multi-agent and human development sessions: tasks, questions, and leases in one store shared by every worktree of a project.
 
-> **Status: Phase 4.** The hub store, the task and question CLI, `sync`/`import`, the MCP server, onboarding (`use`, `start`, `doctor`, `setup`), and the dashboard (`airlock serve`) work. Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md).
+> **Status: Phase 4 done, Phase 3c (session continuity) done.** The hub store, the task and question CLI, `sync`/`import`, the MCP server, onboarding (`use`, `start`, `doctor`, `setup`), the dashboard (`airlock serve`), the activity log, and session continuity (SessionStart hook, progress notes) work. The agent validation with Antigravity and DSH is still open. Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md), [`docs/walkthroughs/agent-validation.md`](docs/walkthroughs/agent-validation.md).
 
 ---
 

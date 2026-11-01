@@ -12,7 +12,7 @@ Runs 1 to 3 were reconstructed by reading the harnesses' transcripts by hand. La
 
 | | Scenario | Checks |
 |---|---|---|
-| A | Connection | server starts; first line of `session_start` shows the right role and session; tool count (9 clean-room, 13 otherwise) |
+| A | Connection | server starts; first line of `session_start` shows the right role and session; tool count (9 clean-room, 18 otherwise) |
 | B | Work cycle | `session_start` → claim → heartbeat → complete with notes; dependents become ready; `review: true` → approve / reject, feedback in the next briefing |
 | C | Questions across the airlock | engine asks, spec answers with `spec_file` and resolves; answer appears in the engine's next briefing |
 | D | Restart | agent stopped mid-task and restarted: briefing names the held task and lease; work continues without a new claim |

@@ -12,8 +12,8 @@
 
 - **Language:** Rust (edition 2024, MSRV 1.85)
 - **Interfaces:** CLI (`clap`), MCP server over stdio, local web dashboard (`axum`)
-- **Persistence:** one SQLite database (WAL) per project in the hub directory (`~/.local/state/airlock/projects/<uuid>/` on Linux, override with `AIRLOCK_HOME`), referenced from the repository by a `.airlock` marker file
-- **Status:** Phases 1–3 (hub store, CLI, sync and import, MCP server) and 3b onboarding complete apart from the agent validation runs; Phase 4 (web dashboard) implemented — see [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md)
+- **Persistence:** one SQLite database (WAL) per project in the hub directory (`~/.local/state/airlock/projects/<uuid>/` on Linux, override with `AIRLOCK_HOME`), referenced from the repository by a `.airlock` marker file; next to it a second database, `activity.db`, for the activity log and the process registry
+- **Status:** Phases 1–4 implemented (hub store, CLI, sync and import, MCP server, onboarding, web dashboard), plus tracks, the activity log with answer corrections, and Phase 3c session continuity (SessionStart hook, progress notes, directory overlap). Open: the agent validation with Antigravity and DSH (Phase 3b). See [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md) and [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md)
 - **License:** MIT
 
 ---
@@ -98,7 +98,7 @@ graph TD
 - [`src/layout.rs`](src/layout.rs): `airlock.toml` layout model and the init templates.
 - [`src/git.rs`](src/git.rs): Thin `git` wrappers for setup and checks (never used to locate state).
 - [`src/doctor.rs`](src/doctor.rs): `airlock doctor` — binary, project, marker, worktrees, bindings, harness configurations.
-- [`src/setup.rs`](src/setup.rs): `airlock setup` — MCP configuration snippets for Claude Code, Antigravity, and DSH.
+- [`src/setup.rs`](src/setup.rs): `airlock setup` — MCP configuration snippets for Claude Code, Antigravity, and DSH, and the Claude Code SessionStart hook; shell quoting for hook commands.
 - [`src/hub.rs`](src/hub.rs): Hub directory, project registry (`project.json`), `.airlock` marker discovery and project resolution.
 - [`src/store.rs`](src/store.rs): SQLite store — schema and migrations, WAL setup, worktree bindings, immediate write transactions, lazy lease expiry, task and question transitions.
 - [`src/core.rs`](src/core.rs): Domain model — `Task`, `TaskState`, derived `TaskStatus`, leases, `Question`, dependency graph validation.
@@ -108,7 +108,10 @@ graph TD
 - [`src/mcp.rs`](src/mcp.rs): MCP server — JSON-RPC over stdio, project/session/role binding, tool definitions, clean-room tool set.
 - [`src/views.rs`](src/views.rs): `PLAN.md` and `QUESTIONS.md` rendered from a snapshot.
 - [`src/overlap.rs`](src/overlap.rs): File overlap between open tasks' `touch` lists and dependency stages.
-- [`src/web.rs`](src/web.rs): `airlock serve` — loopback server, token/Host/Origin checks, REST API, SSE from `data_version` polling; assets in [`src/web/`](src/web/).
+- [`src/web.rs`](src/web.rs): `airlock serve` — loopback server, token/Host/Origin checks, REST API, SSE from `data_version` polling, activity logging of REST calls.
+- [`src/web/`](src/web/): the dashboard, embedded with `include_str!` — [`index.html`](src/web/index.html), [`app.js`](src/web/app.js) (all views, the Activity tab, live updates), [`style.css`](src/web/style.css) (SPECTRUM tokens, light and dark).
+- [`src/activity.rs`](src/activity.rs): Activity log (`activity.db`): one entry per call from MCP, CLI, and REST without free text, 30-day retention, process registry with build identity.
+- [`src/problems.rs`](src/problems.rs): Problems computed from the activity log and the process registry (failures, clean-room CLI writes, error bursts, corrected answers, old processes).
 
 ### `tests/`
 - [`tests/model.rs`](tests/model.rs): Derived status, leases, dependents, graph validation, config defaults.
@@ -121,10 +124,13 @@ graph TD
 - [`tests/onboarding.rs`](tests/onboarding.rs): Bindings, `-C`, roles, briefing, MCP binding and prompt, doctor, setup — against real git worktrees.
 - [`tests/views.rs`](tests/views.rs): Exact layout of the generated views.
 - [`tests/web.rs`](tests/web.rs): The dashboard server through the binary — security checks, every endpoint and status code, live events.
+- [`tests/activity.rs`](tests/activity.rs): Activity log store — filters, retention, briefing lookup, process registry, parallel writers, argument summaries.
+- [`tests/activity_cli.rs`](tests/activity_cli.rs): CLI calls in the activity log through the binary — sessions, roles, agent shells, errors, no free text, `airlock activity`.
+- [`tests/problems.rs`](tests/problems.rs): Problem rules and their collapsing.
 - [`tests/common/mod.rs`](tests/common/mod.rs): Shared fixtures.
 
 ### `docs/`
-- [`docs/spec/`](docs/spec/README.md): Specifications 01–05.
+- [`docs/spec/`](docs/spec/README.md): Specifications 01–06.
 - [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md): Implementation phases.
 - [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md): Work orders for Phase 3c (session continuity) and follow-ups.
 - [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md): Milestones.
@@ -148,9 +154,13 @@ All dependencies are locked in [`Cargo.lock`](Cargo.lock).
 | `uuid` (1.26, `v4`) | Project ids |
 | `sha2` (0.11) | SHA-256 of snapshots for the foreign-change guard |
 | `toml` (1.1) | `airlock.toml` layout file |
+| `axum` (0.8, `http1`, `tokio`, `json`, `matched-path`, `query`) | Dashboard REST API and SSE (`airlock serve`) |
+| `tokio` (1.54) | Async runtime for `airlock serve` only; signal handling for its shutdown |
+| `getrandom` (0.4) | The dashboard's access token |
+| `futures-util` (0.3) | The SSE event stream |
 | `tempfile` (3, dev) | Temporary hubs and databases in tests |
 
-Planned: `axum` and `rust-embed` (Phase 4).
+Dashboard assets are embedded with `include_str!`; no asset crate is used.
 
 ---
 
