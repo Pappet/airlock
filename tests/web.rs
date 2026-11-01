@@ -857,3 +857,41 @@ fn events_report_task_and_question_changes() {
     s.cli(&["track", "add", "core"]);
     read_until("event: track_changed\ndata: {\"id\":\"core\"}", &mut seen);
 }
+
+/// The project's activity log, found through the hub.
+fn activity_log(hub: &Path) -> airlock::activity::ActivityLog {
+    let dir = std::fs::read_dir(hub.join("projects"))
+        .unwrap()
+        .next()
+        .expect("a project in the hub")
+        .unwrap()
+        .path();
+    airlock::activity::ActivityLog::open(&dir.join("activity.db")).unwrap()
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[test]
+fn serve_registers_while_running_and_unregisters_on_shutdown() {
+    let mut s = Server::start();
+    let running = activity_log(&s.hub).processes(now()).unwrap();
+    assert_eq!(running.len(), 1, "{running:?}");
+    assert_eq!(running[0].kind, "serve");
+    assert_eq!(running[0].pid, s.child.id());
+    assert_eq!(running[0].session, None);
+    assert_eq!(running[0].build, airlock::activity::build());
+
+    // SIGTERM is a clean shutdown: the row goes away.
+    let killed = Command::new("kill")
+        .args(["-TERM", &s.child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    s.child.wait().unwrap();
+    assert!(activity_log(&s.hub).processes(now()).unwrap().is_empty());
+}

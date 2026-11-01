@@ -651,9 +651,14 @@ fn clean_room_sessions_get_no_track_tools() {
     }
 }
 
-/// Entries of the log in call order (the log reads newest first).
+/// MCP entries of the log in call order (the log reads newest first); the
+/// CLI calls that set a test up are logged too, but are not what these check.
 fn logged(env: &Env) -> Vec<airlock::activity::Entry> {
-    let mut entries = env.activity().entries(&Filter::default()).unwrap();
+    let filter = Filter {
+        channel: Some(Channel::Mcp),
+        ..Filter::default()
+    };
+    let mut entries = env.activity().entries(&filter).unwrap();
     entries.reverse();
     entries
 }

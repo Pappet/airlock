@@ -1,5 +1,6 @@
 //! Command execution: resolves project and session, runs the operation, prints the result.
 
+use crate::activity::{self, Channel, Entry};
 use crate::cli::{
     Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec, TrackCommand,
 };
@@ -82,6 +83,8 @@ pub fn run(cli: Cli) -> Result<()> {
         let mut server = mcp::Server::new(hub, project, session, role)?;
         return server.run(std::io::stdin().lock(), std::io::stdout().lock());
     }
+    let name = command.name();
+    let summary = activity::summarize_cli(&command);
     match command {
         Command::Use {
             role,
@@ -89,7 +92,27 @@ pub fn run(cli: Cli) -> Result<()> {
             force,
             clear,
         } => {
-            return use_binding(&project, role, lock, force, clear, cli.session, &out);
+            // What the call is logged under if it binds nothing: the existing binding.
+            let fallback_session = (cli.session.clone())
+                .or(bound_session)
+                .unwrap_or_else(default_session);
+            let fallback_role = role
+                .clone()
+                .or_else(|| project.binding.as_ref().map(|b| b.role.clone()));
+            let result = use_binding(&project, role, lock, force, clear, cli.session, &out);
+            let (session, role) = match &result {
+                Ok(Some(binding)) => (binding.session.clone(), Some(binding.role.clone())),
+                _ => (fallback_session, fallback_role),
+            };
+            log_cli_call(
+                &project,
+                "use",
+                summary,
+                session,
+                role,
+                result.as_ref().err(),
+            );
+            return result.map(|_| ());
         }
         Command::Setup { harness, role } => return setup::run(&project, harness, role, &out),
         Command::Serve { port } => return web::serve(project, port),
@@ -102,86 +125,138 @@ pub fn run(cli: Cli) -> Result<()> {
         .unwrap_or_else(default_session);
     let mut store = Store::open(&project.database)?;
 
-    match command {
-        Command::Init { .. }
-        | Command::Doctor
-        | Command::Mcp { .. }
-        | Command::Use { .. }
-        | Command::Setup { .. }
-        | Command::Serve { .. } => unreachable!("handled above"),
-        Command::Start { role } => {
-            let role = match (role, &project.binding) {
-                (Some(role), Some(b)) if b.locked && role != b.role => bail!(
-                    "this worktree is locked to role `{}`; `--role {role}` is refused",
-                    b.role
-                ),
-                (Some(role), _) => {
-                    ensure_role(&project, &role)?;
-                    Some(role)
-                }
-                (None, binding) => binding.as_ref().map(|b| b.role.clone()),
-            };
-            let brief = briefing::build(&store, &project, &session, role.as_deref(), now)?;
-            out.print(&brief, || brief.markdown(briefing::Via::Cli))
+    let caller_role = match &command {
+        Command::Start { role: Some(role) }
+        | Command::Task(TaskCommand::Next { role: Some(role) }) => Some(role.clone()),
+        _ => project.binding.as_ref().map(|b| b.role.clone()),
+    };
+    let logged_session = session.clone();
+    let result = (|| -> Result<()> {
+        match command {
+            Command::Init { .. }
+            | Command::Doctor
+            | Command::Mcp { .. }
+            | Command::Use { .. }
+            | Command::Setup { .. }
+            | Command::Serve { .. } => unreachable!("handled above"),
+            Command::Start { role } => {
+                let role = match (role, &project.binding) {
+                    (Some(role), Some(b)) if b.locked && role != b.role => bail!(
+                        "this worktree is locked to role `{}`; `--role {role}` is refused",
+                        b.role
+                    ),
+                    (Some(role), _) => {
+                        ensure_role(&project, &role)?;
+                        Some(role)
+                    }
+                    (None, binding) => binding.as_ref().map(|b| b.role.clone()),
+                };
+                let brief = briefing::build(&store, &project, &session, role.as_deref(), now)?;
+                out.print(&brief, || brief.markdown(briefing::Via::Cli))
+            }
+            Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),
+            Command::Task(sub) => task(&mut store, &project, &session, sub, now, &out),
+            Command::Track(sub) => track(&mut store, sub, now, &out),
+            Command::Question(sub) => question(&mut store, &session, sub, now, &out),
+            Command::Sync { force } => {
+                let root = project_root(&project, "sync")?;
+                let report = sync::sync(&mut store, &project, root, force, now)?;
+                out.print(&report, || {
+                    let mut lines: Vec<String> = report
+                        .written
+                        .iter()
+                        .map(|p| format!("wrote     {p}"))
+                        .collect();
+                    lines.extend(report.unchanged.iter().map(|p| format!("unchanged {p}")));
+                    lines.join("\n")
+                })
+            }
+            Command::Import { from, yes } => {
+                let path = match from {
+                    Some(path) => cwd.join(path),
+                    None => {
+                        sync::state_path(project_root(&project, "import")?, &project.config.export)?
+                    }
+                };
+                let loaded = sync::load_snapshot(&path)?;
+                sync::check_import(&loaded.snapshot, &project.id)?;
+                let (tasks, tracks, questions) = (
+                    store.tasks(now)?.len(),
+                    store.tracks()?.len(),
+                    store.questions()?.len(),
+                );
+                let prompt = format!(
+                    "Replace {tasks} tasks, {tracks} tracks, and {questions} questions of project {} with {} tasks, {} tracks, and {} questions from {}?",
+                    project.config.name,
+                    loaded.snapshot.tasks.len(),
+                    loaded.snapshot.tracks.len(),
+                    loaded.snapshot.questions.len(),
+                    path.display()
+                );
+                ensure!(yes || confirm(&prompt)?, "import cancelled");
+                sync::import(&mut store, &hub, &project, &loaded, now)?;
+                out.print(
+                    &json!({
+                        "tasks": loaded.snapshot.tasks.len(),
+                        "tracks": loaded.snapshot.tracks.len(),
+                        "questions": loaded.snapshot.questions.len()
+                    }),
+                    || {
+                        format!(
+                            "Imported {} tasks, {} tracks, and {} questions",
+                            loaded.snapshot.tasks.len(),
+                            loaded.snapshot.tracks.len(),
+                            loaded.snapshot.questions.len()
+                        )
+                    },
+                )
+            }
         }
-        Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),
-        Command::Task(sub) => task(&mut store, &project, &session, sub, now, &out),
-        Command::Track(sub) => track(&mut store, sub, now, &out),
-        Command::Question(sub) => question(&mut store, &session, sub, now, &out),
-        Command::Sync { force } => {
-            let root = project_root(&project, "sync")?;
-            let report = sync::sync(&mut store, &project, root, force, now)?;
-            out.print(&report, || {
-                let mut lines: Vec<String> = report
-                    .written
-                    .iter()
-                    .map(|p| format!("wrote     {p}"))
-                    .collect();
-                lines.extend(report.unchanged.iter().map(|p| format!("unchanged {p}")));
-                lines.join("\n")
-            })
-        }
-        Command::Import { from, yes } => {
-            let path = match from {
-                Some(path) => cwd.join(path),
-                None => {
-                    sync::state_path(project_root(&project, "import")?, &project.config.export)?
-                }
-            };
-            let loaded = sync::load_snapshot(&path)?;
-            sync::check_import(&loaded.snapshot, &project.id)?;
-            let (tasks, tracks, questions) = (
-                store.tasks(now)?.len(),
-                store.tracks()?.len(),
-                store.questions()?.len(),
-            );
-            let prompt = format!(
-                "Replace {tasks} tasks, {tracks} tracks, and {questions} questions of project {} with {} tasks, {} tracks, and {} questions from {}?",
-                project.config.name,
-                loaded.snapshot.tasks.len(),
-                loaded.snapshot.tracks.len(),
-                loaded.snapshot.questions.len(),
-                path.display()
-            );
-            ensure!(yes || confirm(&prompt)?, "import cancelled");
-            sync::import(&mut store, &hub, &project, &loaded, now)?;
-            out.print(
-                &json!({
-                    "tasks": loaded.snapshot.tasks.len(),
-                    "tracks": loaded.snapshot.tracks.len(),
-                    "questions": loaded.snapshot.questions.len()
-                }),
-                || {
-                    format!(
-                        "Imported {} tasks, {} tracks, and {} questions",
-                        loaded.snapshot.tasks.len(),
-                        loaded.snapshot.tracks.len(),
-                        loaded.snapshot.questions.len()
-                    )
-                },
-            )
-        }
-    }
+    })();
+    log_cli_call(
+        &project,
+        name,
+        summary,
+        logged_session,
+        caller_role,
+        result.as_ref().err(),
+    );
+    result
+}
+
+/// Records a finished CLI call in the activity log. Logging never changes the
+/// call's outcome: a failure only reaches stderr.
+fn log_cli_call(
+    project: &Project,
+    command: &str,
+    (target, changed): (Option<String>, Vec<String>),
+    session: String,
+    role: Option<String>,
+    failure: Option<&anyhow::Error>,
+) {
+    let clean_room = role
+        .as_ref()
+        .and_then(|role| project.config.roles.get(role))
+        .is_some_and(|role| role.clean_room);
+    let error = failure.map(|e| format!("{e:#}"));
+    let entry = Entry {
+        id: 0,
+        at: unix_now(),
+        session,
+        role,
+        clean_room,
+        channel: Channel::Cli,
+        agent: activity::agent_from_env(|key| std::env::var(key).ok()),
+        command: command.to_string(),
+        target,
+        changed,
+        write: activity::is_write(command),
+        ok: error.is_none(),
+        error,
+        pid: std::process::id(),
+        build: activity::build().to_string(),
+    };
+    activity::record_quietly(&project.database, &entry);
 }
 
 fn use_binding(
@@ -192,7 +267,7 @@ fn use_binding(
     clear: bool,
     session: Option<String>,
     out: &Output,
-) -> Result<()> {
+) -> Result<Option<Binding>> {
     let root = project_root(project, "use")?;
     let key = binding_key(root)?;
     let mut store = Store::open(&project.database)?;
@@ -200,13 +275,14 @@ fn use_binding(
 
     if clear {
         let removed = store.unbind(&key, force, now)?;
-        return out.print(&json!({ "cleared": key, "removed": removed }), || {
+        out.print(&json!({ "cleared": key, "removed": removed }), || {
             if removed {
                 format!("Removed the binding of {key}")
             } else {
                 format!("{key} had no binding")
             }
-        });
+        })?;
+        return Ok(None);
     }
 
     let Some(role) = role else {
@@ -214,7 +290,7 @@ fn use_binding(
             eprintln!("note: --session / AIRLOCK_SESSION is ignored when showing a binding");
         }
         let current = store.binding(&key)?;
-        return out.print(&current, || match &current {
+        out.print(&current, || match &current {
             Some(b) => format!(
                 "{key} is bound to role {} as session {}{}",
                 b.role,
@@ -222,7 +298,8 @@ fn use_binding(
                 if b.locked { " (locked)" } else { "" }
             ),
             None => format!("{key} has no binding; bind it with `airlock use <role>`"),
-        });
+        })?;
+        return Ok(None);
     };
 
     ensure_role(project, &role)?;
@@ -246,7 +323,8 @@ fn use_binding(
             binding.session,
             if binding.locked { " (locked)" } else { "" }
         )
-    })
+    })?;
+    Ok(Some(binding))
 }
 
 fn role(

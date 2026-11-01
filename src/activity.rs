@@ -6,6 +6,7 @@
 //! [`RETENTION_SECS`] on every write. A second table registers the running
 //! airlock processes (MCP servers and dashboards) with their build identity.
 
+use crate::cli::{Command, QuestionCommand, RoleCommand, TaskCommand, TrackCommand};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, Row, TransactionBehavior, params, params_from_iter};
 use serde::{Deserialize, Serialize};
@@ -491,6 +492,235 @@ pub fn summarize_json(_command: &str, args: &Map<String, Value>) -> (Option<Stri
         })
         .collect();
     (target.map(|(_, text)| text), changed)
+}
+
+/// The target and changed fields of an entry, from a parsed CLI command.
+///
+/// `target` is what the command acts on: a task id, a question as `#<id>`, a
+/// track or role name (for `use`, the role it binds). `changed` lists the
+/// arguments the caller gave, in the key vocabulary of the MCP tools (`--lease`
+/// is `lease_minutes`, `--spec` is `spec_file`, dashes become underscores) and
+/// under the same rule as [`summarize_json`]: a key only, except for the short
+/// values of [`VALUE_KEYS`]. Flags with a default (`--priority` of `task add`
+/// and `track add`) cannot be told from given ones and are always listed.
+pub fn summarize_cli(command: &Command) -> (Option<String>, Vec<String>) {
+    let mut changed = Changed::default();
+    let target = match command {
+        Command::Use {
+            role,
+            lock,
+            force,
+            clear,
+        } => {
+            changed.flag("lock", *lock);
+            changed.flag("force", *force);
+            changed.flag("clear", *clear);
+            role.clone()
+        }
+        Command::Start { role } => {
+            changed.opt("role", role);
+            None
+        }
+        Command::Role(sub) => match sub {
+            RoleCommand::List => None,
+            RoleCommand::Set {
+                name,
+                description,
+                clean_room,
+                instructions,
+                read,
+                clear_read,
+                prefix,
+            } => {
+                changed.opt("description", description);
+                changed.opt("clean_room", clean_room);
+                changed.opt("instructions", instructions);
+                changed.list("read", read);
+                changed.flag("clear_read", *clear_read);
+                changed.opt("prefix", prefix);
+                Some(name.clone())
+            }
+            RoleCommand::Remove { name } => Some(name.clone()),
+        },
+        Command::Task(sub) => summarize_task(sub, &mut changed),
+        Command::Track(sub) => match sub {
+            TrackCommand::List => None,
+            TrackCommand::Add {
+                name,
+                priority,
+                description,
+            } => {
+                changed.set("priority", priority);
+                changed.flag("description", !description.is_empty());
+                Some(name.clone())
+            }
+            TrackCommand::Edit {
+                name,
+                new_name,
+                priority,
+                description,
+            } => {
+                changed.flag("name", new_name.is_some());
+                changed.opt("priority", priority);
+                changed.opt("description", description);
+                Some(name.clone())
+            }
+            TrackCommand::Remove { name } => Some(name.clone()),
+        },
+        Command::Question(sub) => match sub {
+            QuestionCommand::List { topic, status } => {
+                changed.opt("topic", topic);
+                changed.opt("status", status);
+                None
+            }
+            QuestionCommand::Ask { .. } => {
+                changed.flag("question", true);
+                changed.flag("topic", true);
+                None
+            }
+            QuestionCommand::Answer { id, spec, .. } => {
+                changed.flag("answer", true);
+                changed.opt("spec_file", spec);
+                Some(format!("#{id}"))
+            }
+            QuestionCommand::Resolve { id, spec } => {
+                changed.opt("spec_file", spec);
+                Some(format!("#{id}"))
+            }
+        },
+        Command::Sync { force } => {
+            changed.flag("force", *force);
+            None
+        }
+        Command::Import { from, yes } => {
+            changed.opt("from", from);
+            changed.flag("yes", *yes);
+            None
+        }
+        // Not logged: nothing to summarize.
+        Command::Init { .. }
+        | Command::Doctor
+        | Command::Setup { .. }
+        | Command::Mcp { .. }
+        | Command::Serve { .. } => None,
+    };
+    (target, changed.0)
+}
+
+fn summarize_task(sub: &TaskCommand, changed: &mut Changed) -> Option<String> {
+    match sub {
+        TaskCommand::List {
+            role,
+            status,
+            track,
+            no_track,
+            priority,
+        } => {
+            changed.opt("role", role);
+            changed.opt("status", status);
+            changed.opt("track", track);
+            changed.flag("no_track", *no_track);
+            changed.opt("priority", priority);
+            None
+        }
+        TaskCommand::Next { role } => {
+            changed.opt("role", role);
+            None
+        }
+        TaskCommand::Show { id } => Some(id.clone()),
+        TaskCommand::Add(spec) => {
+            changed.flag("title", true);
+            changed.set("role", &spec.role);
+            changed.list("read", &spec.read);
+            changed.list("touch", &spec.touch);
+            changed.flag("do", true);
+            changed.flag("verify", true);
+            changed.list("blocked_by", &spec.blocked_by);
+            changed.set("priority", spec.priority);
+            changed.opt("track", &spec.track);
+            None
+        }
+        TaskCommand::Edit(spec) => {
+            changed.flag("title", spec.title.is_some());
+            changed.opt("role", &spec.role);
+            changed.opt("priority", &spec.priority);
+            changed.opt("track", &spec.track);
+            changed.flag("clear_track", spec.clear_track);
+            changed.list("read", &spec.read);
+            changed.flag("clear_read", spec.clear_read);
+            changed.list("touch", &spec.touch);
+            changed.flag("clear_touch", spec.clear_touch);
+            changed.flag("do", spec.r#do.is_some());
+            changed.flag("verify", spec.verify.is_some());
+            changed.list("blocked_by", &spec.blocked_by);
+            changed.flag("clear_blocked_by", spec.clear_blocked_by);
+            changed.flag("force", spec.force);
+            Some(spec.id.clone())
+        }
+        TaskCommand::Claim { id, lease } | TaskCommand::Heartbeat { id, lease } => {
+            changed.opt("lease_minutes", lease);
+            Some(id.clone())
+        }
+        TaskCommand::Release { id, force } => {
+            changed.flag("force", *force);
+            Some(id.clone())
+        }
+        TaskCommand::Done {
+            id,
+            notes,
+            review,
+            force,
+        } => {
+            changed.flag("notes", notes.is_some());
+            changed.flag("review", *review);
+            changed.flag("force", *force);
+            Some(id.clone())
+        }
+        TaskCommand::Approve { id, notes } => {
+            changed.flag("notes", notes.is_some());
+            Some(id.clone())
+        }
+        TaskCommand::Reject { id, .. } => {
+            changed.flag("notes", true);
+            Some(id.clone())
+        }
+    }
+}
+
+/// The `changed` list of a CLI call, built with the rules of [`summarize_json`].
+#[derive(Default)]
+struct Changed(Vec<String>);
+
+impl Changed {
+    /// `key`, with its value when [`value_text`] allows it.
+    fn set(&mut self, key: &str, value: impl Serialize) {
+        let value = serde_json::to_value(value).unwrap_or(Value::Null);
+        self.0.push(match value_text(key, &value) {
+            Some(text) => format!("{key}: {text}"),
+            None => key.to_string(),
+        });
+    }
+
+    /// A boolean flag: listed when set, with `true` if its key is enumerated.
+    fn flag(&mut self, key: &str, given: bool) {
+        if given {
+            self.set(key, true);
+        }
+    }
+
+    /// An optional argument: listed when given.
+    fn opt<T: Serialize>(&mut self, key: &str, value: &Option<T>) {
+        if let Some(value) = value {
+            self.set(key, value);
+        }
+    }
+
+    /// A repeatable argument: its key, when any value was given. Never the values.
+    fn list<T>(&mut self, key: &str, values: &[T]) {
+        if !values.is_empty() {
+            self.0.push(key.to_string());
+        }
+    }
 }
 
 /// The value of an enumerated key as short plain text, else `None`.

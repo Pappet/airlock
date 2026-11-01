@@ -8,6 +8,7 @@
 //! invocation. A watcher thread polls `PRAGMA data_version` once per second
 //! and turns changes into server-sent events.
 
+use crate::activity::{self, ActivityLog};
 use crate::app::{TaskView, TrackView, done_ids, ensure_role, unix_now};
 use crate::core::{Priority, QuestionStatus, TaskStatus, dependents};
 use crate::hub::Project;
@@ -86,6 +87,7 @@ async fn run(project: Project, port: u16) -> Result<()> {
     let watched = state.clone();
     std::thread::spawn(move || watch(&watched.project, &watched.events));
     let app = router(state.clone());
+    let registration = register(&state.project);
 
     println!("Dashboard: http://127.0.0.1:{port}/#token={}", state.token);
     std::io::stdout().flush()?;
@@ -94,8 +96,79 @@ async fn run(project: Project, port: u16) -> Result<()> {
     if let Some(v6) = v6 {
         tokio::spawn(axum::serve(v6, app.clone()).into_future());
     }
-    axum::serve(v4, app).await?;
-    Ok(())
+    let served = tokio::select! {
+        served = axum::serve(v4, app) => served.map_err(anyhow::Error::from),
+        () = shutdown_signal() => Ok(()),
+    };
+    if let Some(registration) = registration {
+        registration.end();
+    }
+    served
+}
+
+/// Resolves on Ctrl-C or, on Unix, SIGTERM.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let Ok(mut terminate) = signal(SignalKind::terminate()) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+/// This dashboard's row in the process registry and the task keeping it fresh.
+struct Registration {
+    log: ActivityLog,
+    id: u64,
+    heartbeat: tokio::task::JoinHandle<()>,
+}
+
+impl Registration {
+    /// Stops the heartbeat and removes the registry row.
+    fn end(mut self) {
+        self.heartbeat.abort();
+        if let Err(e) = self.log.unregister(self.id) {
+            eprintln!("airlock: activity log: {e:#}");
+        }
+    }
+}
+
+/// Lists this dashboard in the project's process registry and starts its
+/// heartbeat. A failure is reported and the dashboard runs unregistered.
+fn register(project: &Project) -> Option<Registration> {
+    let path = ActivityLog::path_for(&project.database);
+    let registered = ActivityLog::open(&path).and_then(|mut log| {
+        let id = log.register("serve", None, None, unix_now())?;
+        Ok((log, id))
+    });
+    let (log, id) = match registered {
+        Ok(registered) => registered,
+        Err(e) => {
+            eprintln!("airlock: activity log: {e:#}");
+            return None;
+        }
+    };
+    let heartbeat = tokio::spawn(async move {
+        // Its own connection: the one in `log` belongs to the shutdown path.
+        let Ok(mut log) = ActivityLog::open(&path) else {
+            return;
+        };
+        let period = Duration::from_secs(activity::TOUCH_SECS);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        loop {
+            tick.tick().await;
+            let _ = log.touch(id, unix_now());
+        }
+    });
+    Some(Registration { log, id, heartbeat })
 }
 
 fn router(state: Shared) -> Router {
