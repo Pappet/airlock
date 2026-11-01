@@ -358,10 +358,10 @@ impl Briefing {
             out,
             "- Work on one task at a time: claim it before you start. After each {}, take the next task from {}; never plan task ids ahead and never claim a second task while you hold one.",
             cmd("task_complete", "airlock task done"),
-            cmd(
-                "task_complete`'s `next` field or from `task_next",
-                "the `Next:` line it prints or from `airlock task next"
-            )
+            match via {
+                Via::Mcp => "`task_complete`'s `next` field or from `task_next`",
+                Via::Cli => "the `Next:` line it prints or from `airlock task next`",
+            }
         );
         let _ = writeln!(
             out,
