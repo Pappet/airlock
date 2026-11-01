@@ -61,7 +61,7 @@ Goal: sessions learn what changed for their role at the boundary between two tas
 - [ ] WO-2: `task_complete` returns the inbox and the next package; `task_claim` warns about more important ready tasks and a second lease.
 - [ ] WO-3: opt-in Claude Code Stop hook (`setup claude-hooks --auto-continue`) that sends a session back to work when its inbox has news.
 - [ ] WO-4: `inbox_wait` for sessions that run unattended.
-- [ ] WO-5: validation on OpenSHR (Scenario H2) and documentation.
+- [ ] WO-5: validation on OpenSHR (Scenario I) and documentation.
 
 ---
 

@@ -1,8 +1,9 @@
 # Work Orders: Handoff Between Sessions (Phase 3d)
 
 Self-contained work orders, each sized for one agent session, in Airlock's own
-*Read / Touch / Do / Verify* form. Written 1 Nov 2026 against `main` after PR #31
-(store schema 6, 18 MCP tools, 9 of them for clean-room roles).
+*Read / Touch / Do / Verify* form. Written 1 Nov 2026 against `main` after PR #33
+(store schema 6, 18 MCP tools, 9 of them for clean-room roles). Review findings
+from #34 are folded in.
 
 ## The problem
 
@@ -77,17 +78,19 @@ every session an ordered, gap-free feed and a cursor into it.
   (questions), §2.5 (tracks), §3.1–3.2 (store, concurrency), §3.5 (activity log)
 - `docs/spec/02_cli_interface.md`, `docs/spec/03_mcp_protocol.md` §2.1 (clean-room
   tool set)
-- `src/store.rs`: `MIGRATIONS`, `write`, `add_task`, `update_task`, `claim`, `release`,
-  `complete`, `approve`/`reject` (`set_state`), `ask`, `answer`, `update_track`
+- `src/store.rs`: `MIGRATIONS`, `write`, `add_task`, `edit_task`, `claim`, `release`,
+  `complete`, `approve`/`reject` (`set_state`), `ask`, `answer`, `edit_track`
 - `src/mcp.rs` `CLEAN_ROOM_TOOLS`, `tool_definitions`, `run_tool`
 - `src/activity.rs` `summarize_cli` / `summarize_json`
 
 **Touch.** `src/store.rs`, `src/core.rs`, `src/cli.rs`, `src/app.rs`, `src/mcp.rs`,
 `src/activity.rs`, `tests/store.rs`, `tests/mcp.rs`, `tests/e2e.rs`, `tests/activity.rs`,
-`docs/spec/01…`, `02…`, `03…`.
+`docs/spec/01…` (§3.1: `airlock.db` also holds `events` and `inbox_cursors`), `02…`, `03…`,
+`05…` (§3.2: `events` and `inbox_cursors` join the activity log and the process
+registry as machine-local session state that is never exported).
 
 **Do.**
-1. Migration 7:
+1. Migration 7 (keeping the store's `STRICT` tables):
    ```sql
    CREATE TABLE events (
      seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,13 +98,15 @@ every session an ordered, gap-free feed and a cursor into it.
      kind TEXT NOT NULL,
      role TEXT NOT NULL,          -- the role the event is for
      task_id TEXT, question_id INTEGER, track TEXT
-   );
+   ) STRICT;
    CREATE INDEX events_role_seq ON events(role, seq);
    CREATE TABLE inbox_cursors (
-     session TEXT PRIMARY KEY,
-     seq INTEGER NOT NULL,              -- read up to here
-     nudged_seq INTEGER NOT NULL DEFAULT 0  -- WO-3: last event a Stop hook nudged for
-   );
+     session TEXT NOT NULL,
+     role TEXT NOT NULL,
+     seq INTEGER NOT NULL,                  -- read up to here
+     nudged_seq INTEGER NOT NULL DEFAULT 0, -- WO-3: last event a Stop hook nudged for
+     PRIMARY KEY (session, role)
+   ) STRICT;
    ```
    Events carry **no text**. They are session state: never exported by `sync`
    (Spec 05 §3.2), pruned after 30 days on write, like the activity log.
@@ -114,8 +119,8 @@ every session an ordered, gap-free feed and a cursor into it.
    | `task_changed` | `task edit` changes priority, track, or the work package of an `open` task | the task's role |
    | `track_changed` | a track's priority changes | every role with an `open` task on that track |
    | `task_rejected` | `reject` | the task's role |
-   | `task_in_review` | `complete` with review | every non-clean-room role |
-   | `question_asked` | `ask` (also the automatic `overlap:` question) | every non-clean-room role |
+   | `task_in_review` | `complete` with review | every non-clean-room role except the task's own |
+   | `question_asked` | `ask` (also the automatic `overlap:` question) | every non-clean-room role except the asker's |
    | `question_answered` | `answer`, including corrections | the asker's role |
 
    An expired lease writes nothing (expiry is derived, Spec 01 §2.4); the task shows
@@ -126,7 +131,8 @@ every session an ordered, gap-free feed and a cursor into it.
    ready is dropped from `task_ready`); for questions id, topic, and — for
    `question_answered` — the answer and its spec file; for `track_changed` the track
    and its new priority. Duplicates of one task collapse into its latest event.
-   Reading advances the cursor to the highest `seq` read (`peek` reads without
+   The cursor is kept per session **and role**, so an unbound reader with `--role`
+   never shares a cursor across roles. Reading advances the cursor to the highest `seq` read (`peek` reads without
    advancing; WO-3 needs it). A session without a cursor starts at the current
    maximum: a new session gets its briefing, not the history.
 4. Surfaces:
@@ -160,7 +166,7 @@ middle of a long turn.
 
 **Read.** WO-1 result; `src/store.rs` `complete`; `src/app.rs` (the `task next`
 ordering at the `ready.sort_by` call); `src/mcp.rs` `task_complete`, `task_claim`;
-`src/briefing.rs` (Workflow section); `docs/spec/03_mcp_protocol.md` §3.4–3.6;
+`src/briefing.rs` (Workflow section); `docs/spec/03_mcp_protocol.md` §3.3 (`task_claim`) and §3.6 (`task_complete`);
 `docs/spec/06_onboarding.md` §3.1; `docs/walkthroughs/quickstart.md` (CLAUDE.md section).
 
 **Touch.** `src/app.rs`, `src/mcp.rs`, `src/briefing.rs`, `src/store.rs` (only if the
@@ -218,13 +224,19 @@ when its inbox is not empty, which replaces most of the copying.
 `06…`, `docs/walkthroughs/quickstart.md`.
 
 **Do.**
-1. `airlock hook stop`: reads the hook JSON from stdin, resolves the worktree's
-   binding, and `peek`s the inbox (WO-1). If it holds events newer than the last
+1. `airlock hook stop`: reads the hook JSON from stdin (only `cwd` and
+   `stop_hook_active`; Claude Code's `session_id` is a different id space and is
+   ignored), resolves the worktree's binding, and `peek`s the inbox (WO-1) for the
+   binding's session and role. If it holds events newer than the last
    nudge of this session, it prints
    `{"decision":"block","reason":"Airlock: <n> new for <role>: E-15 ready (critical); answer to #34. Call inbox, then continue."}`
    and records the nudge in `inbox_cursors.nudged_seq` (WO-1's migration). Otherwise it prints nothing and exits 0, so the
    session stops. The reason names references only; the agent reads the content
    through its own `inbox` call.
+   Nudge state belongs to the binding's session id. Two Claude Code sessions in one
+   worktree share it (as in Scenario E's shared `lead-1`): a nudge for one suppresses
+   the same events for the other. That follows from self-declared session ids and is
+   intended; document it in Spec 06.
 2. Loop guards: never nudge twice for the same events (`nudged_seq`); at most
    `auto_continue_limit` nudges per session per hour (project setting, default 10;
    `0` disables the hook's effect); any error exits 0 silently, so a broken hub never
@@ -266,7 +278,7 @@ human in between.
 1. MCP `inbox_wait` (clean-room allowed: 20 tools, 11 for clean-room roles) with
    `timeout_secs` (default 240, max 280, below the 300 s DSH timeout): returns the
    inbox as soon as it is non-empty, otherwise an empty inbox at the timeout. Polls
-   `PRAGMA data_version` every 500 ms like the dashboard watcher; no busy loop on the
+   `PRAGMA data_version` once per second like the dashboard watcher (`src/web.rs`); no busy loop on the
    database file.
 2. CLI `airlock inbox --wait [--timeout <secs>]` with the same behavior.
 3. Briefing, Workflow: "When `task_next` has nothing for you and you have no open
@@ -287,7 +299,8 @@ human in between.
 **Why.** The orders change how agents behave; only a real run shows whether they do.
 
 **Do.**
-1. Scenario H2 in `docs/walkthroughs/agent-validation.md`, run on OpenSHR with Claude
+1. Scenario I in `docs/walkthroughs/agent-validation.md` (a new row in its Scenarios and
+   Status tables), run on OpenSHR with Claude
    Code in both worktrees, auto-continue on:
    - The engine works on a `normal` task; the lead creates a `critical` one. Expected:
      the engine finishes its task, sees `task_ready` in the `task_complete` result,
