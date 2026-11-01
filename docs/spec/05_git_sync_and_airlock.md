@@ -93,7 +93,7 @@ The snapshot (`src/snapshot.rs`) contains semantic project state only. **Session
 
 **Questions** are exported with all fields (Spec 01 §2.2). Format 3 adds the answer history: `corrected_at` (integer), `corrected_by` (string), and `history`, a list of the answers that corrections replaced, oldest first, each `{ answer, answered_by, answered_at, spec_file }` (`answered_by`, `answered_at`, and `spec_file` are `null` when unknown). The three fields are omitted for a question that was never corrected, so such a question serializes exactly as in format 2.
 
-The **activity log** and the process registry (Spec 01 §3.5, §3.6) are not part of the snapshot: they are machine-local session history, not project state. `sync` never reads them and `import` never touches them.
+The **activity log** and the process registry (Spec 01 §3.5, §3.6) are not part of the snapshot, and neither are the **events** and **inbox cursors** (Spec 01 §2.6): they are machine-local session history, not project state. `sync` never reads them and `import` never touches them.
 
 ### 3.3 Deterministic Serialization
 Re-running `airlock sync` on unchanged state must produce a zero diff:

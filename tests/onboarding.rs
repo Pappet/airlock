@@ -1278,7 +1278,9 @@ fn a_correction_in_the_second_of_the_previous_briefing_is_shown() {
     let dir = tempfile::tempdir().unwrap();
     let database = dir.path().join("airlock.db");
     let mut store = Store::open(&database).unwrap();
-    store.ask("melee.md", "Arc?", "engine-1", 1_000).unwrap();
+    store
+        .ask("melee.md", "Arc?", "engine-1", None, 1_000)
+        .unwrap();
     store.answer(1, "Rounded.", "lead", None, 1_001).unwrap();
     store.resolve(1, None, 1_002).unwrap();
     store.answer(1, "Truncated.", "lead", None, 1_003).unwrap();

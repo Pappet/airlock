@@ -274,7 +274,7 @@ fn unbound_session_runs_the_full_workflow() {
             ),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 18);
+    assert_eq!(s.tool_names(1).len(), 19);
     let own_id = s.tool_error(15);
     assert!(own_id.contains("ids are assigned by Airlock"), "{own_id}");
     let numeric = s.tool_error(16);
@@ -565,6 +565,7 @@ fn clean_room_session_gets_a_restricted_tool_set() {
         [
             "session_start",
             "task_next",
+            "inbox",
             "task_get",
             "task_claim",
             "task_heartbeat",
@@ -617,7 +618,7 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
             call(5, "task_claim", json!({ "task_id": "L-1" })),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 18);
+    assert_eq!(s.tool_names(1).len(), 19);
     assert_eq!(
         s.ok(2)["role"],
         "engine",
@@ -1004,4 +1005,78 @@ fn question_answer_on_resolved_question_corrects_it() {
     assert_eq!(entries[3].command, "question_answer");
     assert!(entries[3].ok, "{:?}", entries[3]);
     assert_eq!(entries[3].changed, ["answer", "correction"]);
+}
+
+#[test]
+fn inbox_carries_answers_to_the_engine_and_questions_to_the_lead() {
+    let env = Env::new();
+    let engine = ["--role", "engine", "--session", "engine-1"];
+    let lead = ["--role", "lead", "--session", "lead-1"];
+    // First reads set both cursors at the current end.
+    let s = env.session(&engine, &[call(1, "inbox", json!({}))]);
+    assert_eq!(s.ok(1)["items"], json!([]));
+    env.session(&lead, &[call(1, "inbox", json!({}))]);
+
+    // The engine asks and finishes its task for review.
+    let s = env.session(
+        &engine,
+        &[
+            call(
+                1,
+                "question_ask",
+                json!({ "topic": "melee.md", "question": "Arc?" }),
+            ),
+            call(2, "task_claim", json!({ "task_id": "E-1" })),
+            call(
+                3,
+                "task_complete",
+                json!({ "task_id": "E-1", "review": true }),
+            ),
+        ],
+    );
+    let question = s.ok(1)["question_id"].as_u64().unwrap();
+
+    // The lead's inbox: the question and the review; peek first, then read.
+    let s = env.session(
+        &lead,
+        &[
+            call(1, "inbox", json!({ "peek": true })),
+            call(2, "inbox", json!({})),
+            call(3, "inbox", json!({})),
+            call(4, "question_answer", json!({ "question_id": question, "answer": "Front 90°", "spec_file": "docs/spec/melee.md" })),
+        ],
+    );
+    let kinds = |v: &Value| -> Vec<String> {
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(kinds(s.ok(1)), ["question_asked", "task_in_review"]);
+    assert_eq!(s.ok(1), s.ok(2), "peek did not mark them as read");
+    assert_eq!(s.ok(2)["items"][0]["question"]["question"], "Arc?");
+    assert_eq!(s.ok(2)["items"][1]["task"]["id"], "E-1");
+    assert_eq!(s.ok(3)["items"], json!([]));
+
+    // The engine gets the answer, and nothing about the other roles' work.
+    let s = env.session(&engine, &[call(1, "inbox", json!({}))]);
+    assert_eq!(kinds(s.ok(1)), ["question_answered"]);
+    let answered = &s.ok(1)["items"][0]["question"];
+    assert_eq!(answered["answer"], "Front 90°");
+    assert_eq!(answered["spec_file"], "docs/spec/melee.md");
+    assert!(answered.get("question").is_none());
+
+    // The activity log holds the count, never the items.
+    let log = env.activity();
+    let entries = log.entries(&Default::default()).unwrap();
+    let inbox_calls: Vec<_> = entries.iter().filter(|e| e.command == "inbox").collect();
+    assert!(!inbox_calls.is_empty());
+    assert!(inbox_calls.iter().any(|e| e.target.as_deref() == Some("2")));
+    for e in &inbox_calls {
+        assert!(!e.write, "reading the inbox is not a write");
+        let text = format!("{:?} {:?}", e.target, e.changed);
+        assert!(!text.contains("Arc") && !text.contains("Front"), "{text}");
+    }
 }

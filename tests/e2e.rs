@@ -930,3 +930,43 @@ fn tracks_from_the_cli() {
     let table = env.ok(&project, &["task", "list"]);
     assert!(table.contains("TRACK"), "{table}");
 }
+
+#[test]
+fn inbox_on_the_cli_and_events_never_reach_the_snapshot() {
+    let env = Env::new();
+    let project = project_with_tasks(&env);
+    // `init` without a template binds nothing; one session reads for two roles.
+    assert_eq!(
+        env.ok(&project, &["inbox", "--role", "engine"]).trim(),
+        "Nothing new for engine."
+    );
+    env.ok(&project, &["inbox", "--role", "lead"]);
+    env.ok(&project, &["sync"]);
+    let state = read(&project.join("docs/.airlock-state.json"));
+
+    // Claim and release L-1: an event, but no change to what `sync` exports.
+    env.ok(&project, &["task", "claim", "L-1"]);
+    env.ok(&project, &["task", "release", "L-1"]);
+    let lead = env.ok(&project, &["inbox", "--role", "lead", "--peek"]);
+    assert!(lead.contains("L-1 ready"), "{lead}");
+    env.ok(&project, &["inbox", "--role", "lead"]);
+    assert_eq!(
+        env.ok(&project, &["inbox", "--role", "lead"]).trim(),
+        "Nothing new for lead."
+    );
+    let again = env.json(&project, &["sync"]);
+    assert_eq!(again["written"], serde_json::json!([]));
+    assert_eq!(read(&project.join("docs/.airlock-state.json")), state);
+
+    // Completing L-1 unblocks E-1 for the engine.
+    env.ok(&project, &["task", "claim", "L-1"]);
+    env.ok(&project, &["task", "done", "L-1"]);
+    let engine = env.json(&project, &["inbox", "--role", "engine"]);
+    assert_eq!(engine["items"][0]["kind"], "task_ready");
+    assert_eq!(engine["items"][0]["task"]["id"], "E-1");
+    assert!(
+        env.fail(&project, &["inbox", "--role", "nobody"])
+            .contains("nobody"),
+        "unknown roles are refused"
+    );
+}

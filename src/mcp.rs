@@ -26,6 +26,7 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "
 const CLEAN_ROOM_TOOLS: &[&str] = &[
     "session_start",
     "task_next",
+    "inbox",
     "task_get",
     "task_claim",
     "task_heartbeat",
@@ -284,6 +285,13 @@ impl Server {
         if correction && error.is_none() {
             changed.push("correction".to_string());
         }
+        // The inbox is logged by how many items it held, never by what they say.
+        let target = match (name, &result) {
+            ("inbox", Ok(result)) if error.is_none() => result["structuredContent"]["items"]
+                .as_array()
+                .map(|items| items.len().to_string()),
+            _ => target,
+        };
         self.log_call(name, target, changed, error);
         result
     }
@@ -368,6 +376,20 @@ impl Server {
                 Ok(
                     json!({ "task": next_ready(&tasks, &tracks, &role).map(|v| WorkPackage::from(&v)) }),
                 )
+            }
+            "inbox" => {
+                let role = self.role_arg(args)?;
+                let peek = opt_bool(args, "peek")?.unwrap_or(false);
+                let coordinating = !self
+                    .project
+                    .config
+                    .roles
+                    .get(&role)
+                    .is_some_and(|r| r.clean_room);
+                let inbox = self
+                    .store
+                    .inbox(&self.session, &role, coordinating, peek, now)?;
+                Ok(serde_json::to_value(inbox)?)
             }
             "task_get" => {
                 let id = str_arg(args, "task_id")?;
@@ -510,7 +532,9 @@ impl Server {
             "question_ask" => {
                 let topic = str_arg(args, "topic")?;
                 let question = str_arg(args, "question")?;
-                let q = self.store.ask(&topic, &question, &self.session, now)?;
+                let q =
+                    self.store
+                        .ask(&topic, &question, &self.session, self.role.as_deref(), now)?;
                 Ok(json!({ "question_id": q.id }))
             }
             "question_list" => {
@@ -658,6 +682,15 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
             "task_next",
             "Show the next ready work package for a role (not claimed yet). Returns {task: null} if none is ready.",
             json!({ "role": { "type": "string", "description": "Role to fetch work for; fixed when the server is role-bound" } }),
+            role_required,
+        ),
+        tool(
+            "inbox",
+            "What changed for your role since you last looked: new or reprioritized ready tasks, answers to your questions, rejected reviews; for coordinating roles also new questions and tasks in review. Marks them as read unless peek is set.",
+            json!({
+                "role": { "type": "string", "description": "Role to read for; fixed when the server is role-bound" },
+                "peek": { "type": "boolean", "description": "Show without marking as read" }
+            }),
             role_required,
         ),
         tool(
