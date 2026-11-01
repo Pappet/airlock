@@ -1666,3 +1666,22 @@ fn events_hold_no_text_and_are_pruned_after_30_days() {
         .unwrap();
     assert!(events(&dir).is_empty());
 }
+
+#[test]
+fn answers_to_an_unknown_asker_go_to_the_coordinating_roles() {
+    let (_dir, mut store) = open();
+    store.inbox("lead-1", "lead", true, false, 0).unwrap();
+    store.inbox("engine-1", "engine", false, false, 0).unwrap();
+    store
+        .ask("c.md", "who asks?", "human:peter", None, 1)
+        .unwrap();
+    store.answer(1, "nobody knows", "spec-1", None, 2).unwrap();
+    let lead = store.inbox("lead-1", "lead", true, false, 3).unwrap();
+    assert_eq!(
+        inbox_kinds(&lead),
+        ["question_answered #1"],
+        "the asked event is superseded"
+    );
+    let engine = store.inbox("engine-1", "engine", false, false, 3).unwrap();
+    assert!(engine.items.is_empty());
+}

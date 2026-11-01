@@ -97,9 +97,11 @@ registry as machine-local session state that is never exported).
      at INTEGER NOT NULL,
      kind TEXT NOT NULL,
      role TEXT NOT NULL,          -- the role the event is for
+     origin TEXT,                 -- the role it came from (fan-out events)
      task_id TEXT, question_id INTEGER, track TEXT
    ) STRICT;
    CREATE INDEX events_role_seq ON events(role, seq);
+   CREATE INDEX events_at ON events(at);     -- pruning runs in every write
    CREATE TABLE inbox_cursors (
      session TEXT NOT NULL,
      role TEXT NOT NULL,
@@ -125,6 +127,13 @@ registry as machine-local session state that is never exported).
 
    An expired lease writes nothing (expiry is derived, Spec 01 §2.4); the task shows
    up again through `task_next`, not through the inbox. Document that.
+
+   *As built (#35):* fan-out events are stored once with `role = '*'` and the
+   originating role in `origin`, filtered at read time, so writes need no role
+   config. The asker's role for `question_answered` comes from the question's
+   `question_asked` event, else a worktree binding of the asking session, else the
+   answer goes to every coordinating role. `Store::ask`/`ask_once` take the asker's
+   role. Cursor rows are never pruned (one tiny row per session and role).
 3. Reading the inbox: `Store::inbox(session, role, now) -> Inbox` returns the events
    for `role` with `seq` greater than the session's cursor, joined with what the role
    may read: for tasks id, title, priority, track, status (a task that is no longer

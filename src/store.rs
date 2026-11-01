@@ -169,6 +169,7 @@ CREATE TABLE events (
     track       TEXT
 ) STRICT;
 CREATE INDEX events_role_seq ON events (role, seq);
+CREATE INDEX events_at ON events (at);
 CREATE TABLE inbox_cursors (
     session    TEXT NOT NULL,
     role       TEXT NOT NULL,
@@ -948,18 +949,20 @@ impl Store {
                 params![answer, session, now, spec_file, sql_id(id)?],
             )?;
         }
-        if let Some(role) = asker_role(&tx, id, &question.asked_by)? {
-            emit(
-                &tx,
-                now,
-                EventKind::QuestionAnswered,
-                &role,
-                None,
-                None,
-                Some(id),
-                None,
-            )?;
-        }
+        // An asker whose role is unknown saw nothing addressed to it; the
+        // coordinating roles, who were told about the question, get the answer.
+        let role = asker_role(&tx, id, &question.asked_by)?;
+        let role = role.as_deref().unwrap_or(COORDINATORS);
+        emit(
+            &tx,
+            now,
+            EventKind::QuestionAnswered,
+            role,
+            None,
+            None,
+            Some(id),
+            None,
+        )?;
         let question = load_question(&tx, id)?;
         tx.commit()?;
         Ok(question)

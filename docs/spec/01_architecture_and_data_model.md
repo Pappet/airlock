@@ -223,7 +223,7 @@ Every change that concerns another session writes an **event** in the same trans
 | `question_asked` | a question is asked, including the automatic `overlap:` question at claim time | every coordinating role except the asker's |
 | `question_answered` | a question is answered or its answer corrected | the asker's role |
 
-A **coordinating** role is any role without `clean_room`. The asker's role is the role the asking session acted in (the MCP server's bound role, the CLI worktree binding of that session); if it is unknown, a `question_asked` event reaches every coordinating role, and the answer finds the asker through the question's `question_asked` event or, failing that, a worktree binding of the asking session. An expired lease writes no event (expiry is derived, §2.4): the task shows up again through `task next`, not through the inbox.
+A **coordinating** role is any role without `clean_room`. The asker's role is the role the asking session acted in (the MCP server's bound role, the CLI worktree binding of that session); if it is unknown, a `question_asked` event reaches every coordinating role. The answer finds the asker through the question's `question_asked` event or, failing that, a worktree binding of the asking session; when neither names a role (an unbound asker after the event was pruned, or an imported question), `question_answered` goes to every coordinating role instead. An expired lease writes no event (expiry is derived, §2.4): the task shows up again through `task next`, not through the inbox.
 
 The **inbox** of a session for a role lists the events for that role since the session last read it, joined with what that role may read anyway:
 
@@ -303,9 +303,9 @@ One entry per operation:
 | `channel` | `mcp`, `cli`, or `rest` |
 | `agent` | the agent behind the call, if recognised (below) |
 | `command` | MCP: the tool name (`task_claim`), plus `prompt start` for the `start` prompt; CLI: the subcommand path (`task edit`, `question answer`); REST: `<METHOD> <route pattern>` (`POST /api/questions/{id}/answer`, every `GET` is logged as `GET <route>`) |
-| `target` | task id, question id (`#15`), track name, or role name, if the operation has one |
+| `target` | task id, question id (`#15`), track name, or role name, if the operation has one; for `inbox` the number of items read (`2`) |
 | `changed` | for writes: a list of the argument names given, e.g. `track`, `priority: high`, `blocked_by`; `correction` is added to a successful answer that corrected an earlier one |
-| `write` | whether the command changes state: false for the reads (`session_start`, `prompt start`, `task_next`, `inbox` (MCP and CLI; it moves only the session's own inbox cursor, §2.6), `task_get`, `question_list`, `track_list`, `start`, `task list`, `task next`, `task show`, `track list`, `question list`, `role list`, a `use` that only shows the binding, and every REST `GET` and `HEAD`, which is logged as `GET`) |
+| `write` | whether the command changes state: false for the reads (`session_start`, `prompt start`, `task_next`, `inbox` (MCP and CLI; it changes no project state, only the session's own inbox cursor, besides the expired-lease reset every write transaction performs, §2.4, §2.6), `task_get`, `question_list`, `track_list`, `start`, `task list`, `task next`, `task show`, `track list`, `question list`, `role list`, a `use` that only shows the binding, and every REST `GET` and `HEAD`, which is logged as `GET`) |
 | `ok` | success or failure |
 | `error` | on failure, the error message |
 | `pid`, `build` | process id and build identity (§3.6) of the caller |
