@@ -26,13 +26,13 @@ Runs 1 to 3 were reconstructed by reading the harnesses' transcripts by hand. La
 | Scenario | Claude Code | Antigravity | DSH |
 |---|---|---|---|
 | A Connection | ⚠ runs 1–2: MCP down (PATH, then local scope across worktrees); fixed with per-worktree `.mcp.json` | ✅ starts in the workspace (no `-C`) | ✅ lead (3080) and spec (3081) via overlays |
-| B Work cycle | ✅ run 3: claim → heartbeat (lease extended) → complete with commit notes, dependents ready; ⚠ `review: true` never used | — | — |
+| B Work cycle | ✅ run 3: claim → heartbeat (lease extended) → complete with commit notes, dependents ready; ✅ run 4: heartbeat with a progress note; ⚠ `review: true` never used | — | — |
 | C Questions | ✅ run 3: 16 engine questions answered with `spec_file` and resolved; ⚠ a correction after resolving is refused and was dropped silently | — | — |
-| D Restart | ✅ run 3: two lead restarts, briefing named the held task, work went on without a new claim | — | — |
+| D Restart | ✅ run 3: two lead restarts, briefing named the held task, work went on without a new claim; ✅ run 4: engine killed mid-task and `/compact`, SessionStart hook delivered the held task, lease and progress note, no new claim, no `session_start` after the compaction | — | — |
 | E Parallel | ⚠ run 3: no stolen claims, but three Claude sessions in the main checkout shared `lead-1` | ⚠ shared session with DSH spec (fixed in config) | ⚠ see Antigravity |
 | F Guardrails | ✅ run 3: claim of a blocked task refused, agent checked prerequisites and moved on; ⚠ engine creates and edits tasks through the CLI | — | — |
 | G Export | ✅ run 3: `doc_sync` / `airlock sync` after each plan change, outputs committed | — | — |
-| H Behavior | ✅ runs 1–3: asked before changing bindings; `session_start` first in every session; ⚠ run 2: wrong instruction for completing `ready` tasks; ⚠ run 3: works around refusals instead of reporting them | — | — |
+| H Behavior | ✅ runs 1–3: asked before changing bindings; `session_start` first in every session; ⚠ run 2: wrong instruction for completing `ready` tasks; ⚠ run 3: works around refusals instead of reporting them; ⚠ run 4: calls `session_start` again although the hook delivered the briefing, and did not refresh its progress note before `/compact` | — | — |
 
 ## Runs
 
@@ -104,3 +104,31 @@ Runs 1 to 3 were reconstructed by reading the harnesses' transcripts by hand. La
 6. **Old process after upgrade.** After installing the tracks build, one Claude session started the day before still ran the previous `airlock mcp`; it refuses the migrated store, which is safe but only visible with `pgrep`.
 
 **Lesson:** the agents use Airlock well where it answers, and work around it where it refuses: a refused write gets fixed elsewhere or done through the CLI, and the user hears about it only by reading transcripts. Problems 1–3 and 6 would have stayed invisible without them.
+
+### Run 4 — 2026-11-01, Claude Code, engine worktree (Scenario D with the SessionStart hook)
+
+**Method:** supervised run of work orders WO-1, WO-2 and WO-4 (`docs/plans/SESSION_CONTINUITY.md`). The engine worktree got the hook from `airlock setup claude-hooks` merged into its untracked `.claude/settings.local.json`; the main checkout did not (problem 3). The user drove the session; evidence comes from `airlock activity --session engine-1` and the hook records in the Claude Code transcript. Two `start` entries at 14:26:40 were manual size checks from another shell and are left out. Times are UTC.
+
+**Observed:**
+
+| Time | Channel | Call | What happened |
+|---|---|---|---|
+| 14:25:31 | CLI | `start` | First session with the hook: the hook ran at startup; asked "what is your task?", the agent read the briefing (from a file, problem 1) and named E-86 as the next package |
+| 14:26:57 | MCP | `session_start`, `task_claim E-86` | After the user's go-ahead |
+| 14:31:20 | MCP | `task_heartbeat E-86`, `changed: notes` | Progress note of 1017 characters: done so far, files ported, next steps |
+| — | — | — | Claude Code killed (not `/exit`) and opened again in the same worktree |
+| 14:33:21 | CLI | `start` | Hook at `startup`, new pid; the briefing named E-86 under "Your claimed work" with 58 min of lease and the progress note; the agent checked `git diff` and `cargo check` and reported the state without claiming again |
+| 14:36:06 | MCP | `session_start`, `task_heartbeat E-86` | After "continue": a second briefing although the hook had delivered one (problem 4); heartbeat without a note |
+| 14:42:34 | CLI | `start` | `/compact`, hook at `compact`, build with PR #22: 4.7 KB briefing in context; "where are you?" answered from it with no tool call |
+
+**Problems:**
+1. **The briefing was too big for the hook.** At startup the briefing was 21–28 KB, about 92 % of it six answered but unresolved questions repeated in full. Claude Code does not put a hook output of that size into the context: it saved it to a file and showed a 2 KB preview, so the agent had to `cat` the file (`head -80`, then `head -150`). After a compaction that would defeat the hook. Fixed in PR #22: an answer the session already got in full is one line (id, topic, spec file, how to read it again); the compact-time briefing was 4.7 KB and went straight into context.
+2. **The hook's briefing named CLI commands** (`airlock task claim E-86`), while OpenSHR's engine writes through MCP only. Fixed in PR #22: `airlock start --hints mcp`, used by `setup claude-hooks`. Hooks installed before need `setup claude-hooks` again.
+3. **The hook follows the current binding.** OpenSHR's main checkout is rebound between lead and spec sessions, and the lead sessions run `--role lead --session lead-1` from their own configuration. A hook there would brief a running lead session as spec after a compaction. Not installed there; Spec 06 §6 and the quickstart now recommend the hook only for worktrees with one fixed role.
+4. **Briefing twice.** After the restart the agent called `session_start` again when told to continue, probably because OpenSHR's `CLAUDE.md` says to start with it. Harmless (a read), but it shows the instruction files should say that the hook already delivers the briefing.
+5. **Progress note not refreshed.** Between the restart and `/compact` the agent worked about ten minutes and sent a heartbeat without a note, so the briefing after the compaction carried the note from before the crash. The compaction summary filled the gap this time; the workflow bullet alone did not make the agent update the note.
+
+**Changes in Airlock:** PR #22 (problems 1 and 2); Spec 06 §6 and the quickstart (problem 3). OpenSHR's `CLAUDE.md` / `docs/PROCESS.md` (problem 4) are changed on its `main`.
+
+**Lesson:** the hook plus the progress note make a crashed or compacted session pick up its task without help, as long as the briefing fits into context. The briefing's size is part of the hook's contract, so old answers must not pile up in it.
+

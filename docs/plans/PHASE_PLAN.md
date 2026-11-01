@@ -42,7 +42,7 @@ Phased implementation plan. Each phase ends with `cargo test`, `cargo clippy --a
 - [x] Session briefing: `airlock start`, MCP tool `session_start`, MCP prompt `start`.
 - [x] `airlock doctor` and `airlock setup claude|antigravity|dsh`.
 - [x] Guided `airlock init` with templates, worktree creation, and a committed `airlock.toml` layout.
-- [ ] Validation with real agents (Claude Code, Antigravity, DSH) on OpenSHR — in progress, recorded in [`docs/walkthroughs/agent-validation.md`](../walkthroughs/agent-validation.md).
+- [ ] Validation with real agents (Claude Code, Antigravity, DSH) on OpenSHR — in progress, recorded in [`docs/walkthroughs/agent-validation.md`](../walkthroughs/agent-validation.md). Claude Code: scenarios A–H run (runs 1–4; D with the SessionStart hook in run 4; open points: `review: true` never used, shared `lead-1`). Antigravity and DSH: only A and E; B, C, D, F, G, H remain.
 
 ---
 
@@ -51,7 +51,7 @@ Goal: a Claude Code session that runs out of context, crashes, or is compacted i
 - [x] WO-1: `airlock setup claude-hooks` prints a SessionStart hook that runs `airlock start`; `doctor` checks it.
 - [x] WO-2: progress notes on a lease (`task heartbeat --notes`, MCP `task_heartbeat.notes`), shown in the briefing, kept across release and expiry, not exported.
 - WO-3 (session instance presence): dropped; shared session ids are intended, and the activity log's process registry shows live instances.
-- [ ] WO-4: restart validation — e2e and MCP tests for a same-session restart; Scenario D (and B) run for real on OpenSHR and recorded.
+- [x] WO-4: restart validation — e2e and MCP tests for a same-session restart; Scenario D (and B) run for real on OpenSHR and recorded.
 - [x] WO-5: directory entries in `touch` lists count as overlap for the files beneath them.
 - [ ] WO-6: documentation housekeeping (`PROJECT_OVERVIEW.md` dependencies and status, tool counts, phase markers).
 
