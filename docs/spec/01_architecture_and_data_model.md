@@ -104,9 +104,11 @@ Among tasks of the requested role with effective status `ready`:
 1. highest **track priority** first (a task without a track, or with a track that is unknown, counts as `normal`),
 2. then highest task `priority`,
 3. then oldest `created_at`,
-4. then `id` (byte order).
+4. then `id` (id order, below).
 
 The order is deterministic.
+
+**Id order.** Wherever tasks are listed by id (`task list`, the dashboard, the snapshot and plan export), runs of digits compare as numbers, so `E-2` comes before `E-10`; other characters compare by byte. Ids that differ only in leading zeros (`E-02`, `E-2`) fall back to byte order.
 
 A ready task whose `touch` shares a path with an **occupying** task (`in_progress` or `in_review`; path rules in Spec 04 §3.5, where a directory entry covers the paths beneath it) is skipped in favor of the next task in this order. A task without `touch` data is never skipped, since its overlap is unknown. When every ready task overlaps, the first in order is returned anyway, together with its `overlaps`, so no session runs dry.
 

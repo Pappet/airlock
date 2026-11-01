@@ -6,7 +6,7 @@
 //! (`src/render/` covers `src/render/mesh.rs`). A task without `touch` data has
 //! unknown overlap and is reported as such, never as clean.
 
-use crate::core::{Task, TaskState, TaskStatus};
+use crate::core::{Task, TaskState, TaskStatus, cmp_task_ids};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -144,7 +144,7 @@ pub fn analyze(tasks: &[Task]) -> Analysis {
         .iter()
         .filter(|t| t.state != TaskState::Done)
         .collect();
-    open.sort_by(|a, b| a.id.cmp(&b.id));
+    open.sort_by(|a, b| cmp_task_ids(&a.id, &b.id));
     let status: HashMap<&str, TaskStatus> = open
         .iter()
         .map(|t| (t.id.as_str(), t.status(|id| done.contains(id))))

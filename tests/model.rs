@@ -4,8 +4,8 @@ mod common;
 
 use airlock::config::ProjectConfig;
 use airlock::core::{
-    GraphError, Priority, TaskState, TaskStatus, check_dependencies, check_track_name, dependents,
-    task_number,
+    GraphError, Priority, TaskState, TaskStatus, check_dependencies, check_track_name,
+    cmp_task_ids, dependents, task_number,
 };
 use common::task;
 
@@ -234,6 +234,24 @@ fn invalid_or_underivable_prefixes_are_rejected() {
             .to_string()
             .contains("role `__` needs a task prefix")
     );
+}
+
+#[test]
+fn task_ids_sort_by_number_not_by_text() {
+    let mut ids = vec![
+        "E-10", "E-2", "L-1", "E-1", "E-02", "E-100", "E-9a", "E-9", "X", "E-", "E-2.10", "E-2.9",
+    ];
+    ids.sort_by(|a, b| cmp_task_ids(a, b));
+    assert_eq!(
+        ids,
+        [
+            "E-", "E-1", "E-02", "E-2", "E-2.9", "E-2.10", "E-9", "E-9a", "E-10", "E-100", "L-1",
+            "X"
+        ]
+    );
+    // Equal numbers with different zero padding still get a fixed order.
+    assert_ne!(cmp_task_ids("E-02", "E-2"), std::cmp::Ordering::Equal);
+    assert_eq!(cmp_task_ids("E-2", "E-2"), std::cmp::Ordering::Equal);
 }
 
 #[test]

@@ -1188,3 +1188,64 @@ fn old_processes_cannot_replace_an_answer_without_history() {
         "{again}"
     );
 }
+
+#[test]
+fn listed_questions_carry_each_their_own_history() {
+    let (_dir, mut store) = open();
+    for topic in ["a.md", "b.md", "c.md"] {
+        store.ask(topic, "How?", "engine-1", 10).unwrap();
+    }
+    // #1 corrected twice, #2 never answered, #3 corrected once.
+    for text in ["1a", "1b", "1c"] {
+        store.answer(1, text, "lead", None, 11).unwrap();
+    }
+    for text in ["3a", "3b"] {
+        store.answer(3, text, "lead", None, 12).unwrap();
+    }
+    let listed = store.questions().unwrap();
+    let ids: Vec<u64> = listed.iter().map(|q| q.id).collect();
+    assert_eq!(ids, [3, 2, 1], "newest first");
+    for q in &listed {
+        assert_eq!(*q, store.question(q.id).unwrap(), "#{}", q.id);
+    }
+    let earlier = |q: &airlock::core::Question| -> Vec<String> {
+        q.history.iter().map(|v| v.answer.clone()).collect()
+    };
+    assert_eq!(earlier(&listed[0]), ["3a"]);
+    assert!(listed[1].history.is_empty());
+    assert_eq!(earlier(&listed[2]), ["1a", "1b"]);
+}
+
+#[test]
+fn tasks_are_listed_in_numeric_id_order() {
+    let (_dir, mut store) = open();
+    for _ in 0..11 {
+        store.add_task(new_task(&[]), 0).unwrap();
+    }
+    let ids: Vec<String> = store.tasks(0).unwrap().into_iter().map(|t| t.id).collect();
+    let expected: Vec<String> = (1..=11).map(|n| format!("T-{n}")).collect();
+    assert_eq!(ids, expected, "T-2 before T-10");
+}
+
+#[test]
+fn concurrent_first_opens_of_a_fresh_store_all_succeed() {
+    for _ in 0..5 {
+        let dir = Arc::new(TempDir::new().unwrap());
+        let path = dir.path().join("airlock.db");
+        let sessions = 8;
+        let barrier = Arc::new(Barrier::new(sessions));
+        let handles: Vec<_> = (0..sessions)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Store::open(&path).map(|_| ()).map_err(|e| format!("{e:#}"))
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+    }
+}

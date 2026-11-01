@@ -8,12 +8,13 @@
 
 use crate::cli::{Command, QuestionCommand, RoleCommand, TaskCommand, TrackCommand};
 use crate::core::Question;
+use crate::store::enable_wal;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, Row, TransactionBehavior, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Entries older than this many seconds (30 days) are pruned on write.
 pub const RETENTION_SECS: i64 = 30 * 86_400;
@@ -451,22 +452,6 @@ fn schema_version(conn: &Connection, path: &Path) -> Result<usize> {
         MIGRATIONS.len()
     );
     Ok(version)
-}
-
-/// Switch to WAL. On a fresh file SQLite answers a concurrent switch with
-/// SQLITE_BUSY without consulting the busy timeout, so retry for a while.
-fn enable_wal(conn: &Connection) -> Result<String> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0)) {
-            Err(rusqlite::Error::SqliteFailure(e, _))
-                if e.code == rusqlite::ErrorCode::DatabaseBusy && Instant::now() < deadline =>
-            {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            other => return Ok(other?),
-        }
-    }
 }
 
 fn entry_from_row(row: &Row) -> rusqlite::Result<Entry> {

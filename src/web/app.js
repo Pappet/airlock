@@ -262,11 +262,33 @@ function byTrackOrder(a, b) {
   return priorityRank(b.priority) - priorityRank(a.priority) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 }
 
+// Task ids as people read them: digit runs compare as numbers (E-2 before E-10).
+// Mirrors `core::cmp_task_ids`; ties such as E-02 / E-2 fall back to the text.
+function cmpTaskIds(a, b) {
+  const isDigit = (c) => c >= "0" && c <= "9";
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (isDigit(a[i]) && isDigit(b[j])) {
+      let ei = i, ej = j;
+      while (ei < a.length && isDigit(a[ei])) ei++;
+      while (ej < b.length && isDigit(b[ej])) ej++;
+      const x = a.slice(i, ei).replace(/^0+/, ""), y = b.slice(j, ej).replace(/^0+/, "");
+      const order = x.length - y.length || (x < y ? -1 : x > y ? 1 : 0);
+      if (order) return order;
+      i = ei; j = ej;
+    } else {
+      if (a[i] !== b[j]) return a[i] < b[j] ? -1 : 1;
+      i++; j++;
+    }
+  }
+  return (a.length - i) - (b.length - j) || (a < b ? -1 : a > b ? 1 : 0);
+}
+
 // Task priority desc, then oldest first.
 function byPriority(a, b) {
   return priorityRank(b.priority) - priorityRank(a.priority)
     || (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0)
-    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    || cmpTaskIds(a.id, b.id);
 }
 
 // The `task next` order: track rank, task priority, oldest first.
@@ -488,7 +510,7 @@ function blockers(tasks, role = null) {
   const groups = new Map();
   for (const task of tasks) {
     if (task.status !== "blocked" || (role && task.role !== role)) continue;
-    const open = task.blocked_by.filter((id) => byId.get(id)?.status !== "done").sort();
+    const open = task.blocked_by.filter((id) => byId.get(id)?.status !== "done").sort((cmpTaskIds);
     if (!open.length) continue;
     const key = open.join(" ");
     if (!groups.has(key)) {
@@ -840,7 +862,7 @@ function filesView() {
       empty("No shared files", state.analysis.tasks.length ? "No two open tasks touch the same path." : "There are no open tasks."),
       noTouch);
   }
-  const columns = [...new Set(files.flatMap((f) => f.tasks))].sort();
+  const columns = [...new Set(files.flatMap((f) => f.tasks))].sort((cmpTaskIds);
   const running = new Set(state.analysis.tasks.filter((a) => RUNNING.has(a.status)).map((a) => a.id));
   const table = h("table", { class: "matrix" },
     h("thead", {}, h("tr", {}, h("th", {}),
