@@ -341,6 +341,24 @@ fn dashboard_drawer_is_glass_with_sticky_head() {
 }
 
 #[test]
+fn dashboard_review_and_questions_are_split_panels() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let js = get("/app.js").body;
+    assert!(
+        js.contains("function splitView")
+            && js.contains("reviewSelected")
+            && js.contains("questionSelected")
+    );
+    let css = get("/style.css").body;
+    assert!(css.contains(".split {") && css.contains(".split__row[aria-pressed=\"true\"]"));
+    assert!(
+        !css.contains(".list {"),
+        "the single-column list block is gone"
+    );
+}
+
+#[test]
 fn dashboard_assets_know_tracks() {
     let s = Server::start();
     let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");

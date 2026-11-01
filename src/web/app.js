@@ -46,6 +46,8 @@ const state = {
   selected: null,
   detail: null,
   questionFilter: "open",
+  reviewSelected: null,
+  questionSelected: null,
   live: false,
   // Activity tab: `key` is the entries path last requested; `entries` stays
   // null until the first answer. `session`, `filter` and `problem` are the
@@ -922,28 +924,58 @@ function hoverColumn(table, col, on) {
   for (const row of table.tBodies[0].rows) row.cells[col + 1].classList.toggle("col-hover", on);
 }
 
+// Split panel: compact rows on the left, the selected item on the right.
+// `rows` = [{ id, cells }]; an unknown `selected` falls back to the first row.
+function splitView({ rows, selected, onSelect, detail, emptyLabel, emptyText }) {
+  if (!rows.length) return empty(emptyLabel, emptyText);
+  const id = rows.some((r) => r.id === selected) ? selected : rows[0].id;
+  return h("div", { class: "split" },
+    h("aside", { class: "split__list", role: "listbox" },
+      rows.map((r) => h("button", {
+        type: "button",
+        class: "split__row",
+        role: "option",
+        "aria-pressed": String(r.id === id),
+        "aria-selected": String(r.id === id),
+        onclick: () => onSelect(r.id),
+      }, r.cells))),
+    h("section", { class: "split__detail" }, detail(id)));
+}
+
 function reviewView() {
   const items = state.tasks.filter((t) => t.status === "in_review" && matchesFilters(t));
-  if (!items.length) return empty("Review queue empty", "Tasks completed with `--review` appear here, unless a filter hides them.");
-  return h("div", { class: "list" }, items.map((task) => {
-    const feedback = h("textarea", { placeholder: "Feedback (required to reject)", "aria-label": `Feedback for ${task.id}` });
-    const reject = h("button", { type: "button", class: "btn btn--danger", disabled: true, onclick: () => act(
-      api("POST", `/api/tasks/${encodeURIComponent(task.id)}/reject`, { notes: feedback.value }), `Rejected ${task.id}`) }, "✕ Reject");
-    feedback.addEventListener("input", () => { reject.disabled = !feedback.value.trim(); });
-    return h("article", { class: "item" },
-      h("div", { class: "item__head" },
-        h("button", { type: "button", class: "link card__id", onclick: () => openDetail(task.id) }, task.id),
-        h("span", { class: "item__title" }, task.title),
-        h("span", { class: "label" }, task.role),
-        pips(task.priority),
-        h("span", { class: "label" }, task.track || "no track")),
-      task.notes ? h("p", {}, task.notes) : h("p", { class: "muted" }, "No notes."),
-      h("div", { class: "actions" },
-        h("div", { class: "field" }, feedback),
-        h("button", { type: "button", class: "btn btn--approve", onclick: () => act(
-          api("POST", `/api/tasks/${encodeURIComponent(task.id)}/approve`, {}), `Approved ${task.id}`) }, "✓ Approve"),
-        reject));
-  }));
+  return splitView({
+    rows: items.map((task) => ({
+      id: task.id,
+      cells: [h("span", { class: "split__id" }, task.id), h("span", { class: "split__text" }, task.title), pips(task.priority)],
+    })),
+    selected: state.reviewSelected,
+    onSelect: (id) => { state.reviewSelected = id; render(); },
+    detail: (id) => reviewDetail(taskById(id)),
+    emptyLabel: "Review queue empty",
+    emptyText: "Tasks completed with `--review` appear here, unless a filter hides them.",
+  });
+}
+
+function reviewDetail(task) {
+  const feedback = h("textarea", { placeholder: "Feedback (required to reject)", "aria-label": `Feedback for ${task.id}` });
+  const reject = h("button", { type: "button", class: "btn btn--danger", disabled: true, onclick: () => act(
+    api("POST", `/api/tasks/${encodeURIComponent(task.id)}/reject`, { notes: feedback.value }), `Rejected ${task.id}`) }, "✕ Reject");
+  feedback.addEventListener("input", () => { reject.disabled = !feedback.value.trim(); });
+  return [
+    h("div", { class: "split__meta" },
+      h("button", { type: "button", class: "link split__id", onclick: () => openDetail(task.id) }, task.id),
+      h("span", { class: "label" }, task.role),
+      pips(task.priority),
+      h("span", { class: "label" }, task.track || "no track")),
+    h("h2", { class: "split__title" }, task.title),
+    task.notes ? h("p", { class: "split__body" }, task.notes) : h("p", { class: "muted" }, "No notes."),
+    h("div", { class: "actions" },
+      h("div", { class: "field" }, feedback),
+      h("button", { type: "button", class: "btn btn--approve", onclick: () => act(
+        api("POST", `/api/tasks/${encodeURIComponent(task.id)}/approve`, {}), `Approved ${task.id}`) }, "✓ Approve"),
+      reject),
+  ];
 }
 
 function questionsView() {
