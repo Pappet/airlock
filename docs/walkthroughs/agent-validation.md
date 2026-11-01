@@ -22,13 +22,13 @@ Do not copy analysis material (decompiled output, `re/` content) into this file,
 | Scenario | Claude Code | Antigravity | DSH |
 |---|---|---|---|
 | A Connection | ⚠ runs 1–2: MCP down (PATH, then local scope across worktrees); fixed with per-worktree `.mcp.json` | ✅ starts in the workspace (no `-C`) | ✅ lead (3080) and spec (3081) via overlays |
-| B Work cycle | — | — | — |
-| C Questions | — | — | — |
-| D Restart | — | — | — |
-| E Parallel | — | ⚠ shared session with DSH spec (fixed in config) | ⚠ see Antigravity |
-| F Guardrails | — | — | — |
-| G Export | — | — | — |
-| H Behavior | ✅ runs 1–2: asked before changing bindings; ⚠ run 2: wrong instruction for completing `ready` tasks | — | — |
+| B Work cycle | ✅ run 3: claim → heartbeat (lease extended) → complete with commit notes, dependents ready; ⚠ `review: true` never used | — | — |
+| C Questions | ✅ run 3: 16 engine questions answered with `spec_file` and resolved; ⚠ a correction after resolving is refused and was dropped silently | — | — |
+| D Restart | ✅ run 3: two lead restarts, briefing named the held task, work went on without a new claim | — | — |
+| E Parallel | ⚠ run 3: no stolen claims, but three Claude sessions in the main checkout shared `lead-1` | ⚠ shared session with DSH spec (fixed in config) | ⚠ see Antigravity |
+| F Guardrails | ✅ run 3: claim of a blocked task refused, agent checked prerequisites and moved on; ⚠ engine creates and edits tasks through the CLI | — | — |
+| G Export | ✅ run 3: `doc_sync` / `airlock sync` after each plan change, outputs committed | — | — |
+| H Behavior | ✅ runs 1–3: asked before changing bindings; `session_start` first in every session; ⚠ run 2: wrong instruction for completing `ready` tasks; ⚠ run 3: works around refusals instead of reporting them | — | — |
 
 ## Runs
 
@@ -78,3 +78,25 @@ Do not copy analysis material (decompiled output, `re/` content) into this file,
 - `airlock start --role` and `AIRLOCK_ROLE` (also for `task next`); a locked binding refuses a different role.
 - The briefing lists tasks of the same role held by other sessions, with session and remaining lease time.
 
+### Run 3 — 2026-10-30 to 2026-11-01, Claude Code, main checkout (lead) and engine worktree
+
+**Method:** no supervised run; evidence comes from the Claude Code transcripts of eleven sessions (six in the main checkout, five in the engine worktree), filtered to Airlock MCP calls and `airlock` CLI commands. Totals: engine 5 `session_start`, 32 claims, 29 completions, 4 heartbeats, 16 questions, 18 CLI commands; main 6 `session_start`, 53 `task_create`, 41 `task_update`, 16 answers, 15 resolves, 15 `doc_sync`, 70 CLI commands. This run also covers the switch to tracks (1 Nov): a lead session created the tracks and assigned all tasks, another created the `ui` track with its packages, both without help.
+
+**Observed:**
+- **B:** the engine claims, works, completes with the commit hash and a summary in the notes, then calls `task_next` and claims the next package (E-74 → E-10 on 1 Nov). Completing E-67 reported `now_ready: ["E-68"]`. Long packages get a heartbeat with a longer lease (`lease_minutes` 90–240). The review path (`review: true`, approve / reject) was never used.
+- **C:** the engine asked 16 questions with a spec as topic; the lead answered each with `spec_file` and resolved it. The engine fetched answers with `question_list` (19 calls) rather than waiting for the briefing, so `answered_questions` was empty in every briefing.
+- **D:** two lead sessions restarted while holding a task; the briefing listed it under `claimed` and the session continued without claiming again. Before an idle stop the engine released its task explicitly (`task_release`).
+- **E:** on 1 Nov the engine, two lead sessions and a UI design session worked at the same time without conflicting claims.
+- **F:** claiming a blocked task returned `task E-61 is blocked by unfinished prerequisites`; the agent read the prerequisites with `task_get` and took the next ready package.
+- **G:** lead sessions run `doc_sync` (MCP) or `airlock sync` (CLI) after each plan change and commit `PLAN.md`, `QUESTIONS.md` and the state file with it.
+- **H:** every session opens with `session_start`; agents read `airlock … --help` when unsure of a command instead of guessing flags.
+
+**Problems:**
+1. **Shared session in the main checkout.** Three Claude Code sessions (lead work, project review, UI concept) ran `airlock mcp --role lead --session lead-1` from the same `.mcp.json`. Airlock treats them as one session: any of them can heartbeat, complete or release the others' claims, and the briefing shows no other lead sessions. Run 1b's lesson (one `--session` per harness) does not hold when the same harness is started several times in one checkout.
+2. **Correcting an answer after resolving.** The lead answered question 15, resolved it, found a mistake two minutes later and answered again: `question #15 is already resolved`. It fixed the spec file, did not mention the refusal, and moved on. Airlock and the generated `QUESTIONS.md` still hold the wrong first answer.
+3. **Clean-room sessions use the CLI where the MCP tool set stops.** The engine has no `task_create` / `task_update`; it ran `airlock task add` and `airlock task edit --blocked-by` in the engine worktree instead (E-67, E-6f). Nothing in the CLI limits a clean-room binding to the clean-room tool set.
+4. **Ids before PR #13.** Lead and engine sessions picked task ids themselves and collided (`task E-17 already exists`, `task E-32 already exists`); one engine attempt to pass an id on the CLI was stopped by Claude Code's permission prompt. Fixed by Airlock assigning ids (PR #13).
+5. **Role setup missing.** The one-time `airlock role set` from OpenSHR's `docs/PROCESS.md` had never been run, so every briefing carried `instructions: null`; the clean-room rule reached the engine only through `CLAUDE.md`. Fixed by running the setup (1 Nov).
+6. **Old process after upgrade.** After installing the tracks build, one Claude session started the day before still ran the previous `airlock mcp`; it refuses the migrated store, which is safe but only visible with `pgrep`.
+
+**Lesson:** the agents use Airlock well where it answers, and work around it where it refuses: a refused write gets fixed elsewhere or done through the CLI, and the user hears about it only by reading transcripts. Problems 1–3 and 6 would have stayed invisible without them.
