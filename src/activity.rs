@@ -9,6 +9,7 @@
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, Row, TransactionBehavior, params, params_from_iter};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,40 @@ pub const TOUCH_SECS: u64 = 60;
 pub const ERROR_MAX: usize = 300;
 /// Commands that count as an agent's session briefing.
 pub const BRIEFING_COMMANDS: &[&str] = &["session_start", "prompt start", "start"];
+
+/// Arguments whose short values are kept in `changed` as `name: value`.
+/// Every other argument contributes its key only.
+const VALUE_KEYS: &[&str] = &[
+    "priority",
+    "track",
+    "role",
+    "status",
+    "review",
+    "lease_minutes",
+    "clean_room",
+    "lock",
+];
+/// Argument keys that name what a call acts on, most specific first.
+const TARGET_KEYS: &[&str] = &["task_id", "question_id", "id", "name"];
+/// Longest value kept for a [`VALUE_KEYS`] argument, in characters.
+const VALUE_MAX: usize = 40;
+
+/// Commands that only read: the MCP and CLI reads, plus every REST `GET`.
+const READ_COMMANDS: &[&str] = &[
+    "session_start",
+    "prompt start",
+    "task_next",
+    "task_get",
+    "question_list",
+    "track_list",
+    "start",
+    "task list",
+    "task next",
+    "task show",
+    "track list",
+    "question list",
+    "role list",
+];
 
 const ACTIVITY_FILE: &str = "activity.db";
 
@@ -416,4 +451,62 @@ pub fn agent_from_env(var: impl Fn(&str) -> Option<String>) -> Option<String> {
 /// Cut an error message to [`ERROR_MAX`] characters.
 pub fn truncate_error(message: &str) -> String {
     message.chars().take(ERROR_MAX).collect()
+}
+
+/// Whether `command` changes state: false for the reads (MCP, CLI and REST
+/// `GET`), true for everything else.
+pub fn is_write(command: &str) -> bool {
+    !(READ_COMMANDS.contains(&command) || command.starts_with("GET "))
+}
+
+/// The target and changed fields of an entry, from a call's JSON arguments.
+///
+/// The log holds no free text, so this never copies an argument value except
+/// the short ones of [`VALUE_KEYS`]: a value that is not a short plain word
+/// (letters, digits, `-`, `_`, `.`) is reduced to its key. `target` is the
+/// first of `task_id`, `question_id`, `id`, `name` that holds a string or a
+/// number (`question_id` numbers read `#<n>`); `changed` lists every other
+/// key, with `new_name` recorded as plain `name`. `_command` is unused so far:
+/// no command needs rules of its own.
+pub fn summarize_json(_command: &str, args: &Map<String, Value>) -> (Option<String>, Vec<String>) {
+    let target = TARGET_KEYS.iter().find_map(|&key| {
+        let text = match args.get(key)? {
+            Value::String(s) => s.clone(),
+            Value::Number(n) if key == "question_id" => format!("#{n}"),
+            Value::Number(n) => n.to_string(),
+            _ => return None,
+        };
+        Some((key, text))
+    });
+    let target_key = target.as_ref().map(|(key, _)| *key);
+    let changed = args
+        .iter()
+        .filter(|(key, _)| Some(key.as_str()) != target_key)
+        .map(|(key, value)| {
+            let key = if key == "new_name" { "name" } else { key };
+            match value_text(key, value) {
+                Some(text) => format!("{key}: {text}"),
+                None => key.to_string(),
+            }
+        })
+        .collect();
+    (target.map(|(_, text)| text), changed)
+}
+
+/// The value of an enumerated key as short plain text, else `None`.
+fn value_text(key: &str, value: &Value) -> Option<String> {
+    if !VALUE_KEYS.contains(&key) {
+        return None;
+    }
+    let text = match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        _ => return None,
+    };
+    let plain = text
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (plain && !text.is_empty() && text.chars().count() <= VALUE_MAX).then_some(text)
 }

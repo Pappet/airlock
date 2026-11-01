@@ -1,7 +1,8 @@
 use airlock::activity::{
     ActivityLog, Channel, ERROR_MAX, Entry, Filter, LIVE_SECS, RETENTION_SECS, agent_from_env,
-    build_time, record_quietly, truncate_error,
+    build_time, is_write, record_quietly, summarize_json, truncate_error,
 };
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -294,4 +295,102 @@ fn truncate_error_keeps_300_chars() {
     let cut = truncate_error(&wide);
     assert_eq!(cut.chars().count(), 300);
     assert!(wide.starts_with(&cut));
+}
+
+fn summary(args: Value) -> (Option<String>, Vec<String>) {
+    summarize_json("cmd", args.as_object().unwrap())
+}
+
+#[test]
+fn summary_takes_the_target_from_the_first_identifying_argument() {
+    let (target, changed) = summary(json!({ "task_id": "E-1", "name": "ui", "title": "T" }));
+    assert_eq!(target.as_deref(), Some("E-1"));
+    assert_eq!(changed, ["name", "title"]);
+    assert_eq!(
+        summary(json!({ "question_id": 7, "answer": "x" }))
+            .0
+            .as_deref(),
+        Some("#7")
+    );
+    assert_eq!(summary(json!({ "id": "E-2" })).0.as_deref(), Some("E-2"));
+    assert_eq!(summary(json!({ "name": "ui" })).0.as_deref(), Some("ui"));
+    assert_eq!(summary(json!({ "title": "T" })).0, None);
+    assert_eq!(
+        summary(json!({ "task_id": null })),
+        (None, vec!["task_id".to_string()])
+    );
+}
+
+#[test]
+fn summary_attaches_only_enumerated_short_values() {
+    let (_, changed) = summary(json!({
+        "task_id": "E-1", "priority": "high", "track": "ui", "role": "engine",
+        "status": "open", "review": true, "lease_minutes": 30, "clean_room": false,
+        "lock": true, "title": "T", "do": "free text", "blocked_by": ["E-2"],
+    }));
+    assert_eq!(
+        changed,
+        [
+            "blocked_by",
+            "clean_room: false",
+            "do",
+            "lease_minutes: 30",
+            "lock: true",
+            "priority: high",
+            "review: true",
+            "role: engine",
+            "status: open",
+            "title",
+            "track: ui",
+        ]
+    );
+}
+
+#[test]
+fn summary_drops_enumerated_values_that_are_not_short_plain_words() {
+    let (_, changed) = summary(json!({
+        "priority": "SECRET words here", "track": "x".repeat(41), "role": "",
+        "status": ["a"], "lock": "a/b",
+    }));
+    assert_eq!(changed, ["lock", "priority", "role", "status", "track"]);
+    assert_eq!(summary(json!({ "track": null })).1, ["track: null"]);
+}
+
+#[test]
+fn summary_records_a_new_name_as_plain_name() {
+    let (target, changed) = summary(json!({ "name": "old", "new_name": "SECRET-NEW" }));
+    assert_eq!(target.as_deref(), Some("old"));
+    assert_eq!(changed, ["name"]);
+}
+
+#[test]
+fn reads_are_not_writes() {
+    for read in [
+        "session_start",
+        "prompt start",
+        "task_next",
+        "task_get",
+        "question_list",
+        "track_list",
+        "start",
+        "task list",
+        "task next",
+        "task show",
+        "track list",
+        "question list",
+        "role list",
+        "GET /api/tasks",
+    ] {
+        assert!(!is_write(read), "{read}");
+    }
+    for write in [
+        "task_claim",
+        "task add",
+        "question answer",
+        "POST /api/tasks",
+        "PATCH /api/x",
+        "sync",
+    ] {
+        assert!(is_write(write), "{write}");
+    }
 }
