@@ -23,6 +23,7 @@
 
   --on-surface: #e2e2e2;
   --on-surface-variant: #7a7a7a;
+  --on-surface-dim: #555555; /* dimmed counters, zero values, placeholders */
   --ghost-border: rgba(65, 74, 52, 0.15);
 
   --radius-xs: 0.25rem;
@@ -231,7 +232,7 @@ button, input, textarea { font: inherit; color: inherit; }
   transition: color var(--duration-fast) var(--ease-out-sharp);
 }
 .tab:hover { color: var(--on-surface); }
-.tab__n { margin-left: 6px; color: #555555; }
+.tab__n { margin-left: 6px; color: var(--on-surface-dim); }
 .tab.on { color: var(--on-surface); }
 .tab.on .tab__n { color: var(--primary); }
 .tab.on::after {
