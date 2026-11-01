@@ -1080,3 +1080,135 @@ fn inbox_carries_answers_to_the_engine_and_questions_to_the_lead() {
         assert!(!text.contains("Arc") && !text.contains("Front"), "{text}");
     }
 }
+
+#[test]
+fn a_more_important_task_created_mid_turn_comes_next() {
+    let env = Env::new();
+    env.cli(&[
+        "task",
+        "add",
+        "Normal follow-up",
+        "--role",
+        "engine",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+    ]); // E-2, normal, older than the critical one
+    let engine = ["--role", "engine", "--session", "engine-1"];
+    // The engine claims E-1; nothing else happened yet.
+    let s = env.session(
+        &engine,
+        &[call(1, "task_claim", json!({ "task_id": "E-1" }))],
+    );
+    assert!(s.ok(1).get("higher_priority").is_none());
+    // Meanwhile the lead creates a critical task for the engine.
+    env.cli(&[
+        "task",
+        "add",
+        "Hotfix",
+        "--role",
+        "engine",
+        "--priority",
+        "critical",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+    ]); // E-3
+    let s = env.session(
+        &engine,
+        &[call(
+            1,
+            "task_complete",
+            json!({ "task_id": "E-1", "notes": "done" }),
+        )],
+    );
+    let result = s.ok(1);
+    assert_eq!(result["state"], "done");
+    assert_eq!(
+        result["next"]["id"], "E-3",
+        "the critical task, not the older E-2"
+    );
+    assert_eq!(result["next"]["priority"], "critical");
+    let items = result["inbox"]["items"].as_array().unwrap();
+    let ready: Vec<&str> = items
+        .iter()
+        .filter(|i| i["kind"] == "task_ready")
+        .map(|i| i["task"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ready, ["E-3"], "{result}");
+    // Nothing ready: next is null, the inbox is empty and read.
+    let s = env.session(
+        &engine,
+        &[
+            call(1, "task_claim", json!({ "task_id": "E-3" })),
+            call(2, "task_complete", json!({ "task_id": "E-3" })),
+            call(3, "task_claim", json!({ "task_id": "E-2" })),
+            call(4, "task_complete", json!({ "task_id": "E-2" })),
+        ],
+    );
+    assert_eq!(s.ok(2)["next"]["id"], "E-2");
+    assert_eq!(s.ok(4)["next"], Value::Null);
+    assert_eq!(s.ok(4)["inbox"]["items"], json!([]));
+}
+
+#[test]
+fn claiming_past_a_more_important_task_warns() {
+    let env = Env::new();
+    // E-1 (normal) exists; E-2 is high; E-3 normal and younger than E-1.
+    env.cli(&[
+        "task",
+        "add",
+        "Important",
+        "--role",
+        "engine",
+        "--priority",
+        "high",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+    ]);
+    env.cli(&[
+        "task",
+        "add",
+        "Same rank",
+        "--role",
+        "engine",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+    ]);
+    let s = env.session(
+        &["--role", "engine", "--session", "engine-1"],
+        &[
+            call(1, "task_claim", json!({ "task_id": "E-3" })),
+            call(2, "task_release", json!({ "task_id": "E-3" })),
+            call(3, "task_claim", json!({ "task_id": "E-2" })),
+        ],
+    );
+    let warned = s.ok(1)["higher_priority"].as_array().unwrap();
+    let ids: Vec<&str> = warned.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["E-2"], "the older E-1 of the same rank does not warn");
+    assert_eq!(warned[0]["priority"], "high");
+    assert!(s.ok(3).get("higher_priority").is_none());
+}
+
+#[test]
+fn claiming_a_second_task_warns() {
+    let env = Env::new();
+    env.cli(&[
+        "task", "add", "Second", "--role", "engine", "--do", "x", "--verify", "y",
+    ]);
+    let s = env.session(
+        &["--role", "engine", "--session", "engine-1"],
+        &[
+            call(1, "task_claim", json!({ "task_id": "E-1" })),
+            call(2, "task_claim", json!({ "task_id": "E-2" })),
+        ],
+    );
+    assert!(s.ok(1).get("holding").is_none());
+    assert_eq!(s.ok(2)["holding"], json!(["E-1"]));
+}

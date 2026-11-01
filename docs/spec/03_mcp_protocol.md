@@ -82,7 +82,7 @@ What changed for the role since this session last looked (Spec 01 §2.6): ready,
 
 ### 3.3 `task_claim`
 - **Parameters:** `task_id` (string), `lease_minutes` (integer, optional; default from project config)
-- **Returns:** `{ task_id, lease_expires_at }`, plus `overlaps` and `question_id` (or `question_error`) when the task shares files with running work. The claim is not refused; the question for the lead is the session's own, so clean-room sessions see its answer in `question_list` and the briefing (Spec 01 §2.1).
+- **Returns:** `{ task_id, lease_expires_at }`, plus `overlaps` and `question_id` (or `question_error`) when the task shares files with running work, `higher_priority` (`[{ id, title, priority, track? }]`: ready tasks of the role that rank strictly higher by track or task priority) and `holding` (ids of other tasks this session holds a lease on) when there are any. None of these refuses the claim. The claim is not refused; the question for the lead is the session's own, so clean-room sessions see its answer in `question_list` and the briefing (Spec 01 §2.1).
 
 ### 3.4 `task_heartbeat`
 - **Parameters:** `task_id` (string), `lease_minutes` (integer, optional), `notes` (string, optional): the running note for the session's successor — done so far, remaining, next step. It replaces the previous note; an empty string removes it; without `notes` the note stays (Spec 01 §2.4). There is no separate tool for it, so the clean-room tool set is unchanged.
@@ -94,7 +94,7 @@ What changed for the role since this session last looked (Spec 01 §2.6): ready,
 
 ### 3.6 `task_complete`
 - **Parameters:** `task_id` (string), `notes` (string, optional), `review` (boolean, optional; default `false`)
-- **Returns:** `{ task_id, state, now_ready: [task ids] }`. Only the lease holder can complete via MCP.
+- **Returns:** `{ task_id, state, now_ready: [task ids], inbox: { items }, next }`. Only the lease holder can complete via MCP. After the completion is committed, the result carries what changed for the task's role since the session last looked (`inbox`, as from the `inbox` tool, read and marked) and what `task_next` hands out now for that role (`next`, a work package or `null`), so a session that runs several tasks in one turn sees a more important task or an answer at the boundary between two tasks (Spec 01 §2.1). A failure to read either is reported as `inbox_error` / `next_error`; it never undoes the completion.
 
 ### 3.7 `task_create`
 - **Parameters:** `title`, `role`, `do`, `verify` (strings, required); `read`, `touch`, `blocked_by` (string arrays, optional); `priority` (`critical | high | normal | low`, optional; default `normal`); `track` (string, optional; an existing track, see `track_create`). There is no `id` parameter: Airlock assigns it (Spec 01 §2.1), and a call that passes `id` fails with a message saying so.

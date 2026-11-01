@@ -338,6 +338,21 @@ fn start_briefs_claims_next_work_and_answers() {
     assert!(text.contains("Work only from docs/spec."));
     assert!(text.contains("Read first: `CLAUDE.md`"));
     assert!(text.contains("## Next work package") && text.contains("airlock task claim E-1"));
+    // The Workflow rules: one task at a time, the next one from Airlock, read the news.
+    assert!(
+        text.contains("never plan task ids ahead and never claim a second task while you hold one")
+            && text.contains(
+                "take the next task from the `Next:` line it prints or from `airlock task next`;"
+            )
+            && text.contains("Read the `Since your last look` lines of every `airlock task done`"),
+        "{text}"
+    );
+    let mcp = env.ok(&env.engine, &["start", "--hints", "mcp"]);
+    assert!(
+        mcp.contains("take the next task from `task_complete`'s `next` field or from `task_next`")
+            && mcp.contains("Read the `inbox` part of every `task_complete` result"),
+        "{mcp}"
+    );
 
     env.ok(&env.engine, &["task", "claim", "E-1"]);
     env.ok(
