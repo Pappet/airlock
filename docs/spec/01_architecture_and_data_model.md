@@ -163,6 +163,12 @@ Session ids are **self-declared and not authenticated**. They identify cooperati
 - `task heartbeat` sets the lease to expire `--lease` minutes (default `lease_minutes`) from *now*.
 - There is no daemon. Expiry is evaluated lazily: reads treat a task whose `lease_expires_at <= now` as expired, and every write transaction first resets expired leases to `open` (clearing `claimed_by`). A claim on an expired task therefore succeeds.
 
+**Progress.** A task carries `progress`, the lease holder's running note for its successor: what is done, what remains, the next step. It is session state like `claimed_by`:
+
+- Only `task heartbeat <id> --notes <text>` / MCP `task_heartbeat` with `notes` writes it, and only the lease holder can (the heartbeat's holder check). A note replaces the previous one (no appending: the session writes its whole current state each time); an empty note removes it; a heartbeat without notes keeps it.
+- It is **kept** when the lease is released or expires, so the next session that claims the task sees how far the previous one got (the briefing shows it, Spec 06 §3.1). It is **cleared** when the task moves to `done` or `in_review` — the final state belongs in `notes` via `task done --notes`. A database trigger does the clearing, so it holds for every writer. `task edit` never touches it.
+- It is not exported (Spec 05 §3.2), so heartbeats with notes never change the snapshot, and an import drops it together with claims. The activity log records a heartbeat's `notes` as a field name only (§3.5).
+
 ### 2.5 Priority and Track
 
 **Priority** is one fixed scale for tasks and tracks, serialized in lowercase on every surface (CLI, MCP, REST, snapshot):
@@ -242,7 +248,9 @@ WAL mode allows many readers and one writer at a time. Correctness under concurr
 
 ### 3.4 Schema Migration
 
-The store carries a schema version and upgrades older databases in place on first open. Version 5 adds answer corrections (§2.2): the nullable columns `questions.corrected_at` and `questions.corrected_by`, and the table `answer_history` (one row per replaced answer, numbered per question). Existing questions are unchanged. A trigger on `questions` refuses to replace an answer unless the newest `answer_history` row of that question holds it, which the correction path always writes first. As with every migration, an older airlock binary refuses a store at a newer version when it opens it; an older process that opened the store before the upgrade keeps running, and the trigger stops it from overwriting an answer without history: its answer fails with "restart old airlock processes". Restart `airlock mcp` and `airlock serve` processes after upgrading. The activity log (§3.5) is a separate database with its own schema version; older binaries do not know it and ignore it.
+The store carries a schema version and upgrades older databases in place on first open. Version 6 adds progress notes (§2.4): the nullable column `tasks.progress` and a trigger that clears it when a task's state becomes `done` or `in_review`. Existing tasks have none. An airlock process from before the upgrade that is still running keeps working; it cannot write progress, and the trigger clears notes on the tasks it finishes.
+
+Version 5 adds answer corrections (§2.2): the nullable columns `questions.corrected_at` and `questions.corrected_by`, and the table `answer_history` (one row per replaced answer, numbered per question). Existing questions are unchanged. A trigger on `questions` refuses to replace an answer unless the newest `answer_history` row of that question holds it, which the correction path always writes first. As with every migration, an older airlock binary refuses a store at a newer version when it opens it; an older process that opened the store before the upgrade keeps running, and the trigger stops it from overwriting an answer without history: its answer fails with "restart old airlock processes". Restart `airlock mcp` and `airlock serve` processes after upgrading. The activity log (§3.5) is a separate database with its own schema version; older binaries do not know it and ignore it.
 
 Version 4 adds tracks and the priority scale:
 

@@ -352,6 +352,46 @@ fn start_briefs_claims_next_work_and_answers() {
     assert_eq!(brief["answered_questions"][0]["answer"], "Truncated.");
     let text = env.ok(&env.engine, &["start"]);
     assert!(text.contains("## Your claimed work") && text.contains("## Answers to your questions"));
+    assert!(
+        text.contains("--notes"),
+        "the workflow names progress notes: {text}"
+    );
+
+    // Progress notes reach the holder's briefing, and the next session's after a release.
+    env.ok(
+        &env.engine,
+        &[
+            "task",
+            "heartbeat",
+            "E-1",
+            "--notes",
+            "Arc done.\nNext: knockback.",
+        ],
+    );
+    let brief = env.json(&env.engine, &["start"]);
+    assert_eq!(
+        brief["claimed"][0]["progress"],
+        "Arc done.\nNext: knockback."
+    );
+    let text = env.ok(&env.engine, &["start"]);
+    assert!(
+        text.contains("- **Progress:** Arc done.\n  Next: knockback."),
+        "{text}"
+    );
+    assert!(
+        text.contains("from where the progress note says it stopped"),
+        "{text}"
+    );
+    env.ok(&env.engine, &["task", "release", "E-1"]);
+    env.ok(&env.engine, &["use", "engine", "--session", "engine-2"]);
+    let text = env.ok(&env.engine, &["start"]);
+    assert!(text.contains("## Next work package"), "{text}");
+    assert!(text.contains("- **Earlier progress:** Arc done."), "{text}");
+    assert!(
+        env.ok(&env.engine, &["task", "show", "E-1"])
+            .contains("**Progress:** Arc done."),
+        "task show prints the note"
+    );
 
     let unbound = env.ok(&env.main, &["start"]);
     assert!(unbound.contains("## No role"));

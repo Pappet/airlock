@@ -281,6 +281,7 @@ mod tests {
             notes: None,
             claimed_by: None,
             lease_expires_at: None,
+            progress: None,
             created_at: 0,
             updated_at: 0,
         }

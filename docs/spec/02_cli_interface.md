@@ -96,8 +96,8 @@ Changes the content of a task; omitted fields keep their values, at least one fi
 #### `airlock task claim <id> [--lease <minutes>]`
 Claims a `ready` task (or one whose lease expired) for the current session and starts a lease. Fails if another session holds a live lease or the task is blocked. If the task shares files with an `in_progress` or `in_review` task, the claim still succeeds: a warning goes to stderr, an overlap question is recorded for the lead (Spec 01 §2.1), and `--json` adds `overlaps` and `question_id` (or `question_error` if the question could not be recorded).
 
-#### `airlock task heartbeat <id> [--lease <minutes>]`
-Extends the current session's lease from now. Fails if the session does not hold the lease.
+#### `airlock task heartbeat <id> [--lease <minutes>] [--notes <text>]`
+Extends the current session's lease from now. Fails if the session does not hold the lease. `--notes` replaces the task's progress note for a successor (done so far, remaining, next step; Spec 01 §2.4); `--notes ""` removes it, and without `--notes` the note stays. `task show` prints it as `**Progress:**`.
 
 #### `airlock task release <id> [--force]`
 Returns a claimed task to `open`. Without `--force`, only the lease holder may release.

@@ -103,6 +103,7 @@ airlock start                       # briefing: role, rules, claimed work, next 
 airlock task next                   # the next ready work package of the bound role
 airlock task claim E-1              # take it (60-minute lease by default)
 airlock task heartbeat E-1          # extend the lease during long work
+airlock task heartbeat E-1 --notes "Window opens; next: event loop"   # progress note for a successor
 airlock task done E-1 --notes "Window and event loop implemented; cargo test setup passes."
 ```
 
@@ -148,6 +149,8 @@ Work is coordinated through Airlock; this checkout is bound to your role and ses
   the files it lists.
 - **Keep your lease alive:** during long work, renew it with `task_heartbeat`
   (`airlock task heartbeat <id>`); an expired lease lets another session take the task.
+  Before your context fills up, add a progress note (`notes` /
+  `--notes "done …; next …"`): the session that continues the task reads it in its briefing.
 - **Finish only when *Verify* passes:** complete with `task_complete`
   (`airlock task done <id> --notes "…"`) and say in the notes what you changed
   and how you verified it. If you cannot finish, release the task

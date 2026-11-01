@@ -19,7 +19,9 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+const MIGRATIONS: &[&str] = &[
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+];
 
 const SCHEMA_V1: &str = "
 CREATE TABLE tasks (
@@ -135,11 +137,25 @@ BEGIN
 END;
 ";
 
+/// Progress notes on a lease: the holder's running note for its successor.
+/// Session state, never exported; kept across release and lease expiry. A
+/// trigger clears it when the task moves to `done` or `in_review`, so the rule
+/// holds for every writer, an airlock process from before the migration included.
+const SCHEMA_V6: &str = "
+ALTER TABLE tasks ADD COLUMN progress TEXT;
+CREATE TRIGGER tasks_progress_cleared AFTER UPDATE OF state ON tasks
+WHEN NEW.state IN ('done', 'in_review') AND NEW.progress IS NOT NULL
+BEGIN
+    UPDATE tasks SET progress = NULL WHERE id = NEW.id;
+END;
+";
+
 const SELECT_TASKS: &str = "
 SELECT id, title, role, state, priority,
        (SELECT json_group_array(blocked_by)
           FROM (SELECT blocked_by FROM task_deps WHERE task_id = t.id ORDER BY rowid)),
-       read, touch, do, verify, notes, claimed_by, lease_expires_at, created_at, updated_at, track
+       read, touch, do, verify, notes, claimed_by, lease_expires_at, created_at, updated_at, track,
+       progress
   FROM tasks t";
 
 const SELECT_TRACKS: &str =
@@ -559,20 +575,23 @@ impl Store {
         commit_task(tx, id)
     }
 
+    /// Extends the lease; `progress`, when given, replaces the running note for the
+    /// successor (`None` keeps the existing one, an empty note removes it).
     pub fn heartbeat(
         &mut self,
         id: &str,
         session: &str,
         lease_secs: i64,
+        progress: Option<&str>,
         now: i64,
     ) -> Result<Task> {
         let tx = self.write(now)?;
         let task = load_task(&tx, id)?;
         ensure_holder(&task, session, now)?;
         let changed = tx.execute(
-            "UPDATE tasks SET lease_expires_at = ?1, updated_at = ?2
+            "UPDATE tasks SET lease_expires_at = ?1, updated_at = ?2, progress = CASE WHEN ?5 IS NULL THEN progress ELSE nullif(?5, '') END
               WHERE id = ?3 AND state = 'in_progress' AND claimed_by = ?4",
-            params![now + lease_secs, now, id, session],
+            params![now + lease_secs, now, id, session, progress],
         )?;
         ensure!(changed == 1, "task `{id}` changed concurrently; retry");
         commit_task(tx, id)
@@ -1241,6 +1260,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
         track: row.get(15)?,
+        progress: row.get(16)?,
     })
 }
 

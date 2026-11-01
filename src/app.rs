@@ -703,8 +703,8 @@ fn task(
                 lease_text(&claimed.task, "Claimed", now)
             })
         }
-        TaskCommand::Heartbeat { id, lease } => {
-            let task = store.heartbeat(&id, session, lease_secs(lease)?, now)?;
+        TaskCommand::Heartbeat { id, lease, notes } => {
+            let task = store.heartbeat(&id, session, lease_secs(lease)?, notes.as_deref(), now)?;
             print_lease(out, &task, "Renewed", now)
         }
         TaskCommand::Release { id, force } => {
@@ -1273,6 +1273,9 @@ fn work_package(view: &TaskView) -> String {
     if let Some(notes) = &t.notes {
         lines.push(format!("**Notes:** {notes}"));
     }
+    if let Some(progress) = &t.progress {
+        lines.push(format!("**Progress:** {progress}"));
+    }
     lines.join("\n")
 }
 
@@ -1359,6 +1362,7 @@ mod tests {
             notes: None,
             claimed_by: None,
             lease_expires_at: None,
+            progress: None,
             created_at,
             updated_at: created_at,
         }

@@ -396,10 +396,15 @@ impl Server {
                 ensure!(minutes > 0, "lease_minutes must be at least 1");
                 let lease = i64::from(minutes) * 60;
                 if name == "task_heartbeat" {
-                    let task = self.store.heartbeat(&id, &self.session, lease, now)?;
-                    return Ok(
-                        json!({ "task_id": task.id, "lease_expires_at": task.lease_expires_at }),
-                    );
+                    let notes = opt_str(args, "notes")?;
+                    let task =
+                        self.store
+                            .heartbeat(&id, &self.session, lease, notes.as_deref(), now)?;
+                    return Ok(json!({
+                        "task_id": task.id,
+                        "lease_expires_at": task.lease_expires_at,
+                        "progress": task.progress,
+                    }));
                 }
                 claim(&mut self.store, &id, &self.session, lease, now)?.to_json()
             }
@@ -669,8 +674,17 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
         ),
         tool(
             "task_heartbeat",
-            "Extend this session's lease on a claimed task, counted from now.",
-            json!({ "task_id": task_id, "lease_minutes": lease }),
+            "Extend this session's lease on a claimed task, counted from now. Before your context fills, \
+             record where you are in `notes`; your successor reads it in its briefing.",
+            json!({
+                "task_id": task_id,
+                "lease_minutes": lease,
+                "notes": {
+                    "type": "string",
+                    "description": "Running note for your successor: done so far, remaining, next step. \
+                                    Replaces the previous note; an empty string removes it."
+                }
+            }),
             &["task_id"],
         ),
         tool(
