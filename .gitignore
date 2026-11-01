@@ -33,3 +33,8 @@ PROJECT_MEMORY.md
 
 # Brainstorming mockups and plan-execution workspaces (superpowers)
 .superpowers/
+
+# Local review and monitoring scratch (never committed)
+.monitor-log.txt
+.pr*.diff
+.review-wt*/
