@@ -86,7 +86,7 @@ Effekt auf dem openshr-Board: Rot erscheint auf 3 bis 6 Karten statt auf 40. Dan
 
 **Stages.** Dieselben Karten. Pfeile nur sichtbar, wenn eine Karte gewählt ist oder beim Hover; Standard `outline-variant` 25%, hot = secondary. Die Hinweiszeile oben wird ein Empty-State-Satz im Mono-Label, nicht ein Kasten.
 
-**Files.** Matrix bleibt. Zellen: Treffer neutral (`surface-container-high` Punkt), Rot nur wenn ein *laufender* Task die Datei hält, Grün wenn der gewählte Task sie hält. Datei-Zähler rechts neben dem Pfad in `on-surface-variant`, Rot nur über einem Schwellwert (z. B. ≥ 10 offene Tasks). Spaltenköpfe sticky.
+**Files.** Matrix bleibt. Zellen: Treffer neutral (`surface-container-high` Punkt), Rot nur wenn ein *laufender* Task die Datei hält (`▶`). Keine Auswahl in der Matrix; Spalte und Zeile heben sich beim Hover. Datei-Zähler rechts neben dem Pfad in `on-surface-variant`, Rot nur wenn die Datei einen laufenden Halter hat (Rot = lebende Kollision, kein Zähl-Schwellwert). Spalten- und Zeilenköpfe sticky in einem 70vh-Scrollbereich.
 
 **Activity.** Drei Zonen. Oben links „Needs attention“ als Panel mit Glyph-Spalte (`✕` error, `▲` tertiary), Session secondary, Text, Zeit rechts Mono. Oben rechts „Claimed“ und „Blocked · waiting on“ als ausgerichtete Zebra-Tabelle; darunter „Sessions“ als Tabelle (`Session Rolle MCP CLI REST zuletzt`), deren Zeilen zugleich der Session-Filter des Logbooks sind (gewählte Zeile mit secondary-Ring); `nobody on it` gedimmt, tertiary nur bei high/critical-Track. Logbook darunter mit Filter-Pills, Zeilen ohne Linien, Fehlerzeile mit rotem Hauch.
 
