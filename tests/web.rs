@@ -249,6 +249,24 @@ fn dashboard_cards_follow_the_colour_budget() {
 }
 
 #[test]
+fn dashboard_tracks_are_line_free_rows() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let js = get("/app.js").body;
+    assert!(js.contains("track-row__mini") && js.contains("class: \"runrow\""));
+    let css = get("/style.css").body;
+    assert!(
+        css.contains(".track-row:nth-child(even)"),
+        "tonal zebra, not lines"
+    );
+    assert!(!css.contains("border-left: 3px"), "no stripe on track rows");
+    assert!(
+        !css.contains(".track-row:first-child { border-top"),
+        "no border-top on track rows"
+    );
+}
+
+#[test]
 fn dashboard_assets_know_tracks() {
     let s = Server::start();
     let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");

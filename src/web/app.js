@@ -420,20 +420,27 @@ function tracksView() {
     },
       h("div", { class: "track-row__name" },
         priorityChip(row.priority),
-        h("b", { class: row.name ? "" : "muted" }, row.name || "no track"),
-        row.description ? h("span", { class: "muted swim__desc" }, row.description) : null),
+        h("h3", { class: `track-row__title${row.name ? "" : " muted"}` }, row.name || "no track"),
+        row.description ? h("div", { class: "track-row__desc" }, row.description) : null),
       h("div", { class: "track-row__bar" },
         bar,
-        h("div", { class: "track-row__counts" },
-          BAR_SEGMENTS.map(([status, name]) => `${count(status)} ${name}`).join(" · "))),
+        h("div", { class: "track-row__mini" },
+          BAR_SEGMENTS.map(([status, name]) => {
+            const n = count(status);
+            return h("span", { class: n ? "" : "is-zero" }, h("b", {}, n), ` ${name}`);
+          }))),
       h("div", { class: "track-row__now" },
         flagged.map((w) => h("div", { class: "course-warning" }, `${w.role}: nothing running, ${w.ready} ready`)),
         running.map((t) => {
           const minutes = minutesLeft(t);
-          return h("div", { class: "track-run" }, `▶ ${t.id} ${t.title}`, t.claimed_by ? ` · ${t.claimed_by}` : "", minutes !== null ? ` · ${minutes} min` : "");
+          return h("div", { class: "runrow" },
+            h("span", { class: "pulse live", "aria-hidden": "true" }),
+            h("span", { class: "runrow__id" }, t.id),
+            h("span", { class: "runrow__title" }, t.title),
+            h("span", { class: "runrow__meta" }, [t.claimed_by, minutes !== null ? `${minutes} min` : null].filter(Boolean).join(" · ")));
         }),
-        !running.length && !flagged.length ? h("div", { class: "muted" }, own.length ? "idle" : "no tasks") : null,
-        lastDone ? h("div", { class: "muted track-last" }, `last done: ${lastDone.id} ${lastDone.title}`) : null));
+        !running.length && !flagged.length ? h("div", { class: "track-row__idle" }, own.length ? "idle" : "no tasks") : null,
+        lastDone ? h("div", { class: "track-last" }, "last done ", h("b", {}, lastDone.id), ` ${lastDone.title}`) : null));
   }));
 }
 
