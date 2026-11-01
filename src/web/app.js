@@ -50,7 +50,8 @@ const state = {
   // Activity tab: `key` is the entries path last requested; `entries` stays
   // null until the first answer. `session`, `filter` and `problem` are the
   // logbook filters (a problem key overrides the others).
-  activity: { key: null, entries: null, problems: [], sessions: [], session: null, filter: "all", problem: null },
+  // `extra`: the unfiltered newest calls, loaded for the "failures & problems" view.
+  activity: { key: null, entries: null, extra: [], problems: [], sessions: [], session: null, filter: "all", problem: null },
 };
 
 // ─── Token & API ─────────────────────────────────────────────────────
@@ -133,13 +134,16 @@ function scheduleActivityReload() {
 async function loadActivity() {
   const path = activityPath();
   state.activity.key = path;
-  const [entries, problems, sessions] = await Promise.all([
+  // The failures view also shows the successful calls behind problems.
+  const extraPath = state.activity.filter === "problems" && !selectedProblem() ? activityPath(false) : null;
+  const [entries, problems, sessions, extra] = await Promise.all([
     api("GET", path),
     api("GET", "/api/activity/problems"),
     api("GET", "/api/activity/sessions"),
+    extraPath ? api("GET", extraPath) : [],
   ]);
   if (state.activity.key !== path) return;
-  Object.assign(state.activity, { entries, problems, sessions });
+  Object.assign(state.activity, { entries, problems, sessions, extra });
   if (state.tab === "activity") render();
 }
 
@@ -459,6 +463,12 @@ function groupByDay(entries, now) {
   return groups;
 }
 
+// Two entry lists as one, without duplicates, newest first.
+function mergeEntries(a, b) {
+  const byId = new Map([...a, ...b].map((e) => [e.id, e]));
+  return [...byId.values()].sort((x, y) => y.at - x.at || y.id - x.id);
+}
+
 // Session bar chips: [{ session, role, calls: [[channel, n]] (non-zero only), ago }].
 function sessionChips(sessions, now) {
   return sessions.map((s) => ({
@@ -524,7 +534,7 @@ function selectedProblem() {
 
 // A selected problem loads its own entries; otherwise session, role, channel,
 // writes and failures filter on the server.
-function activityPath() {
+function activityPath(failuresOnly = true) {
   const a = state.activity;
   const q = new URLSearchParams();
   const problem = selectedProblem();
@@ -537,7 +547,7 @@ function activityPath() {
     if (state.role) q.set("role", state.role);
     if (CHANNELS.includes(a.filter)) q.set("channel", a.filter);
     if (a.filter === "writes") q.set("writes", "true");
-    if (a.filter === "problems") q.set("failures", "true");
+    if (a.filter === "problems" && failuresOnly) q.set("failures", "true");
   }
   return `/api/activity?${q}`;
 }
@@ -668,7 +678,8 @@ function logbook(problems, selected, t) {
     const ids = new Set(selected.entry_ids);
     entries = a.entries.filter((e) => ids.has(e.id));
   } else {
-    entries = a.entries.filter(roleVisible);
+    entries = a.filter === "problems" ? mergeEntries(a.entries, a.extra.filter((e) => marks.has(e.id))) : a.entries;
+    entries = entries.filter(roleVisible);
   }
   const pills = h("div", { class: "filters", role: "group", "aria-label": "Logbook filter" },
     LOG_FILTERS.map(([id, name]) => h("button", {
