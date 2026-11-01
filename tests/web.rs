@@ -285,6 +285,30 @@ fn dashboard_activity_is_line_free() {
 }
 
 #[test]
+fn dashboard_matrix_is_sticky_and_neutral() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let css = get("/style.css").body;
+    assert!(
+        css.contains(".matrix thead th { position: sticky"),
+        "sticky column heads"
+    );
+    assert!(
+        css.contains(".matrix tbody th { position: sticky"),
+        "sticky row heads"
+    );
+    assert!(
+        css.contains(".matrix td.hit.occupied { background: rgba(255, 77, 77"),
+        "red only for a running holder"
+    );
+    let js = get("/app.js").body;
+    assert!(
+        js.contains("count is-hot"),
+        "file count red only with a running holder"
+    );
+}
+
+#[test]
 fn dashboard_assets_know_tracks() {
     let s = Server::start();
     let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");

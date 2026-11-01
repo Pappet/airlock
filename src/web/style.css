@@ -436,10 +436,11 @@ main { min-width: 0; padding: var(--space-6) var(--space-8) var(--space-8); }
 .selection .ok { color: var(--primary); }
 
 /* ─── File matrix ────────────────────────────────────────────────── */
-.matrix-wrap { overflow-x: auto; border-radius: var(--radius-md); background: var(--surface-container-low); padding: var(--space-3); }
+.matrix-wrap { max-height: 70vh; overflow: auto; border-radius: var(--radius-md); background: var(--surface-container-low); }
 table.matrix { border-collapse: separate; border-spacing: 2px; font-family: var(--font-mono); font-size: 0.75rem; }
 .matrix th { font-weight: 500; color: var(--on-surface-variant); }
-.matrix thead th { vertical-align: bottom; padding: var(--space-1); }
+.matrix thead th { position: sticky; top: 0; z-index: 2; vertical-align: bottom; padding: var(--space-3) var(--space-1) var(--space-1); background: var(--surface-container-low); }
+.matrix thead th:first-child { left: 0; z-index: 3; }
 .matrix thead th button {
   writing-mode: vertical-rl;
   transform: rotate(180deg);
@@ -451,13 +452,15 @@ table.matrix { border-collapse: separate; border-spacing: 2px; font-family: var(
   cursor: pointer;
 }
 .matrix thead th button:hover { color: var(--on-surface); }
-.matrix tbody th { text-align: left; padding: var(--space-1) var(--space-3) var(--space-1) 0; white-space: nowrap; }
-.matrix tbody th .count { color: var(--error); margin-left: var(--space-2); }
+.matrix tbody th { position: sticky; left: 0; z-index: 1; text-align: left; padding: var(--space-1) var(--space-3) var(--space-1) var(--space-3); white-space: nowrap; background: var(--surface-container-low); }
+.matrix tbody th .count { margin-left: var(--space-2); color: var(--on-surface-variant); }
+.matrix tbody th .count.is-hot { color: var(--error); }
 .matrix td { width: 26px; height: 24px; text-align: center; border-radius: var(--radius-sm); background: var(--surface-container); }
-.matrix td.hit { background: rgba(255, 77, 77, 0.22); color: var(--error); }
-.matrix td.hit.occupied { background: rgba(166, 255, 0, 0.2); color: var(--primary); }
+.matrix td.hit { background: var(--surface-container-high); color: var(--on-surface-variant); }
+.matrix td.hit.occupied { background: rgba(255, 77, 77, 0.22); color: var(--error); }
 .matrix tr:hover td, .matrix td.col-hover { outline: 1px solid var(--ghost-border); filter: brightness(1.35); }
-.legend { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: var(--space-3) 0; font-size: 0.8125rem; }
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0 0 var(--space-3); font-size: 0.8125rem; }
+.legend__hot { color: var(--error); }
 
 /* ─── Lists (review, questions, leases) ──────────────────────────── */
 .list { display: grid; gap: var(--space-3); max-width: 960px; }

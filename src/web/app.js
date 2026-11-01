@@ -898,7 +898,7 @@ function filesView() {
           onmouseleave: () => hoverColumn(table, col, false),
         }, running.has(id) ? `▶ ${id}` : id))))),
     h("tbody", {}, files.map((f) => h("tr", {},
-      h("th", { scope: "row" }, f.path, h("span", { class: "count" }, `⚠ ${f.tasks.length}`)),
+      h("th", { scope: "row" }, f.path, h("span", { class: f.occupied_by.length ? "count is-hot" : "count" }, f.tasks.length)),
       columns.map((id) => {
         const hit = f.tasks.includes(id);
         const occupied = f.occupied_by.includes(id);
@@ -910,8 +910,8 @@ function filesView() {
   return h("div", {},
     h("div", { class: "legend muted" },
       h("span", {}, "● open task touches the file"),
-      h("span", {}, "▶ running task holds the file"),
-      h("span", {}, "⚠ n = open tasks sharing the file"),
+      h("span", { class: "legend__hot" }, "▶ running task holds the file"),
+      h("span", {}, "n open tasks share the file"),
       h("span", {}, "All roles")),
     h("div", { class: "matrix-wrap" }, table),
     noTouch);
