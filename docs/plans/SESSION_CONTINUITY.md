@@ -1,16 +1,23 @@
 # Work Orders: Session Continuity (Phase 3c) and Follow-ups
 
-Six self-contained work orders, each sized for one agent session, in Airlock's own
+Self-contained work orders, each sized for one agent session, in Airlock's own
 *Read / Touch / Do / Verify* form. They come out of a review of the codebase at
 commit `ac1a4e9` against the problem that started Airlock: a Claude Code session
 runs out of context, a new one is opened, and the new one has to be told again who
 it is, which worktree it works in, and where the old one stopped.
 
+**Updated 1 Nov 2026** to the state after PR #14 (tracks and the fixed priority scale,
+store schema 4) and PR #17 (activity log, process registry, answer corrections, store
+schema 5). WO-3 (session instance presence) was dropped; see its section. The numbering
+of the other orders is unchanged.
+
 What already exists and is **not** to be rebuilt: worktree bindings as the durable
 agent identity (`bindings` table, Spec 06 §2), the stable session id
 `<role>@<directory>`, the briefing with claimed work first (`src/briefing.rs`), and
-its three deliveries (`airlock start`, MCP `session_start`, MCP prompt `start`).
-The orders close the gaps around them.
+its three deliveries (`airlock start`, MCP `session_start`, MCP prompt `start`),
+the activity log with its process registry (`src/activity.rs`, Spec 01 §3.5: every call
+from every channel, live `airlock mcp` / `serve` processes with their build), and the
+"Answer changed" section of the briefing. The orders close the gaps around them.
 
 ## Rules for every order
 
@@ -23,6 +30,9 @@ The orders close the gaps around them.
   unless an order says so.
 - Commit prefixes as in the history: `feat:`, `fix:`, `test:`, `docs:`.
 - Airlock never executes a task's `verify`; nothing in these orders changes that.
+- Every new command, tool, or field goes through the existing activity-log path
+  (`src/activity.rs` `summarize_cli` / `summarize_json`). Free text (notes, progress, answers)
+  is recorded as a field name only, never as its value (activity-log anti-goal, Spec 01 §3.5).
 - Session ids stay self-declared. No order adds authentication or OS-level isolation
   (Spec 05 §4.2). Where an order adds a check, it is a guardrail for cooperating
   agents and is documented as such.
@@ -32,14 +42,13 @@ The orders close the gaps around them.
 | Order | Depends on | Schema |
 |---|---|---|
 | WO-1 SessionStart hook | — | — |
-| WO-2 Progress notes on a lease | — | migration 4 |
-| WO-3 Session instance presence | — | migration 5 (or 4 if it lands before WO-2) |
-| WO-4 Restart validation | WO-1, WO-2 (WO-3 for the duplicate-tab check) | — |
+| WO-2 Progress notes on a lease | — | migration 6 (the store is at 5) |
+| ~~WO-3 Session instance presence~~ | dropped | — |
+| WO-4 Restart validation | WO-1, WO-2 | — |
 | WO-5 Directory entries in `touch` | — | — |
 | WO-6 Documentation housekeeping | — (last, so it records the final state) | — |
 
-WO-1, WO-2, WO-5, and WO-6 can run in parallel. WO-2 and WO-3 both add a migration;
-whichever merges second renumbers its migration constant.
+Order of work: WO-1, WO-2, WO-5, WO-4, WO-6, one pull request each.
 
 ---
 
@@ -54,13 +63,16 @@ the role, rules, held task, and progress survive even without opening a new tab.
 
 **Read.**
 - `docs/spec/06_onboarding.md` §3.2 (Delivery), §5 (doctor), §6 (setup)
-- `src/setup.rs` (whole file; note how `from_binding`, `local_args`, and the
-  stdout/stderr split work)
+- `src/setup.rs` (whole file; note how the binding supplies role and session, how
+  `--role` adds local arguments, and the stdout/stderr split)
 - `src/doctor.rs` `check_harnesses` and `collect` (how `.mcp.json` entries are
   checked today)
 - `docs/walkthroughs/agent-validation.md` Run 1 problem 1 (bare command names and
   `PATH`) and Run 2 problem 4 (mixed stdout)
 - `docs/walkthroughs/quickstart.md` §4 "Connecting an AI agent over MCP"
+- `src/activity.rs` (how a CLI call is logged; `agent_from_env` recognises the
+  Claude Code shell) and `src/briefing.rs` (how "Answer changed" uses the previous
+  logged briefing)
 - Claude Code hooks reference: SessionStart event, matchers `startup`, `resume`,
   `clear`, `compact`; hook stdout becomes context; settings files
   `.claude/settings.json` (committed) and `.claude/settings.local.json` (per
@@ -115,6 +127,9 @@ the role, rules, held task, and progress survive even without opening a new tab.
    its first bullet (the hook does not exist for other harnesses).
 6. Spec 06: §3.2 gains the hook as a fourth delivery; §6 gains `claude-hooks`; §5
    gains the hook checks. Spec 02's command table gets the new harness value.
+7. The hook's `airlock start` is an ordinary CLI call: it is logged as `start` from an
+   agent shell and counts as a briefing for "Answer changed". That is intended (the
+   briefing text reaches the model's context each time); say so in Spec 06 §3.2.
 
 **Verify.**
 - `tests/onboarding.rs`: extend `setup_prints_harness_configurations` or add
@@ -140,27 +155,30 @@ the role, rules, held task, and progress survive even without opening a new tab.
 (`src/store.rs`, `set_state` callers). A session that is about to lose its context
 has no place to leave "done so far / remaining / next step" for its successor. The
 briefing of the successor shows the work package, but not where the predecessor
-stopped. ChatGPT's claim that notes cover this is wrong.
+stopped.
 
 **Read.**
-- `docs/spec/01_architecture_and_data_model.md` §2.1 (Task, lifecycle table, leases §2.4)
+- `docs/spec/01_architecture_and_data_model.md` §2.1 (Task, lifecycle table, leases §2.4),
+  §3.5 (activity log: what `changed` may carry)
 - `docs/spec/02_cli_interface.md` `task heartbeat`, `task show`
 - `docs/spec/03_mcp_protocol.md` §3.2 `task_get`, §3.4 `task_heartbeat`
 - `docs/spec/05_git_sync_and_airlock.md` §3.2 (session state is not exported)
 - `docs/spec/06_onboarding.md` §3.1 (briefing content)
-- `src/store.rs`: `MIGRATIONS`, `SCHEMA_V3`, `SELECT_TASKS`, `heartbeat`,
+- `src/store.rs`: `MIGRATIONS` (the store is at schema 5), `SELECT_TASKS`, `heartbeat`,
   `release`, `complete`, `set_state`, `task_from_row`, `released_if_expired`
 - `src/core.rs` `Task`; `src/briefing.rs` `WorkPackage`, `ClaimedTask`, `package`
 - `src/snapshot.rs` (which task fields are exported) and `tests/snapshot.rs`
 - `src/web/app.js` task detail rendering
+- `src/activity.rs` `summarize_cli` / `summarize_json` (keys of free-text fields)
 
 **Touch.** `src/store.rs`, `src/core.rs`, `src/cli.rs`, `src/app.rs`, `src/mcp.rs`,
-`src/briefing.rs`, `src/web/app.js`, `tests/store.rs`, `tests/e2e.rs`,
-`tests/mcp.rs`, `tests/onboarding.rs`, `docs/spec/01…`, `02…`, `03…`, `05…`, `06…`,
+`src/briefing.rs`, `src/activity.rs` (only if `notes` is not already a key-only field),
+`src/web/app.js`, `tests/store.rs`, `tests/e2e.rs`,
+`tests/mcp.rs`, `tests/onboarding.rs`, `tests/activity.rs`, `docs/spec/01…`, `02…`, `03…`, `05…`, `06…`,
 `docs/walkthroughs/quickstart.md` (CLAUDE.md section, one bullet).
 
 **Do.**
-1. Migration 4: `ALTER TABLE tasks ADD COLUMN progress TEXT;` Add `progress:
+1. Migration 6: `ALTER TABLE tasks ADD COLUMN progress TEXT;` Add `progress:
    Option<String>` to `Task`, `SELECT_TASKS`, and `task_from_row`.
 2. Semantics (write them into Spec 01 §2.1 as a short subsection "Progress"):
    - `progress` is **session state** like `claimed_by`: the lease holder's running
@@ -191,6 +209,8 @@ stopped. ChatGPT's claim that notes cover this is wrong.
      alive" bullet with the progress note.
 4. No new MCP tool. `task_heartbeat` with notes is enough and keeps the clean-room
    tool count unchanged.
+5. Activity log: a heartbeat with notes records `changed: notes` (the key), never the
+   text. The progress text is analysis-side material like any note.
 
 **Verify.**
 - `tests/store.rs`: `heartbeat_records_progress_and_complete_clears_it` (heartbeat
@@ -206,78 +226,20 @@ stopped. ChatGPT's claim that notes cover this is wrong.
   progress" to the next session.
 - `tests/mcp.rs` `unbound_session_runs_the_full_workflow`: `task_heartbeat` with
   `notes`, then `task_get` returns `progress`; `task_complete` clears it.
+- `tests/activity.rs`: a heartbeat with notes (CLI and MCP) logs `notes` in `changed`
+  and the log holds no part of the note text.
 - `cargo test`, clippy, fmt green.
 
 ---
 
-## WO-3: Session instance presence
+## WO-3: Session instance presence — dropped
 
-**Why.** Two Claude Code tabs in the same worktree are both
-`engine@openshr-engine`. For a restart that is wanted: the new tab inherits the
-lease. But when the old tab is still open and working, Airlock cannot tell, and
-both act under one identity. This order makes the situation **visible**; it does
-not fence anyone out.
-
-**Read.**
-- `docs/spec/06_onboarding.md` §2.3, §3.1, §5
-- `docs/spec/03_mcp_protocol.md` §2 (Server Binding)
-- `src/app.rs` around line 71 (where `mcp-<8 hex>` is generated), `src/mcp.rs`
-  `Server::new`, `tools_call`, `briefing`
-- `src/store.rs` `MIGRATIONS`, `write`, `bindings`/`bind` (a small table with its
-  own accessors, as a pattern)
-- `src/briefing.rs` `Briefing`, `OtherClaim`, `markdown`
-- `src/doctor.rs` `check_bindings`
-
-**Touch.** `src/store.rs`, `src/mcp.rs`, `src/app.rs`, `src/briefing.rs`,
-`src/doctor.rs`, `tests/store.rs`, `tests/mcp.rs`, `tests/onboarding.rs`,
-`docs/spec/06_onboarding.md` (new §2.5), `docs/spec/03_mcp_protocol.md` §2.
-
-**Do.**
-1. Migration 5:
-   ```sql
-   CREATE TABLE instances (
-       session    TEXT NOT NULL,
-       instance   TEXT NOT NULL,
-       started_at INTEGER NOT NULL,
-       last_seen  INTEGER NOT NULL,
-       PRIMARY KEY (session, instance)
-   ) STRICT;
-   ```
-   Store API: `register_instance(session, instance, now)`,
-   `touch_instance(session, instance, now)`, `instances(session) -> Vec<Instance>`.
-   Every `write` transaction also deletes rows with `last_seen` older than 24 h, so
-   the table never grows.
-2. Only the **MCP server** registers: it is the long-lived process. It generates an
-   instance id `mcp-<8 hex>` at startup (independent of the session id, which may
-   come from the binding), registers it, and touches it on every `tools/call` and
-   `prompts/get`. CLI invocations are one-shot and do not register.
-3. Briefing: new field `other_instances: Vec<Instance>` — instances of the **same
-   session**, other than the caller's (the CLI passes `None` and sees all), with
-   `last_seen` within the project's `lease_minutes`. Markdown, right under the
-   header line, only when non-empty:
-   > **Another instance of this session was active 3 min ago** (`mcp-ab12cd34`).
-   > If that is a tab you left open, close it: Airlock cannot tell your actions
-   > apart. If it was the session you are replacing, continue.
-4. `airlock doctor`: under Bindings, warn for every session with two or more
-   instances seen within `lease_minutes`.
-5. Spec 06 §2.5 "Session instances": the table, who registers, what the briefing
-   and doctor show, and this sentence: "Airlock does not refuse a stale instance;
-   fencing (refusing writes from an instance that was superseded) is a possible
-   later opt-in and would still not replace OS-level isolation (Spec 05 §4.2)."
-   Spec 03 §2: the server registers an instance at startup.
-
-**Verify.**
-- `tests/store.rs`: `instances_are_registered_touched_and_pruned`.
-- `tests/mcp.rs`: `a_second_instance_of_the_same_session_is_reported`: two servers
-  started with the same `--session` (sequentially in the test; the first one's
-  process is kept alive or its `last_seen` is recent): the second's `session_start`
-  Markdown contains "Another instance of this session"; a server with a different
-  session does not see it; after `last_seen` is older than the lease window (use a
-  project with `lease_minutes` small, or set `last_seen` directly through the
-  store in the test), the warning disappears.
-- `tests/onboarding.rs`: doctor warns for a session with two live instances.
-- Clean-room tool set unchanged (count still 9 in the existing test).
-- `cargo test`, clippy, fmt green.
+Dropped on 1 Nov 2026 by the user's decision. Several harness instances sharing one
+session id are normal on OpenSHR (the `lead-1` sessions are leads watching different
+aspects), so a briefing warning about "another instance of this session" would fire
+in everyday use. The process registry from PR #17 already shows every live
+`airlock mcp` with its session in the Activity tab, which covers the visibility part.
+Fencing stays out of scope (see "Explicitly not ordered").
 
 ---
 
@@ -295,7 +257,8 @@ that the *same* session, in a new process, finds its own claim.
   `tests/common/mod.rs` fixtures
 - `tests/mcp.rs` `unbound_session_runs_the_full_workflow`
 - `tests/onboarding.rs` `mcp_takes_role_and_session_from_the_binding`
-- WO-1, WO-2, WO-3 as merged
+- WO-1, WO-2 as merged
+- `airlock activity` (evidence for the run comes from the log, not from transcripts)
 
 **Touch.** `tests/e2e.rs`, `tests/mcp.rs`, `docs/walkthroughs/agent-validation.md`,
 `docs/plans/PHASE_PLAN.md` (tick the validation items that pass).
@@ -313,7 +276,7 @@ that the *same* session, in a new process, finds its own claim.
    worktree calls `session_start`: the Markdown names the task under "Your claimed
    work" with the progress line; `task_complete` from B succeeds.
 3. Real run on OpenSHR, Claude Code, engine worktree, with WO-1's hook installed.
-   Record it as "Run 3" in the walkthrough with the existing headings
+   Record it as "Run 4" in the walkthrough with the existing headings
    (**Observed**, **Problems**, **Agent behavior**, **Setup fix**, **Changes in
    Airlock**). Steps:
    1. Engine session claims a task via MCP and works for a while; it records
@@ -324,13 +287,12 @@ that the *same* session, in a new process, finds its own claim.
       progress note; the agent continues without a new claim.
    4. Run `/compact` mid-task. Expected: the briefing is present again after
       compaction and the agent still knows its task.
-   5. Open a **second** tab while the first is still running. Expected: the
-      second tab's briefing carries the "Another instance" warning (WO-3) and the
-      agent asks the user instead of working.
+   5. Take the evidence from `airlock activity --session engine-1 --since <run start>`
+      (the `start` calls from the hook, the heartbeats with `notes`, no second claim).
    Fill the Scenario D cell for Claude Code with ✅ or ⚠ plus the run reference.
    While at it, fill Scenario B (work cycle) from the same run; it is exercised
    on the way.
-4. Every problem found goes into a `fix/validation-run-3` branch as in Runs 1–2,
+4. Every problem found goes into a `fix/validation-run-4` branch as in Runs 1–2,
    with the fix listed under "Changes in Airlock".
 
 **Verify.**
@@ -406,13 +368,15 @@ Scenario A, `Cargo.toml`, `src/mcp.rs` `tool_definitions`.
 **Do.**
 1. `PROJECT_OVERVIEW.md`:
    - Delete "Planned: `axum` and `rust-embed` (Phase 4)." Add rows for `axum`
-     (0.8, dashboard REST/SSE), `tokio` (runtime for `serve` only), `getrandom`
-     (dashboard token), `futures-util` (SSE stream) with the same column style.
-     `rust-embed` is not used; assets are `include_str!`.
-   - Project Stats "Status": Phases 1–4 implemented; open: agent validation
-     (Phase 3b) and Phase 3c Session Continuity (link this document).
+     (0.8, dashboard REST/SSE), `tokio` (runtime for `serve`; signals for its shutdown),
+     `getrandom` (dashboard token), `futures-util` (SSE stream) with the same column
+     style. `rust-embed` is not used; assets are `include_str!`.
+   - Project Stats "Status": Phases 1–4 implemented, plus tracks and the activity log;
+     open: agent validation (Phase 3b) and Phase 3c Session Continuity (link this
+     document).
    - Check the Source Files list against `src/` and `tests/` (add anything missing,
-     e.g. confirm `src/web/` assets are mentioned).
+     e.g. `src/activity.rs`, `src/problems.rs`, `tests/activity.rs`,
+     `tests/activity_cli.rs`, `tests/problems.rs`, and the `src/web/` assets).
 2. `README.md` status line: "Phase 4 done; Phase 3c (session continuity) and the
    agent validation in progress", with the links.
 3. `docs/plans/PHASE_PLAN.md`: Phase 3b is no longer "(Current)"; mark it
@@ -422,15 +386,16 @@ Scenario A, `Cargo.toml`, `src/mcp.rs` `tool_definitions`.
    with a bound worktree `args: ["mcp"]` suffices (Spec 06 §2.3) and the example
    shows the explicit form.
 5. `docs/walkthroughs/agent-validation.md` Scenario A: the tool counts are
-   "9 clean-room, 14 otherwise" (`task_update` was added after the table was
-   written; `src/mcp.rs` defines 14 tools).
+   "9 clean-room, 18 otherwise" (`task_update` and the four `track_*` tools were
+   added after the table was written; count the tools in `src/mcp.rs`
+   `tool_definitions` again when doing this order).
 6. Do not touch `docs/superpowers/`: those are historical design records.
 
 **Verify.**
 - `grep -n "rust-embed\|Planned:" PROJECT_OVERVIEW.md` finds nothing.
 - Every dependency in `Cargo.toml` `[dependencies]` has a row in the overview table.
-- `grep -c '"name": "' src/mcp.rs` (or counting `tool(` calls in
-  `tool_definitions`) matches the number written in the walkthrough.
+- The number of tools in `src/mcp.rs` `tool_definitions` matches the number written
+  in the walkthrough.
 - Links in the changed files resolve (`docs/plans/SESSION_CONTINUITY.md` exists).
 - `cargo test` still green (doc-only change; CI runs anyway).
 
@@ -438,11 +403,11 @@ Scenario A, `Cargo.toml`, `src/mcp.rs` `tool_definitions`.
 
 ## Explicitly not ordered
 
-These were discussed and are deliberately left out until WO-1 to WO-4 have proven
+These were discussed and are deliberately left out until WO-1, WO-2 and WO-4 have proven
 themselves on OpenSHR:
 
-- Fencing of superseded instances (refusing their writes). WO-3 makes duplicates
-  visible first.
+- Session instance warnings and fencing of superseded instances (refusing their
+  writes). WO-3 was dropped; the process registry shows live instances.
 - Event notifications to agents (MCP notifications, a resident daemon). SSE exists
   for the dashboard; agents poll through the briefing.
 - Agent lifecycle management (starting and stopping harnesses from Airlock),
