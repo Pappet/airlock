@@ -105,7 +105,8 @@ pub enum Via {
 
 /// `previous_briefing` is when the session last got a briefing (unix
 /// seconds); answers corrected at or after it are reported as changed (times
-/// are whole seconds, so a same-second correction is shown rather than lost). `None` means
+/// are whole seconds, so a same-second correction is shown rather than lost;
+/// the price is that it may be shown again in the next briefing). `None` means
 /// no earlier briefing is known, so every correction counts.
 pub fn build(
     store: &Store,

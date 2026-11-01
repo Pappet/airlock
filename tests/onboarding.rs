@@ -942,3 +942,42 @@ fn corrected_answer_still_unresolved_is_marked_not_repeated() {
     assert_eq!(brief["corrected_answers"], json!([]));
     assert_eq!(brief["answered_questions"][0]["id"], 1);
 }
+
+#[test]
+fn a_correction_in_the_second_of_the_previous_briefing_is_shown() {
+    use airlock::briefing;
+    use airlock::config::ProjectConfig;
+    use airlock::hub::Project;
+    use airlock::store::Store;
+
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("airlock.db");
+    let mut store = Store::open(&database).unwrap();
+    store.ask("melee.md", "Arc?", "engine-1", 1_000).unwrap();
+    store.answer(1, "Rounded.", "lead", None, 1_001).unwrap();
+    store.resolve(1, None, 1_002).unwrap();
+    store.answer(1, "Truncated.", "lead", None, 1_003).unwrap();
+    let corrected_at = store.question(1).unwrap().corrected_at.unwrap();
+    assert_eq!(corrected_at, 1_003);
+
+    let project = Project {
+        id: "p".into(),
+        config: ProjectConfig::default(),
+        root: None,
+        database,
+        binding: None,
+    };
+    let build =
+        |previous| briefing::build(&store, &project, "engine-1", None, previous, 2_000).unwrap();
+    // The previous briefing happened in the very second of the correction.
+    let same_second = build(Some(corrected_at));
+    assert_eq!(same_second.corrected_answers.len(), 1);
+    assert!(
+        same_second
+            .markdown(briefing::Via::Cli)
+            .contains("## Answer changed")
+    );
+    // One second later it was already seen; a first briefing shows everything.
+    assert!(build(Some(corrected_at + 1)).corrected_answers.is_empty());
+    assert_eq!(build(None).corrected_answers.len(), 1);
+}
