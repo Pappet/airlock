@@ -595,10 +595,9 @@ function problemText(p) {
 function problemRow(p, selected, t) {
   const severe = SEVERE.has(p.kind);
   const content = [
-    h("span", { class: `act-icon ${severe ? "bad" : "warn"}`, "aria-hidden": "true" }, severe ? "✖" : "⚠"),
-    " ",
-    problemText(p),
-    h("span", { class: "muted" }, p.count > 1 ? ` · ${p.count}×` : "", ` · ${when(p.last_at, t)}`),
+    h("span", { class: `act-glyph ${severe ? "bad" : "warn"}`, "aria-hidden": "true" }, severe ? "✕" : "▲"),
+    h("span", { class: "act-problem__text" }, problemText(p), p.count > 1 ? h("span", { class: "muted" }, ` · ${p.count}×`) : null),
+    h("span", { class: "act-when" }, when(p.last_at, t)),
   ];
   if (!p.entry_ids.length) return h("div", { class: "act-problem" }, content);
   const key = problemKey(p);
@@ -615,27 +614,24 @@ function problemRow(p, selected, t) {
 }
 
 function problemsPanel(problems, selected, t) {
-  return h("section", { class: `act-panel${problems.length ? " is-bad" : ""}` },
-    h("div", { class: "label" }, problems.length ? `Problems · ${problems.length}` : "Problems"),
+  return h("section", { class: "act-panel" },
+    h("div", { class: `label${problems.length ? " is-bad" : ""}` }, problems.length ? `Needs attention · ${problems.length}` : "Needs attention"),
     problems.length
       ? problems.map((p) => problemRow(p, selected, t))
-      : h("div", { class: "muted" }, "No problems in the last 30 days."));
+      : h("div", { class: "act-dim" }, "No problems in the last 30 days."));
 }
 
+// Prerequisites grouped by (role, holder): [{ ids, role, holder }], for the
+// "waiting on" and "who" cells of a blocker row.
 function waitingOn(list) {
   const byHolder = new Map();
   for (const w of list) {
     const key = JSON.stringify([w.role, w.holder]);
     byHolder.set(key, [...(byHolder.get(key) || []), w.id]);
   }
-  return [...byHolder].map(([key, ids], i) => {
+  return [...byHolder].map(([key, ids]) => {
     const [role, holder] = JSON.parse(key);
-    return [
-      i ? "; " : "",
-      ids.join(", "),
-      h("span", { class: "muted" }, ` · ${role ?? "unknown task"}, `),
-      holder ? h("span", { class: "act-session" }, holder) : h("span", { class: "act-nobody" }, "nobody on it"),
-    ];
+    return { ids, role, holder };
   });
 }
 
@@ -645,23 +641,30 @@ function statePanel() {
     .sort((a, b) => (a.claimed_by < b.claimed_by ? -1 : a.claimed_by > b.claimed_by ? 1 : 0));
   const blocked = blockers(state.tasks, state.role);
   const idLink = (id) => h("button", { type: "button", class: "link", onclick: () => openDetail(id) }, id);
+  // `nobody on it` is only a warning when an important track waits.
+  const hot = (g) => g.blocked.some((id) => priorityRank(trackOf(taskById(id))?.priority ?? "normal") >= priorityRank("high"));
   return h("section", { class: "act-panel" },
-    h("div", { class: "label" }, "State"),
+    h("div", { class: "label" }, "Claimed"),
     claimed.length
       ? claimed.map((t) => {
           const minutes = minutesLeft(t);
           const lease = minutes === null ? "no lease" : minutes === 0 ? "lease expired" : `lease ${minutes} min`;
-          return h("div", {}, h("span", { class: "act-session" }, t.claimed_by), " ", idLink(t.id),
-            h("span", { class: "muted" }, ` ${t.track || "no track"} · ${lease}`));
+          return h("div", { class: "act-claim" }, h("span", { class: "act-session" }, t.claimed_by), idLink(t.id),
+            h("span", { class: "muted" }, `${t.track || "no track"} · ${lease}`));
         })
-      : h("div", { class: "muted" }, "Nothing claimed."),
-    h("div", { class: "label" }, "Blockers"),
+      : h("div", { class: "act-dim" }, "Nothing claimed."),
+    h("div", { class: "label" }, "Blocked · waiting on"),
     blocked.length
-      ? blocked.map((g) => h("div", {},
-          g.blocked.map((id, i) => [i ? ", " : "", idLink(id)]),
-          h("span", { class: "muted" }, " ← "),
-          waitingOn(g.waitingOn)))
-      : h("div", { class: "muted" }, "Nothing blocked."));
+      ? blocked.map((g, i) => {
+          const groups = waitingOn(g.waitingOn);
+          return h("div", { class: i % 2 ? "blk is-alt" : "blk" },
+            h("span", { class: "blk__a" }, g.blocked.map((id, j) => [j ? ", " : "", idLink(id)])),
+            h("span", { class: "blk__arr", "aria-hidden": "true" }, "←"),
+            h("span", { class: "blk__b" }, groups.map((w) => h("div", {}, `${w.ids.join(", ")} · ${w.role ?? "unknown task"}`))),
+            h("span", { class: "blk__who" }, groups.map((w) => h("div", {},
+              w.holder ? h("span", { class: "act-session" }, w.holder) : h("span", { class: `blk__nobody${hot(g) ? " is-hot" : ""}` }, "nobody on it")))));
+        })
+      : h("div", { class: "act-dim" }, "Nothing blocked."));
 }
 
 function sessionBar(t) {
