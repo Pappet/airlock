@@ -420,20 +420,27 @@ function tracksView() {
     },
       h("div", { class: "track-row__name" },
         priorityChip(row.priority),
-        h("b", { class: row.name ? "" : "muted" }, row.name || "no track"),
-        row.description ? h("span", { class: "muted swim__desc" }, row.description) : null),
+        h("h3", { class: `track-row__title${row.name ? "" : " muted"}` }, row.name || "no track"),
+        row.description ? h("div", { class: "track-row__desc" }, row.description) : null),
       h("div", { class: "track-row__bar" },
         bar,
-        h("div", { class: "track-row__counts" },
-          BAR_SEGMENTS.map(([status, name]) => `${count(status)} ${name}`).join(" · "))),
+        h("div", { class: "track-row__mini" },
+          BAR_SEGMENTS.map(([status, name]) => {
+            const n = count(status);
+            return h("span", { class: n ? "" : "is-zero" }, h("b", {}, n), ` ${name}`);
+          }))),
       h("div", { class: "track-row__now" },
         flagged.map((w) => h("div", { class: "course-warning" }, `${w.role}: nothing running, ${w.ready} ready`)),
         running.map((t) => {
           const minutes = minutesLeft(t);
-          return h("div", { class: "track-run" }, `▶ ${t.id} ${t.title}`, t.claimed_by ? ` · ${t.claimed_by}` : "", minutes !== null ? ` · ${minutes} min` : "");
+          return h("div", { class: "runrow" },
+            h("span", { class: "pulse live", "aria-hidden": "true" }),
+            h("span", { class: "runrow__id" }, t.id),
+            h("span", { class: "runrow__title" }, t.title),
+            h("span", { class: "runrow__meta" }, [t.claimed_by, minutes !== null ? `${minutes} min` : null].filter(Boolean).join(" · ")));
         }),
-        !running.length && !flagged.length ? h("div", { class: "muted" }, own.length ? "idle" : "no tasks") : null,
-        lastDone ? h("div", { class: "muted track-last" }, `last done: ${lastDone.id} ${lastDone.title}`) : null));
+        !running.length && !flagged.length ? h("div", { class: "track-row__idle" }, own.length ? "idle" : "no tasks") : null,
+        lastDone ? h("div", { class: "track-last" }, "last done ", h("b", {}, lastDone.id), ` ${lastDone.title}`) : null));
   }));
 }
 
@@ -492,12 +499,12 @@ function mergeEntries(a, b) {
   return [...byId.values()].sort((x, y) => y.at - x.at || y.id - x.id);
 }
 
-// Session bar chips: [{ session, role, calls: [[channel, n]] (non-zero only), ago }].
+// Session rows: [{ session, role, calls: [[channel, n]] (every channel, n may be 0), ago }].
 function sessionChips(sessions, now) {
   return sessions.map((s) => ({
     session: s.session,
     role: s.role,
-    calls: CHANNELS.filter((c) => s.calls[c] > 0).map((c) => [c, s.calls[c]]),
+    calls: CHANNELS.map((c) => [c, s.calls[c] || 0]),
     ago: ago(s.last_at, now),
   }));
 }
@@ -581,17 +588,24 @@ function channelBadge(channel) {
 
 function problemText(p) {
   const who = p.session && !p.message.includes(p.session) ? `${p.session} · ` : "";
-  if (p.kind !== "failure") return `${who}${p.message}`;
-  return `${who}${p.command || "call"}${p.target ? ` ${p.target}` : ""} → ${p.message}`;
+  return who + problemBody(p);
+}
+
+// The message without the session, which the row shows in its own colour.
+function problemBody(p) {
+  if (p.kind !== "failure") return p.message;
+  return `${p.command || "call"}${p.target ? ` ${p.target}` : ""} → ${p.message}`;
 }
 
 function problemRow(p, selected, t) {
   const severe = SEVERE.has(p.kind);
   const content = [
-    h("span", { class: `act-icon ${severe ? "bad" : "warn"}`, "aria-hidden": "true" }, severe ? "✖" : "⚠"),
-    " ",
-    problemText(p),
-    h("span", { class: "muted" }, p.count > 1 ? ` · ${p.count}×` : "", ` · ${when(p.last_at, t)}`),
+    h("span", { class: `act-glyph ${severe ? "bad" : "warn"}`, "aria-hidden": "true" }, severe ? "✕" : "▲"),
+    h("span", { class: "act-problem__text" },
+      p.session && !p.message.includes(p.session) ? [h("span", { class: "act-session" }, p.session), " · "] : null,
+      problemBody(p),
+      p.count > 1 ? h("span", { class: "muted" }, ` · ${p.count}×`) : null),
+    h("span", { class: "act-when" }, when(p.last_at, t)),
   ];
   if (!p.entry_ids.length) return h("div", { class: "act-problem" }, content);
   const key = problemKey(p);
@@ -608,27 +622,24 @@ function problemRow(p, selected, t) {
 }
 
 function problemsPanel(problems, selected, t) {
-  return h("section", { class: `act-panel${problems.length ? " is-bad" : ""}` },
-    h("div", { class: "label" }, problems.length ? `Problems · ${problems.length}` : "Problems"),
+  return h("section", { class: "act-panel" },
+    h("div", { class: `label${problems.length ? " is-bad" : ""}` }, problems.length ? `Needs attention · ${problems.length}` : "Needs attention"),
     problems.length
       ? problems.map((p) => problemRow(p, selected, t))
-      : h("div", { class: "muted" }, "No problems in the last 30 days."));
+      : h("div", { class: "act-dim" }, "No problems in the last 30 days."));
 }
 
+// Prerequisites grouped by (role, holder): [{ ids, role, holder }], for the
+// "waiting on" and "who" cells of a blocker row.
 function waitingOn(list) {
   const byHolder = new Map();
   for (const w of list) {
     const key = JSON.stringify([w.role, w.holder]);
     byHolder.set(key, [...(byHolder.get(key) || []), w.id]);
   }
-  return [...byHolder].map(([key, ids], i) => {
+  return [...byHolder].map(([key, ids]) => {
     const [role, holder] = JSON.parse(key);
-    return [
-      i ? "; " : "",
-      ids.join(", "),
-      h("span", { class: "muted" }, ` · ${role ?? "unknown task"}, `),
-      holder ? h("span", { class: "act-session" }, holder) : h("span", { class: "act-nobody" }, "nobody on it"),
-    ];
+    return { ids, role, holder };
   });
 }
 
@@ -638,30 +649,39 @@ function statePanel() {
     .sort((a, b) => (a.claimed_by < b.claimed_by ? -1 : a.claimed_by > b.claimed_by ? 1 : 0));
   const blocked = blockers(state.tasks, state.role);
   const idLink = (id) => h("button", { type: "button", class: "link", onclick: () => openDetail(id) }, id);
+  // `nobody on it` is only a warning when an important track waits.
+  const hot = (g) => g.blocked.some((id) => priorityRank(trackOf(taskById(id))?.priority ?? "normal") >= priorityRank("high"));
   return h("section", { class: "act-panel" },
-    h("div", { class: "label" }, "State"),
+    h("div", { class: "label" }, "Claimed"),
     claimed.length
       ? claimed.map((t) => {
           const minutes = minutesLeft(t);
           const lease = minutes === null ? "no lease" : minutes === 0 ? "lease expired" : `lease ${minutes} min`;
-          return h("div", {}, h("span", { class: "act-session" }, t.claimed_by), " ", idLink(t.id),
-            h("span", { class: "muted" }, ` ${t.track || "no track"} · ${lease}`));
+          return h("div", { class: "act-claim" }, h("span", { class: "act-session" }, t.claimed_by), idLink(t.id),
+            h("span", { class: "muted" }, `${t.track || "no track"} · ${lease}`));
         })
-      : h("div", { class: "muted" }, "Nothing claimed."),
-    h("div", { class: "label" }, "Blockers"),
+      : h("div", { class: "act-dim" }, "Nothing claimed."),
+    h("div", { class: "label" }, "Blocked · waiting on"),
     blocked.length
-      ? blocked.map((g) => h("div", {},
-          g.blocked.map((id, i) => [i ? ", " : "", idLink(id)]),
-          h("span", { class: "muted" }, " ← "),
-          waitingOn(g.waitingOn)))
-      : h("div", { class: "muted" }, "Nothing blocked."));
+      ? blocked.map((g, i) => {
+          const groups = waitingOn(g.waitingOn);
+          return h("div", { class: i % 2 ? "blk is-alt" : "blk" },
+            h("span", { class: "blk__a" }, g.blocked.map((id, j) => [j ? ", " : "", idLink(id)])),
+            h("span", { class: "blk__arr", "aria-hidden": "true" }, "←"),
+            h("span", { class: "blk__b" }, groups.map((w) => h("div", {}, `${w.ids.join(", ")} · ${w.role ?? "unknown task"}`))),
+            h("span", { class: "blk__who" }, groups.map((w) => h("div", {},
+              w.holder ? h("span", { class: "act-session" }, w.holder) : h("span", { class: `blk__nobody${hot(g) ? " is-hot" : ""}` }, "nobody on it")))));
+        })
+      : h("div", { class: "act-dim" }, "Nothing blocked."));
 }
 
 function sessionBar(t) {
   const a = state.activity;
   const pick = (session) => () => { a.session = session; a.problem = null; render(); };
+  // Aligned rows that double as the logbook's session filter (concept §3 Activity).
   return h("div", { class: "act-sessions", role: "group", "aria-label": "Sessions" },
-    h("button", { type: "button", class: "act-chip", "aria-pressed": String(!a.session), onclick: pick(null) }, h("b", {}, "all")),
+    h("div", { class: "label" }, "Sessions"),
+    h("button", { type: "button", class: "act-chip act-chip--all", "aria-pressed": String(!a.session), onclick: pick(null) }, h("b", {}, "all sessions")),
     sessionChips(a.sessions.filter(roleVisible), t).map((c) => h("button", {
       type: "button",
       class: "act-chip",
@@ -669,9 +689,9 @@ function sessionBar(t) {
       onclick: pick(a.session === c.session ? null : c.session),
     },
       h("b", {}, c.session),
-      c.role ? h("span", { class: "muted" }, c.role) : null,
-      c.calls.map(([channel, n]) => h("span", {}, channelBadge(channel), ` ${n}`)),
-      h("span", { class: "muted" }, c.ago))));
+      h("span", { class: "muted" }, c.role || "—"),
+      c.calls.map(([channel, n]) => n ? h("span", { class: `ch ch--${channel}` }, `${channel.toUpperCase()} ${n}`) : h("span", { class: "act-chip__none" }, "·")),
+      h("span", { class: "muted act-chip__ago" }, c.ago))));
 }
 
 function logRow(e, mark) {
