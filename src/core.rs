@@ -494,3 +494,104 @@ pub struct AnswerVersion {
     /// Spec file in which it was codified
     pub spec_file: Option<String>,
 }
+
+/// What happened, as recorded in a session's inbox (Spec 01 §2.6).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    /// A task became ready: created ready, unblocked, released, or rejected
+    TaskReady,
+    /// The priority, track, or work package of a ready task changed
+    TaskChanged,
+    /// A track's priority changed
+    TrackChanged,
+    /// A review sent the task back
+    TaskRejected,
+    /// A task waits for review
+    TaskInReview,
+    /// A question was asked
+    QuestionAsked,
+    /// A question was answered or its answer corrected
+    QuestionAnswered,
+}
+
+impl EventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TaskReady => "task_ready",
+            Self::TaskChanged => "task_changed",
+            Self::TrackChanged => "track_changed",
+            Self::TaskRejected => "task_rejected",
+            Self::TaskInReview => "task_in_review",
+            Self::QuestionAsked => "question_asked",
+            Self::QuestionAnswered => "question_answered",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        [
+            Self::TaskReady,
+            Self::TaskChanged,
+            Self::TrackChanged,
+            Self::TaskRejected,
+            Self::TaskInReview,
+            Self::QuestionAsked,
+            Self::QuestionAnswered,
+        ]
+        .into_iter()
+        .find(|k| k.as_str() == s)
+    }
+}
+
+/// What changed for a role since a session last looked.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Inbox {
+    /// Oldest first; one item per task, question, or track (its latest event)
+    pub items: Vec<InboxItem>,
+}
+
+/// One inbox entry: the event and what the role may read about its subject.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxItem {
+    pub kind: EventKind,
+    /// Unix timestamp (seconds) of the event
+    pub at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<InboxTask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<InboxQuestion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<InboxTrack>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxTask {
+    pub id: String,
+    pub title: String,
+    pub priority: Priority,
+    pub track: Option<String>,
+    pub status: TaskStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxQuestion {
+    pub id: u64,
+    pub topic: String,
+    /// The question, for coordinating roles (`question_asked`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    /// The current answer (`question_answered`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_file: Option<String>,
+    /// The answer replaced an earlier one
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub corrected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InboxTrack {
+    pub name: String,
+    pub priority: Priority,
+}

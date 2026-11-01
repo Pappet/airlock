@@ -78,6 +78,17 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "cli")]
         hints: Hints,
     },
+    /// Show what changed for your role since you last looked: ready or changed
+    /// tasks, answers to your questions, rejected reviews, and for coordinating
+    /// roles new questions and tasks in review
+    Inbox {
+        /// Role to read for [default: the worktree binding's]
+        #[arg(long, env = "AIRLOCK_ROLE")]
+        role: Option<String>,
+        /// Show without marking as read
+        #[arg(long)]
+        peek: bool,
+    },
     /// Check the installation, worktrees, bindings, and harness configurations
     Doctor,
     /// Print the MCP configuration (or Claude Code hooks) of this worktree for an agent harness
@@ -426,6 +437,7 @@ impl Command {
             Self::Init { .. } => "init",
             Self::Use { .. } => "use",
             Self::Start { .. } => "start",
+            Self::Inbox { .. } => "inbox",
             Self::Doctor => "doctor",
             Self::Setup { .. } => "setup",
             Self::Role(sub) => match sub {

@@ -353,9 +353,11 @@ fn tasks_round_trip_through_the_database() {
 #[test]
 fn question_lifecycle() {
     let (_dir, mut store) = open();
-    let q1 = store.ask("melee.md", "Front arc?", "engine-1", 10).unwrap();
+    let q1 = store
+        .ask("melee.md", "Front arc?", "engine-1", None, 10)
+        .unwrap();
     let q2 = store
-        .ask("missiles.md", "Blast radius?", "engine-1", 11)
+        .ask("missiles.md", "Blast radius?", "engine-1", None, 11)
         .unwrap();
     assert_eq!((q1.id, q2.id), (1, 2));
     assert_eq!(q1.status, QuestionStatus::Open);
@@ -643,14 +645,16 @@ fn replace_all_swaps_state_and_never_reuses_question_ids() {
     let (_dir, mut store) = open();
     store.add_task(new_task(&[]), 0).unwrap();
     for _ in 0..5 {
-        store.ask("t", "q", "s", 0).unwrap();
+        store.ask("t", "q", "s", None, 0).unwrap();
     }
 
     let (_src_dir, mut source) = open();
     source.add_task(new_task(&[]), 0).unwrap();
     source.add_task(new_task(&["T-1"]), 0).unwrap();
     source.claim("T-1", "s1", MIN, 1).unwrap();
-    source.ask("melee.md", "Front arc?", "engine-1", 2).unwrap();
+    source
+        .ask("melee.md", "Front arc?", "engine-1", None, 2)
+        .unwrap();
     let snapshot = Snapshot::new(
         "id",
         &ProjectConfig::default(),
@@ -670,7 +674,7 @@ fn replace_all_swaps_state_and_never_reuses_question_ids() {
     assert_eq!(tasks[1].blocked_by, ["T-1"]);
     assert_eq!(store.questions().unwrap()[0].id, 1);
 
-    let next = store.ask("t", "q", "s", 11).unwrap();
+    let next = store.ask("t", "q", "s", None, 11).unwrap();
     assert_eq!(next.id, 6, "continues after the highest id ever used");
 }
 
@@ -826,16 +830,16 @@ fn edit_of_started_tasks_needs_force() {
 fn ask_once_keeps_one_open_question_per_session_and_topic() {
     let (_dir, mut store) = open();
     let first = store
-        .ask_once("overlap:E-2", "Continue?", "engine-1", 1)
+        .ask_once("overlap:E-2", "Continue?", "engine-1", None, 1)
         .unwrap();
     let again = store
-        .ask_once("overlap:E-2", "Continue now?", "engine-1", 2)
+        .ask_once("overlap:E-2", "Continue now?", "engine-1", None, 2)
         .unwrap();
     assert_eq!(again.id, first.id, "the open question is reused");
     assert_eq!(again.question, "Continue?");
 
     let other = store
-        .ask_once("overlap:E-2", "Continue?", "engine-2", 3)
+        .ask_once("overlap:E-2", "Continue?", "engine-2", None, 3)
         .unwrap();
     assert_ne!(other.id, first.id, "another session gets its own question");
 
@@ -843,7 +847,7 @@ fn ask_once_keeps_one_open_question_per_session_and_topic() {
         .answer(first.id, "Go ahead.", "lead-1", None, 4)
         .unwrap();
     let after_answer = store
-        .ask_once("overlap:E-2", "Continue?", "engine-1", 5)
+        .ask_once("overlap:E-2", "Continue?", "engine-1", None, 5)
         .unwrap();
     assert_ne!(
         after_answer.id, first.id,
@@ -1064,7 +1068,7 @@ fn tracks_in_use_cannot_be_removed() {
 #[test]
 fn correcting_a_resolved_answer_keeps_status_and_history() {
     let (_dir, mut store) = open();
-    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store.ask("melee.md", "How?", "engine-1", None, 10).unwrap();
     store
         .answer(1, "first", "lead", Some("docs/spec/melee.md"), 11)
         .unwrap();
@@ -1093,7 +1097,7 @@ fn correcting_a_resolved_answer_keeps_status_and_history() {
 #[test]
 fn answering_an_open_question_is_not_a_correction() {
     let (_dir, mut store) = open();
-    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store.ask("melee.md", "How?", "engine-1", None, 10).unwrap();
     let answered = store.answer(1, "first", "lead", None, 11).unwrap();
     assert_eq!(answered.status, QuestionStatus::Answered);
     assert_eq!(answered.corrected_at, None);
@@ -1104,7 +1108,7 @@ fn answering_an_open_question_is_not_a_correction() {
 #[test]
 fn two_corrections_keep_both_earlier_answers() {
     let (_dir, mut store) = open();
-    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store.ask("melee.md", "How?", "engine-1", None, 10).unwrap();
     for (i, text) in ["first", "second", "third"].into_iter().enumerate() {
         store.answer(1, text, "lead", None, 11 + i as i64).unwrap();
     }
@@ -1146,7 +1150,7 @@ fn old_processes_cannot_replace_an_answer_without_history() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("airlock.db");
     let mut store = Store::open(&path).unwrap();
-    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store.ask("melee.md", "How?", "engine-1", None, 10).unwrap();
     store.answer(1, "first", "lead", None, 11).unwrap();
     drop(store);
 
@@ -1193,7 +1197,7 @@ fn old_processes_cannot_replace_an_answer_without_history() {
 fn listed_questions_carry_each_their_own_history() {
     let (_dir, mut store) = open();
     for topic in ["a.md", "b.md", "c.md"] {
-        store.ask(topic, "How?", "engine-1", 10).unwrap();
+        store.ask(topic, "How?", "engine-1", None, 10).unwrap();
     }
     // #1 corrected twice, #2 never answered, #3 corrected once.
     for text in ["1a", "1b", "1c"] {
@@ -1248,4 +1252,436 @@ fn concurrent_first_opens_of_a_fresh_store_all_succeed() {
             handle.join().unwrap().unwrap();
         }
     }
+}
+
+// --- Events and the inbox (Spec 01 §2.6) ---
+
+fn role_task(role: &str, prefix: &str, blocked_by: &[&str]) -> NewTask {
+    NewTask {
+        prefix: prefix.to_string(),
+        role: role.to_string(),
+        ..new_task(blocked_by)
+    }
+}
+
+/// `(kind, role, origin, task_id, question_id, track)` of every event, oldest first.
+type EventRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
+fn events(dir: &TempDir) -> Vec<EventRow> {
+    let conn = rusqlite::Connection::open(dir.path().join("airlock.db")).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT kind, role, origin, task_id, question_id, track FROM events ORDER BY seq")
+        .unwrap();
+    stmt.query_map([], |r| {
+        Ok((
+            r.get(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get(4)?,
+            r.get(5)?,
+        ))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+fn kinds(dir: &TempDir) -> Vec<String> {
+    events(dir)
+        .into_iter()
+        .map(|e| format!("{} {}", e.0, e.1))
+        .collect()
+}
+
+fn inbox_kinds(inbox: &airlock::core::Inbox) -> Vec<String> {
+    inbox
+        .items
+        .iter()
+        .map(|i| {
+            let subject = i
+                .task
+                .as_ref()
+                .map(|t| t.id.clone())
+                .or_else(|| i.question.as_ref().map(|q| format!("#{}", q.id)))
+                .or_else(|| i.track.as_ref().map(|t| t.name.clone()))
+                .unwrap_or_default();
+            format!("{} {subject}", i.kind.as_str())
+        })
+        .collect()
+}
+
+#[test]
+fn events_are_written_with_their_change() {
+    let (dir, mut store) = open();
+    store.add_track("core", Priority::Normal, "", 0).unwrap();
+    // created ready → task_ready; created blocked → nothing
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap(); // E-1
+    store
+        .add_task(role_task("engine", "E", &["E-1"]), 1)
+        .unwrap(); // E-2, blocked
+    assert_eq!(kinds(&dir), ["task_ready engine"]);
+
+    // claim writes nothing; completing E-1 makes E-2 ready
+    store.claim("E-1", "engine-1", 600, 2).unwrap();
+    store
+        .complete("E-1", "engine-1", None, false, false, 3)
+        .unwrap();
+    assert_eq!(kinds(&dir)[1..], ["task_ready engine"]);
+    assert_eq!(events(&dir)[1].3.as_deref(), Some("E-2"));
+
+    // release → ready again
+    store.claim("E-2", "engine-1", 600, 4).unwrap();
+    store.release("E-2", "engine-1", false, 5).unwrap();
+    assert_eq!(kinds(&dir)[2..], ["task_ready engine"]);
+
+    // review: in_review for the coordinators, origin engine; reject → ready, rejected
+    store.claim("E-2", "engine-1", 600, 6).unwrap();
+    store
+        .complete("E-2", "engine-1", None, true, false, 7)
+        .unwrap();
+    assert_eq!(events(&dir)[3].0, "task_in_review");
+    assert_eq!(events(&dir)[3].1, "*");
+    assert_eq!(events(&dir)[3].2.as_deref(), Some("engine"));
+    store.reject("E-2", "again", 8).unwrap();
+    assert_eq!(
+        kinds(&dir)[4..],
+        ["task_ready engine", "task_rejected engine"]
+    );
+
+    // edit: priority of a ready task → task_changed; a blocked one → nothing
+    let edit = TaskEdit {
+        priority: Some(Priority::High),
+        ..Default::default()
+    };
+    store.edit_task("E-2", edit, false, 9).unwrap();
+    assert_eq!(kinds(&dir)[6..], ["task_changed engine"]);
+    store
+        .add_task(role_task("engine", "E", &["E-2"]), 10)
+        .unwrap(); // E-3, blocked
+    let edit = TaskEdit {
+        title: Some("Blocked".into()),
+        ..Default::default()
+    };
+    store.edit_task("E-3", edit, false, 11).unwrap();
+    assert_eq!(events(&dir).len(), 7);
+    // moving a ready task to another role → task_ready for that role
+    let mut spec = role_task("engine", "E", &[]);
+    spec.track = Some("core".into());
+    store.add_task(spec, 12).unwrap(); // E-4
+    let edit = TaskEdit {
+        role: Some("spec".into()),
+        ..Default::default()
+    };
+    store.edit_task("E-4", edit, false, 13).unwrap();
+    assert_eq!(kinds(&dir)[7..], ["task_ready engine", "task_ready spec"]);
+
+    // track priority → every role with open tasks on it; a description only → nothing
+    let edit = TrackEdit {
+        priority: Some(Priority::High),
+        ..Default::default()
+    };
+    store.edit_track("core", edit, 14).unwrap();
+    assert_eq!(kinds(&dir)[9..], ["track_changed spec"]);
+    let edit = TrackEdit {
+        description: Some("d".into()),
+        ..Default::default()
+    };
+    store.edit_track("core", edit, 15).unwrap();
+    assert_eq!(events(&dir).len(), 10);
+
+    // questions: asked for the coordinators, answered for the asker's role
+    store
+        .ask("melee.md", "Arc?", "engine-1", Some("engine"), 16)
+        .unwrap();
+    store.answer(1, "Front", "lead-1", None, 17).unwrap();
+    store.answer(1, "Front 90°", "lead-1", None, 18).unwrap();
+    assert_eq!(
+        kinds(&dir)[10..],
+        [
+            "question_asked *",
+            "question_answered engine",
+            "question_answered engine"
+        ]
+    );
+
+    // approve makes dependents ready
+    store.claim("E-3", "engine-1", 600, 19).unwrap_err(); // still blocked by E-2
+    store.claim("E-2", "engine-1", 600, 20).unwrap();
+    store
+        .complete("E-2", "engine-1", None, true, false, 21)
+        .unwrap();
+    store.approve("E-2", None, 22).unwrap();
+    let tail: Vec<_> = events(&dir)[13..]
+        .iter()
+        .map(|e| (e.0.clone(), e.3.clone()))
+        .collect();
+    assert_eq!(
+        tail,
+        [
+            ("task_in_review".to_string(), Some("E-2".to_string())),
+            ("task_ready".to_string(), Some("E-3".to_string()))
+        ]
+    );
+
+    // a refused transition writes nothing
+    let before = events(&dir).len();
+    store.release("E-1", "engine-1", false, 23).unwrap_err();
+    store.reject("E-1", "no", 23).unwrap_err();
+    assert_eq!(events(&dir).len(), before);
+}
+
+#[test]
+fn inbox_reads_each_event_once_per_session() {
+    let (_dir, mut store) = open();
+    // Both sessions start at the current end.
+    assert!(
+        store
+            .inbox("engine-1", "engine", false, false, 0)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert!(
+        store
+            .inbox("engine-2", "engine", false, false, 0)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap();
+
+    let peeked = store.inbox("engine-1", "engine", false, true, 2).unwrap();
+    assert_eq!(inbox_kinds(&peeked), ["task_ready E-1"]);
+    let read = store.inbox("engine-1", "engine", false, false, 2).unwrap();
+    assert_eq!(read, peeked, "peek did not advance");
+    assert!(
+        store
+            .inbox("engine-1", "engine", false, false, 3)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    // The other session of the role gets it too, once.
+    let other = store.inbox("engine-2", "engine", false, false, 3).unwrap();
+    assert_eq!(inbox_kinds(&other), ["task_ready E-1"]);
+    assert!(
+        store
+            .inbox("engine-2", "engine", false, false, 3)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    // A cursor per role: the same session reading for another role starts fresh.
+    assert!(
+        store
+            .inbox("engine-1", "spec", true, false, 3)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_new_session_starts_at_the_current_end() {
+    let (_dir, mut store) = open();
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap();
+    store.ask("t", "q", "engine-1", Some("engine"), 1).unwrap();
+    assert!(
+        store
+            .inbox("engine-9", "engine", false, false, 2)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert!(
+        store
+            .inbox("lead-9", "lead", true, false, 2)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+}
+
+#[test]
+fn inbox_drops_what_is_no_longer_current() {
+    let (_dir, mut store) = open();
+    store.inbox("engine-1", "engine", false, false, 0).unwrap();
+    store.inbox("lead-1", "lead", true, false, 0).unwrap();
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap(); // E-1
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap(); // E-2
+    store
+        .ask("a.md", "q1", "engine-1", Some("engine"), 1)
+        .unwrap(); // #1
+    store
+        .ask("b.md", "q2", "engine-1", Some("engine"), 1)
+        .unwrap(); // #2
+    // E-1 claimed by someone else, #1 answered by another coordinator.
+    store.claim("E-1", "engine-2", 600, 2).unwrap();
+    store.answer(1, "a", "spec-1", None, 2).unwrap();
+
+    let engine = store.inbox("engine-1", "engine", false, false, 3).unwrap();
+    assert_eq!(
+        inbox_kinds(&engine),
+        ["task_ready E-2", "question_answered #1"]
+    );
+    let lead = store.inbox("lead-1", "lead", true, false, 3).unwrap();
+    assert_eq!(
+        inbox_kinds(&lead),
+        ["question_asked #2"],
+        "#1 is no longer open"
+    );
+}
+
+#[test]
+fn inbox_collapses_a_subject_to_its_latest_event() {
+    let (_dir, mut store) = open();
+    store.inbox("engine-1", "engine", false, false, 0).unwrap();
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap();
+    let edit = TaskEdit {
+        priority: Some(Priority::Critical),
+        ..Default::default()
+    };
+    store.edit_task("E-1", edit, false, 2).unwrap();
+    let inbox = store.inbox("engine-1", "engine", false, false, 3).unwrap();
+    assert_eq!(inbox_kinds(&inbox), ["task_changed E-1"]);
+    let task = inbox.items[0].task.as_ref().unwrap();
+    assert_eq!(task.priority, Priority::Critical);
+    assert_eq!(task.status, airlock::core::TaskStatus::Ready);
+}
+
+#[test]
+fn coordinating_roles_see_questions_and_reviews_of_other_roles_only() {
+    let (_dir, mut store) = open();
+    for (s, r, c) in [
+        ("engine-1", "engine", false),
+        ("lead-1", "lead", true),
+        ("spec-1", "spec", true),
+    ] {
+        store.inbox(s, r, c, false, 0).unwrap();
+    }
+    store
+        .ask("a.md", "from engine", "engine-1", Some("engine"), 1)
+        .unwrap(); // #1
+    store
+        .ask("b.md", "from spec", "spec-1", Some("spec"), 1)
+        .unwrap(); // #2
+    store
+        .ask("c.md", "unknown asker", "human:peter", None, 1)
+        .unwrap(); // #3
+    store.add_task(role_task("spec", "S", &[]), 1).unwrap();
+    store.claim("S-1", "spec-1", 600, 2).unwrap();
+    store
+        .complete("S-1", "spec-1", None, true, false, 3)
+        .unwrap();
+
+    let lead = store.inbox("lead-1", "lead", true, false, 4).unwrap();
+    assert_eq!(
+        inbox_kinds(&lead),
+        [
+            "question_asked #1",
+            "question_asked #2",
+            "question_asked #3",
+            "task_in_review S-1"
+        ]
+    );
+    let spec = store.inbox("spec-1", "spec", true, false, 4).unwrap();
+    assert_eq!(
+        inbox_kinds(&spec),
+        ["question_asked #1", "question_asked #3"],
+        "not its own question, not its own review, and S-1 is no longer ready"
+    );
+    let engine = store.inbox("engine-1", "engine", false, false, 4).unwrap();
+    assert!(
+        engine.items.is_empty(),
+        "clean-room roles never see questions or reviews"
+    );
+}
+
+#[test]
+fn answers_reach_the_asker_through_its_binding_when_the_event_is_gone() {
+    let (_dir, mut store) = open();
+    store
+        .bind(
+            "/w/engine",
+            &airlock::hub::Binding {
+                role: "engine".into(),
+                session: "engine@w".into(),
+                locked: true,
+            },
+            false,
+            0,
+        )
+        .unwrap();
+    store.inbox("engine@w", "engine", false, false, 0).unwrap();
+    // Asked without a role (CLI with --session); answered 31 days later.
+    store.ask("a.md", "q", "engine@w", None, 1).unwrap();
+    store
+        .answer(1, "a", "lead-1", None, 1 + 31 * 86_400)
+        .unwrap();
+    let inbox = store
+        .inbox("engine@w", "engine", false, false, 2 + 31 * 86_400)
+        .unwrap();
+    assert_eq!(inbox_kinds(&inbox), ["question_answered #1"]);
+    let q = inbox.items[0].question.as_ref().unwrap();
+    assert_eq!(q.answer.as_deref(), Some("a"));
+}
+
+#[test]
+fn events_hold_no_text_and_are_pruned_after_30_days() {
+    let (dir, mut store) = open();
+    store.add_task(role_task("engine", "E", &[]), 0).unwrap();
+    store
+        .ask(
+            "secret-topic.md",
+            "SECRET QUESTION",
+            "engine-1",
+            Some("engine"),
+            0,
+        )
+        .unwrap();
+    store.answer(1, "SECRET ANSWER", "lead-1", None, 0).unwrap();
+    let conn = rusqlite::Connection::open(dir.path().join("airlock.db")).unwrap();
+    let dump: String = conn
+        .query_row(
+            "SELECT group_concat(kind || role || coalesce(origin,'') || coalesce(task_id,'') || coalesce(question_id,'') || coalesce(track,''), '|') FROM events",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for text in ["SECRET", "secret-topic", "Task"] {
+        assert!(!dump.contains(text), "{dump}");
+    }
+    assert_eq!(events(&dir).len(), 3);
+    // Any write after 30 days prunes them.
+    store
+        .add_track("later", Priority::Normal, "", 31 * 86_400)
+        .unwrap();
+    assert!(events(&dir).is_empty());
+}
+
+#[test]
+fn answers_to_an_unknown_asker_go_to_the_coordinating_roles() {
+    let (_dir, mut store) = open();
+    store.inbox("lead-1", "lead", true, false, 0).unwrap();
+    store.inbox("engine-1", "engine", false, false, 0).unwrap();
+    store
+        .ask("c.md", "who asks?", "human:peter", None, 1)
+        .unwrap();
+    store.answer(1, "nobody knows", "spec-1", None, 2).unwrap();
+    let lead = store.inbox("lead-1", "lead", true, false, 3).unwrap();
+    assert_eq!(
+        inbox_kinds(&lead),
+        ["question_answered #1"],
+        "the asked event is superseded"
+    );
+    let engine = store.inbox("engine-1", "engine", false, false, 3).unwrap();
+    assert!(engine.items.is_empty());
 }

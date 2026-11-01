@@ -209,6 +209,32 @@ pub struct Track {
 - `remove` is refused while any task, in any state, uses the track.
 - A task names an existing track on `task add` / `task_create` and on edit; an unknown track is an error that names the defined tracks. Editing the track of a task that is `in_progress`, `in_review`, or `done` needs `--force` like every content edit (§2.1).
 
+### 2.6 Events and the Inbox
+
+Every change that concerns another session writes an **event** in the same transaction, so an event exists exactly when its change committed. Events carry ids, never text: kind, the role it is for, the role it came from, and a task id, question id, or track name.
+
+| Kind | Written when | For |
+|---|---|---|
+| `task_ready` | a task is created ready; becomes ready because a prerequisite was completed or approved; returns to `open` by release or rejection while its prerequisites are done; is moved to another role while ready (for the new role) | the task's role |
+| `task_changed` | an edit of a ready task changes its priority, track, title, or work package (`read`, `touch`, `do`, `verify`) | the task's role |
+| `track_changed` | a track's priority changes | every role with an `open` task on the track |
+| `task_rejected` | a review rejects the task | the task's role |
+| `task_in_review` | a task is completed for review | every coordinating role except the task's own |
+| `question_asked` | a question is asked, including the automatic `overlap:` question at claim time | every coordinating role except the asker's |
+| `question_answered` | a question is answered or its answer corrected | the asker's role |
+
+A **coordinating** role is any role without `clean_room`. The asker's role is the role the asking session acted in (the MCP server's bound role, the CLI worktree binding of that session); if it is unknown, a `question_asked` event reaches every coordinating role. The answer finds the asker through the question's `question_asked` event or, failing that, a worktree binding of the asking session; when neither names a role (an unbound asker after the event was pruned, or an imported question), `question_answered` goes to every coordinating role instead. An expired lease writes no event (expiry is derived, §2.4): the task shows up again through `task next`, not through the inbox.
+
+The **inbox** of a session for a role lists the events for that role since the session last read it, joined with what that role may read anyway:
+
+- tasks: id, title, priority, track, effective status. `task_ready` and `task_changed` appear only while the task is still ready and still the role's; `task_in_review` only while it is in review.
+- questions: id and topic; for `question_asked` (coordinating roles only) the question, while it is still open; for `question_answered` the current answer, its spec file, and whether it was a correction.
+- tracks: name and current priority.
+
+Each task, question, and track appears once, as its latest event, oldest first. Reading advances the session's cursor, kept per session **and** role; `peek` reads without advancing. A session without a cursor starts at the newest event: a new session gets its briefing, not the history. Reading the inbox counts as a read in the activity log (§3.5), logged with the number of items as its target.
+
+Events and cursors are session state like claims: never exported (Spec 05 §3.2), untouched by `import`, and events are pruned after 30 days by the next write.
+
 ---
 
 ## 3. Storage Architecture
@@ -218,7 +244,7 @@ pub struct Track {
 All live state lives in a per-project SQLite database outside every repository:
 
 ```
-<hub>/projects/<project-uuid>/airlock.db     # tasks, tracks, questions (WAL mode)
+<hub>/projects/<project-uuid>/airlock.db     # tasks, tracks, questions, bindings, events and inbox cursors (WAL mode)
 <hub>/projects/<project-uuid>/activity.db    # activity log and process registry (WAL mode, §3.5)
 <hub>/projects/<project-uuid>/project.json   # ProjectConfig (src/config.rs)
 ```
@@ -277,9 +303,9 @@ One entry per operation:
 | `channel` | `mcp`, `cli`, or `rest` |
 | `agent` | the agent behind the call, if recognised (below) |
 | `command` | MCP: the tool name (`task_claim`), plus `prompt start` for the `start` prompt; CLI: the subcommand path (`task edit`, `question answer`); REST: `<METHOD> <route pattern>` (`POST /api/questions/{id}/answer`, every `GET` is logged as `GET <route>`) |
-| `target` | task id, question id (`#15`), track name, or role name, if the operation has one |
+| `target` | task id, question id (`#15`), track name, or role name, if the operation has one; for `inbox` the number of items read (`2`) |
 | `changed` | for writes: a list of the argument names given, e.g. `track`, `priority: high`, `blocked_by`; `correction` is added to a successful answer that corrected an earlier one |
-| `write` | whether the command changes state: false for the reads (`session_start`, `prompt start`, `task_next`, `task_get`, `question_list`, `track_list`, `start`, `task list`, `task next`, `task show`, `track list`, `question list`, `role list`, a `use` that only shows the binding, and every REST `GET` and `HEAD`, which is logged as `GET`) |
+| `write` | whether the command changes state: false for the reads (`session_start`, `prompt start`, `task_next`, `inbox` (MCP and CLI; it changes no project state, only the session's own inbox cursor, besides the expired-lease reset every write transaction performs, §2.4, §2.6), `task_get`, `question_list`, `track_list`, `start`, `task list`, `task next`, `task show`, `track list`, `question list`, `role list`, a `use` that only shows the binding, and every REST `GET` and `HEAD`, which is logged as `GET`) |
 | `ok` | success or failure |
 | `error` | on failure, the error message |
 | `pid`, `build` | process id and build identity (§3.6) of the caller |

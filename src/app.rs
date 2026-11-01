@@ -5,7 +5,8 @@ use crate::cli::{
     Cli, Command, QuestionCommand, RoleCommand, TaskCommand, TaskEditSpec, TaskSpec, TrackCommand,
 };
 use crate::core::{
-    Priority, Question, Task, TaskState, TaskStatus, Track, cmp_task_ids, dependents,
+    EventKind, Inbox, InboxTask, Priority, Question, Task, TaskState, TaskStatus, Track,
+    cmp_task_ids, dependents,
 };
 use crate::hub::{Binding, Hub, MARKER_FILE, Project, binding_key};
 use crate::overlap::{self, Overlap};
@@ -152,9 +153,14 @@ pub fn run(cli: Cli) -> Result<()> {
     let mut store = Store::open(&project.database)?;
     // Set from the outcome: whether this call corrected an earlier answer.
     let mut correction = false;
+    // Set from the outcome: how many inbox items were read.
+    let mut inbox_count: Option<usize> = None;
 
     let caller_role = match &command {
         Command::Start {
+            role: Some(role), ..
+        }
+        | Command::Inbox {
             role: Some(role), ..
         }
         | Command::Task(TaskCommand::Next { role: Some(role) }) => Some(role.clone()),
@@ -192,11 +198,40 @@ pub fn run(cli: Cli) -> Result<()> {
                 };
                 out.print(&brief, || brief.markdown(via))
             }
+            Command::Inbox { role, peek } => {
+                let role = match (role, &project.binding) {
+                    (Some(role), Some(b)) if b.locked && role != b.role => bail!(
+                        "this worktree is locked to role `{}`; `--role {role}` is refused",
+                        b.role
+                    ),
+                    (Some(role), _) => {
+                        ensure_role(&project, &role)?;
+                        role
+                    }
+                    (None, Some(b)) => b.role.clone(),
+                    (None, None) => bail!(
+                        "no role: pass --role or bind this worktree with `airlock use <role>`"
+                    ),
+                };
+                let coordinating = !project
+                    .config
+                    .roles
+                    .get(&role)
+                    .is_some_and(|r| r.clean_room);
+                let inbox = store.inbox(&session, &role, coordinating, peek, now)?;
+                inbox_count = Some(inbox.items.len());
+                out.print(&inbox, || inbox_text(&role, &inbox))
+            }
             Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),
             Command::Task(sub) => task(&mut store, &project, &session, sub, now, &out),
             Command::Track(sub) => track(&mut store, sub, now, &out),
             Command::Question(sub) => {
-                correction = question(&mut store, &session, sub, now, &out)?;
+                let role = project
+                    .binding
+                    .as_ref()
+                    .filter(|b| b.session == session)
+                    .map(|b| b.role.clone());
+                correction = question(&mut store, &session, role.as_deref(), sub, now, &out)?;
                 Ok(())
             }
             Command::Sync { force } => {
@@ -256,6 +291,9 @@ pub fn run(cli: Cli) -> Result<()> {
     })();
     if correction && result.is_ok() {
         summary.1.push("correction".to_string());
+    }
+    if let Some(count) = inbox_count {
+        summary.0 = Some(count.to_string());
     }
     log_cli_call(
         &project,
@@ -788,6 +826,7 @@ fn track(store: &mut Store, sub: TrackCommand, now: i64, out: &Output) -> Result
 fn question(
     store: &mut Store,
     session: &str,
+    role: Option<&str>,
     sub: QuestionCommand,
     now: i64,
     out: &Output,
@@ -803,7 +842,7 @@ fn question(
             out.print(&questions, || question_list(&questions))?;
         }
         QuestionCommand::Ask { question, topic } => {
-            let q = store.ask(&topic, &question, session, now)?;
+            let q = store.ask(&topic, &question, session, role, now)?;
             out.print(&json!({ "question_id": q.id }), || {
                 format!("Asked question #{} on {}", q.id, q.topic)
             })?;
@@ -1118,6 +1157,7 @@ pub(crate) fn claim(
             held.join("; ")
         ),
         session,
+        Some(&task.role),
         now,
     );
     let (question_id, question_error) = match question {
@@ -1348,6 +1388,71 @@ pub(crate) fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     i64::try_from(secs).unwrap_or(i64::MAX)
+}
+
+/// The inbox as text: one line per item, oldest first.
+pub(crate) fn inbox_text(role: &str, inbox: &Inbox) -> String {
+    if inbox.items.is_empty() {
+        return format!("Nothing new for {role}.");
+    }
+    let task_line = |t: &InboxTask, what: &str| {
+        let track = t
+            .track
+            .as_deref()
+            .map(|t| format!(", {t}"))
+            .unwrap_or_default();
+        format!(
+            "{} {what} — {} ({}{track})",
+            t.id,
+            t.title,
+            t.priority.as_str()
+        )
+    };
+    inbox
+        .items
+        .iter()
+        .filter_map(|item| {
+            Some(match item.kind {
+                EventKind::TaskReady => task_line(item.task.as_ref()?, "ready"),
+                EventKind::TaskChanged => task_line(item.task.as_ref()?, "changed"),
+                EventKind::TaskRejected => task_line(item.task.as_ref()?, "rejected in review"),
+                EventKind::TaskInReview => task_line(item.task.as_ref()?, "waits for review"),
+                EventKind::QuestionAsked => {
+                    let q = item.question.as_ref()?;
+                    format!(
+                        "#{} asked on {}: {}",
+                        q.id,
+                        q.topic,
+                        q.question.as_deref().unwrap_or("")
+                    )
+                }
+                EventKind::QuestionAnswered => {
+                    let q = item.question.as_ref()?;
+                    let what = if q.corrected {
+                        "answer corrected"
+                    } else {
+                        "answered"
+                    };
+                    let spec = q
+                        .spec_file
+                        .as_deref()
+                        .map(|f| format!(" (codified in {f})"))
+                        .unwrap_or_default();
+                    format!(
+                        "#{} {what} ({}): {}{spec}",
+                        q.id,
+                        q.topic,
+                        q.answer.as_deref().unwrap_or("")
+                    )
+                }
+                EventKind::TrackChanged => {
+                    let t = item.track.as_ref()?;
+                    format!("track {} is now {}", t.name, t.priority.as_str())
+                }
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

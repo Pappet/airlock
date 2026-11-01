@@ -488,3 +488,57 @@ fn activity_rejects_a_bad_since() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("30m") && stderr.contains("2h"), "{stderr}");
 }
+
+#[test]
+fn inbox_is_logged_as_a_read_with_its_item_count() {
+    let env = Env::new();
+    env.ok(&["inbox", "--role", "engine", "--session", "engine-1"]);
+    env.ok(&[
+        "task",
+        "add",
+        "Secret title",
+        "--role",
+        "engine",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+    ]);
+    let before = env.entries().len();
+    env.ok(&[
+        "inbox",
+        "--role",
+        "engine",
+        "--session",
+        "engine-1",
+        "--peek",
+    ]);
+    env.ok(&["inbox", "--role", "engine", "--session", "engine-1"]);
+    env.ok(&["inbox", "--role", "engine", "--session", "engine-1"]);
+    let entries = env.entries_after(before);
+    let summary: Vec<_> = entries
+        .iter()
+        .map(|e| {
+            (
+                e.command.as_str(),
+                e.target.as_deref(),
+                e.changed.clone(),
+                e.write,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (
+                "inbox",
+                Some("1"),
+                vec!["role: engine".to_string(), "peek".to_string()],
+                false
+            ),
+            ("inbox", Some("1"), vec!["role: engine".to_string()], false),
+            ("inbox", Some("0"), vec!["role: engine".to_string()], false),
+        ]
+    );
+    assert!(entries[0].clean_room);
+}

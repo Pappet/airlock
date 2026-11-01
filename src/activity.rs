@@ -51,6 +51,7 @@ const VALUE_MAX: usize = 40;
 const READ_COMMANDS: &[&str] = &[
     "session_start",
     "prompt start",
+    "inbox",
     "task_next",
     "task_get",
     "question_list",
@@ -622,6 +623,12 @@ pub fn summarize_cli(command: &Command) -> (Option<String>, Vec<String>) {
         Command::Start { role, hints } => {
             changed.opt("role", role);
             changed.flag("hints", *hints == crate::cli::Hints::Mcp);
+            None
+        }
+        // The target, the number of items read, is set from the outcome.
+        Command::Inbox { role, peek } => {
+            changed.opt("role", role);
+            changed.flag("peek", *peek);
             None
         }
         Command::Role(sub) => match sub {

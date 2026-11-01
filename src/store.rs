@@ -7,8 +7,9 @@
 //! seconds) so behavior is testable without a clock.
 
 use crate::core::{
-    AnswerVersion, Priority, Question, QuestionStatus, Task, TaskState, TaskStatus, Track,
-    check_dependencies, check_task_prefix, check_track_name, cmp_task_ids, dependents, task_number,
+    AnswerVersion, EventKind, Inbox, InboxItem, InboxQuestion, InboxTask, InboxTrack, Priority,
+    Question, QuestionStatus, Task, TaskState, TaskStatus, Track, check_dependencies,
+    check_task_prefix, check_track_name, cmp_task_ids, dependents, task_number,
 };
 use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
@@ -20,7 +21,7 @@ use std::time::{Duration, Instant};
 
 /// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
 ];
 
 const SCHEMA_V1: &str = "
@@ -149,6 +150,40 @@ BEGIN
     UPDATE tasks SET progress = NULL WHERE id = NEW.id;
 END;
 ";
+
+/// Events and inbox cursors (Spec 01 §2.6): an append-only feed of what
+/// happened, written in the transaction of the change, and per session and
+/// role how far it was read. Session state: never exported, pruned after
+/// 30 days. `role` is the role an event is for, or `*` for every coordinating
+/// (non-clean-room) role except `origin`, the role it came from. Events hold
+/// ids, never text.
+const SCHEMA_V7: &str = "
+CREATE TABLE events (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    role        TEXT NOT NULL,
+    origin      TEXT,
+    task_id     TEXT,
+    question_id INTEGER,
+    track       TEXT
+) STRICT;
+CREATE INDEX events_role_seq ON events (role, seq);
+CREATE INDEX events_at ON events (at);
+CREATE TABLE inbox_cursors (
+    session    TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    nudged_seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (session, role)
+) STRICT;
+";
+
+/// Events older than this are pruned on write.
+const EVENT_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// `events.role` of an event for every coordinating role but its origin.
+const COORDINATORS: &str = "*";
 
 const SELECT_TASKS: &str = "
 SELECT id, title, role, state, priority,
@@ -381,6 +416,7 @@ impl Store {
             );
             track.name = new_name;
         }
+        let reprioritized = edit.priority.is_some_and(|p| p != track.priority);
         if let Some(priority) = edit.priority {
             track.priority = priority;
         }
@@ -391,6 +427,27 @@ impl Store {
             "UPDATE tracks SET name = ?1, priority = ?2, description = ?3, updated_at = ?4 WHERE name = ?5",
             params![track.name, track.priority.rank(), track.description, now, name],
         )?;
+        if reprioritized {
+            let mut stmt = tx.prepare(
+                "SELECT DISTINCT role FROM tasks WHERE track = ?1 AND state = 'open' ORDER BY role",
+            )?;
+            let roles: Vec<String> = stmt
+                .query_map([&track.name], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            drop(stmt);
+            for role in roles {
+                emit(
+                    &tx,
+                    now,
+                    EventKind::TrackChanged,
+                    &role,
+                    None,
+                    None,
+                    None,
+                    Some(&track.name),
+                )?;
+            }
+        }
         let track = load_track(&tx, &track.name)?;
         tx.commit()?;
         Ok(track)
@@ -454,6 +511,7 @@ impl Store {
                 params![id, dep],
             )?;
         }
+        emit_if_ready(&tx, &id, EventKind::TaskReady, now)?;
         let task = load_task(&tx, &id)?;
         tx.commit()?;
         Ok(task)
@@ -476,6 +534,8 @@ impl Store {
             "task `{id}` is {}; use --force to edit it anyway",
             state.as_str()
         );
+        let before = tasks[pos].clone();
+        let was_ready = status_of(&tasks, &before) == TaskStatus::Ready;
 
         let task = &mut tasks[pos];
         if let Some(blocked_by) = edit.blocked_by {
@@ -543,6 +603,40 @@ impl Store {
                 "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",
                 params![id, dep],
             )?;
+        }
+        // Only an open, ready task concerns its role: new to it (just unblocked or
+        // moved to it) or changed in what decides whether to take it next.
+        if state == TaskState::Open && status_of(&tasks, task) == TaskStatus::Ready {
+            if !was_ready || before.role != task.role {
+                emit(
+                    &tx,
+                    now,
+                    EventKind::TaskReady,
+                    &task.role,
+                    None,
+                    Some(id),
+                    None,
+                    None,
+                )?;
+            } else if before.priority != task.priority
+                || before.track != task.track
+                || before.title != task.title
+                || before.read != task.read
+                || before.touch != task.touch
+                || before.r#do != task.r#do
+                || before.verify != task.verify
+            {
+                emit(
+                    &tx,
+                    now,
+                    EventKind::TaskChanged,
+                    &task.role,
+                    None,
+                    Some(id),
+                    None,
+                    None,
+                )?;
+            }
         }
         commit_task(tx, id)
     }
@@ -619,6 +713,7 @@ impl Store {
             None,
             now,
         )?;
+        emit_if_ready(&tx, id, EventKind::TaskReady, now)?;
         commit_task(tx, id)
     }
 
@@ -656,8 +751,22 @@ impl Store {
         let now_ready = if to == TaskState::Done {
             newly_ready(&tx, id)?
         } else {
+            let role = &task.role;
+            emit(
+                &tx,
+                now,
+                EventKind::TaskInReview,
+                COORDINATORS,
+                Some(role),
+                Some(id),
+                None,
+                None,
+            )?;
             Vec::new()
         };
+        for ready in &now_ready {
+            emit_if_ready(&tx, ready, EventKind::TaskReady, now)?;
+        }
         let task = load_task(&tx, id)?;
         tx.commit()?;
         Ok(Completion { task, now_ready })
@@ -681,6 +790,9 @@ impl Store {
             now,
         )?;
         let now_ready = newly_ready(&tx, id)?;
+        for ready in &now_ready {
+            emit_if_ready(&tx, ready, EventKind::TaskReady, now)?;
+        }
         let task = load_task(&tx, id)?;
         tx.commit()?;
         Ok(Completion { task, now_ready })
@@ -703,14 +815,29 @@ impl Store {
             Some(notes),
             now,
         )?;
+        // Ready again first, so the rejection is the task's latest event.
+        emit_if_ready(&tx, id, EventKind::TaskReady, now)?;
+        emit(
+            &tx,
+            now,
+            EventKind::TaskRejected,
+            &task.role,
+            None,
+            Some(id),
+            None,
+            None,
+        )?;
         commit_task(tx, id)
     }
 
+    /// Records a question from `session`; `role` is the asker's role, if known,
+    /// so the answer reaches it (Spec 01 §2.6).
     pub fn ask(
         &mut self,
         topic: &str,
         question: &str,
         session: &str,
+        role: Option<&str>,
         now: i64,
     ) -> Result<Question> {
         let tx = self.write(now)?;
@@ -719,6 +846,16 @@ impl Store {
             params![topic, session, question, now],
         )?;
         let id = u64::try_from(tx.last_insert_rowid())?;
+        emit(
+            &tx,
+            now,
+            EventKind::QuestionAsked,
+            COORDINATORS,
+            role,
+            None,
+            Some(id),
+            None,
+        )?;
         let question = load_question(&tx, id)?;
         tx.commit()?;
         Ok(question)
@@ -731,6 +868,7 @@ impl Store {
         topic: &str,
         question: &str,
         session: &str,
+        role: Option<&str>,
         now: i64,
     ) -> Result<Question> {
         let tx = self.write(now)?;
@@ -749,7 +887,18 @@ impl Store {
                     "INSERT INTO questions (topic, asked_by, question, status, created_at) VALUES (?1, ?2, ?3, 'open', ?4)",
                     params![topic, session, question, now],
                 )?;
-                u64::try_from(tx.last_insert_rowid())?
+                let id = u64::try_from(tx.last_insert_rowid())?;
+                emit(
+                    &tx,
+                    now,
+                    EventKind::QuestionAsked,
+                    COORDINATORS,
+                    role,
+                    None,
+                    Some(id),
+                    None,
+                )?;
+                id
             }
         };
         let question = load_question(&tx, id)?;
@@ -800,6 +949,20 @@ impl Store {
                 params![answer, session, now, spec_file, sql_id(id)?],
             )?;
         }
+        // An asker whose role is unknown saw nothing addressed to it; the
+        // coordinating roles, who were told about the question, get the answer.
+        let role = asker_role(&tx, id, &question.asked_by)?;
+        let role = role.as_deref().unwrap_or(COORDINATORS);
+        emit(
+            &tx,
+            now,
+            EventKind::QuestionAnswered,
+            role,
+            None,
+            None,
+            Some(id),
+            None,
+        )?;
         let question = load_question(&tx, id)?;
         tx.commit()?;
         Ok(question)
@@ -820,6 +983,177 @@ impl Store {
         let question = load_question(&tx, id)?;
         tx.commit()?;
         Ok(question)
+    }
+
+    /// What changed for `role` since `session` last looked (Spec 01 §2.6).
+    /// `coordinating` is true for roles that are not clean-room: they also see
+    /// new questions and tasks in review from other roles. Reading advances the
+    /// session's cursor unless `peek`; a session without a cursor starts at the
+    /// newest event and gets an empty inbox.
+    pub fn inbox(
+        &mut self,
+        session: &str,
+        role: &str,
+        coordinating: bool,
+        peek: bool,
+        now: i64,
+    ) -> Result<Inbox> {
+        let tx = self.write(now)?;
+        let cursor: Option<i64> = tx
+            .query_row(
+                "SELECT seq FROM inbox_cursors WHERE session = ?1 AND role = ?2",
+                params![session, role],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(cursor) = cursor else {
+            tx.execute(
+                "INSERT INTO inbox_cursors (session, role, seq)
+                 VALUES (?1, ?2, (SELECT coalesce(max(seq), 0) FROM events))",
+                params![session, role],
+            )?;
+            tx.commit()?;
+            return Ok(Inbox::default());
+        };
+
+        let mut stmt = tx.prepare(
+            "SELECT seq, at, kind, task_id, question_id, track FROM events
+              WHERE seq > ?1
+                AND (role = ?2 OR (?3 AND role = ?4 AND (origin IS NULL OR origin <> ?2)))
+              ORDER BY seq",
+        )?;
+        type Row6 = (
+            i64,
+            i64,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        );
+        let rows: Vec<Row6> = stmt
+            .query_map(params![cursor, role, coordinating, COORDINATORS], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        let last = rows.last().map_or(cursor, |r| r.0);
+
+        // One item per subject: its latest event.
+        let mut latest: HashMap<(u8, String), usize> = HashMap::new();
+        for (i, (_, _, _, task_id, question_id, track)) in rows.iter().enumerate() {
+            let key = match (task_id, question_id, track) {
+                (Some(t), _, _) => (0, t.clone()),
+                (_, Some(q), _) => (1, q.to_string()),
+                (_, _, Some(t)) => (2, t.clone()),
+                _ => continue,
+            };
+            latest.insert(key, i);
+        }
+        let mut picked: Vec<usize> = latest.into_values().collect();
+        picked.sort_unstable();
+
+        let tasks = load_tasks(&tx)?;
+        let mut items = Vec::new();
+        for i in picked {
+            let (_, at, kind, task_id, question_id, track) = &rows[i];
+            let Some(kind) = EventKind::parse(kind) else {
+                continue;
+            };
+            let item = match kind {
+                EventKind::TaskReady
+                | EventKind::TaskChanged
+                | EventKind::TaskRejected
+                | EventKind::TaskInReview => {
+                    let Some(task) = task_id
+                        .as_deref()
+                        .and_then(|id| tasks.iter().find(|t| t.id == id))
+                    else {
+                        continue;
+                    };
+                    let status = status_of(&tasks, task);
+                    let current = match kind {
+                        EventKind::TaskInReview => status == TaskStatus::InReview,
+                        EventKind::TaskRejected => task.role == role,
+                        _ => task.role == role && status == TaskStatus::Ready,
+                    };
+                    if !current {
+                        continue;
+                    }
+                    InboxItem {
+                        kind,
+                        at: *at,
+                        task: Some(InboxTask {
+                            id: task.id.clone(),
+                            title: task.title.clone(),
+                            priority: task.priority,
+                            track: task.track.clone(),
+                            status,
+                        }),
+                        question: None,
+                        track: None,
+                    }
+                }
+                EventKind::QuestionAsked | EventKind::QuestionAnswered => {
+                    let Some(id) = question_id.and_then(|q| u64::try_from(q).ok()) else {
+                        continue;
+                    };
+                    let Some(q) = load_question(&tx, id).ok() else {
+                        continue;
+                    };
+                    let asked = kind == EventKind::QuestionAsked;
+                    if asked && q.status != QuestionStatus::Open {
+                        continue;
+                    }
+                    InboxItem {
+                        kind,
+                        at: *at,
+                        task: None,
+                        question: Some(InboxQuestion {
+                            id: q.id,
+                            topic: q.topic,
+                            question: asked.then_some(q.question),
+                            answer: if asked { None } else { q.answer },
+                            spec_file: if asked { None } else { q.spec_file },
+                            corrected: !asked && q.corrected_at.is_some(),
+                        }),
+                        track: None,
+                    }
+                }
+                EventKind::TrackChanged => {
+                    let Some(t) = track.as_deref().and_then(|name| load_track(&tx, name).ok())
+                    else {
+                        continue;
+                    };
+                    InboxItem {
+                        kind,
+                        at: *at,
+                        task: None,
+                        question: None,
+                        track: Some(InboxTrack {
+                            name: t.name,
+                            priority: t.priority,
+                        }),
+                    }
+                }
+            };
+            items.push(item);
+        }
+
+        if !peek && last > cursor {
+            tx.execute(
+                "UPDATE inbox_cursors SET seq = ?1 WHERE session = ?2 AND role = ?3",
+                params![last, session, role],
+            )?;
+        }
+        tx.commit()?;
+        Ok(Inbox { items })
     }
 
     /// Whether this hub wrote or imported a snapshot with this SHA-256 (hex).
@@ -1010,6 +1344,10 @@ impl Store {
               WHERE state = 'in_progress' AND lease_expires_at <= ?1",
             params![now],
         )?;
+        tx.execute(
+            "DELETE FROM events WHERE at < ?1",
+            [now - EVENT_RETENTION_SECS],
+        )?;
         Ok(tx)
     }
 }
@@ -1175,6 +1513,70 @@ fn newly_ready(conn: &Connection, id: &str) -> Result<Vec<String>> {
         .filter(|dep| status_of(&tasks, by_id[dep]) == TaskStatus::Ready)
         .map(str::to_string)
         .collect())
+}
+
+/// Appends an event (Spec 01 §2.6) inside the caller's write transaction.
+#[allow(clippy::too_many_arguments)]
+fn emit(
+    conn: &Connection,
+    now: i64,
+    kind: EventKind,
+    role: &str,
+    origin: Option<&str>,
+    task_id: Option<&str>,
+    question_id: Option<u64>,
+    track: Option<&str>,
+) -> Result<()> {
+    let question_id = question_id.map(sql_id).transpose()?;
+    conn.execute(
+        "INSERT INTO events (at, kind, role, origin, task_id, question_id, track)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            now,
+            kind.as_str(),
+            role,
+            origin,
+            task_id,
+            question_id,
+            track
+        ],
+    )?;
+    Ok(())
+}
+
+/// Emits `kind` for the task's role when the task is ready.
+fn emit_if_ready(conn: &Connection, id: &str, kind: EventKind, now: i64) -> Result<()> {
+    let tasks = load_tasks(conn)?;
+    let task = find(&tasks, id)?;
+    if status_of(&tasks, task) == TaskStatus::Ready {
+        emit(conn, now, kind, &task.role, None, Some(id), None, None)?;
+    }
+    Ok(())
+}
+
+/// The role that asked question `id`: from its `question_asked` event, else
+/// from a worktree binding of the asking session. `None` when neither is known
+/// (an imported question, or an unbound session after the event was pruned).
+fn asker_role(conn: &Connection, id: u64, asked_by: &str) -> Result<Option<String>> {
+    let from_event: Option<String> = conn
+        .query_row(
+            "SELECT origin FROM events WHERE kind = 'question_asked' AND question_id = ?1
+              ORDER BY seq LIMIT 1",
+            [sql_id(id)?],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    if from_event.is_some() {
+        return Ok(from_event);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT role FROM bindings WHERE session = ?1 ORDER BY root LIMIT 1",
+            [asked_by],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 fn ensure_holder(task: &Task, session: &str, now: i64) -> Result<()> {
