@@ -98,6 +98,15 @@ fn clean_room_cli_write_is_flagged_with_or_without_agent() {
     );
     assert_eq!(found[0].entry_ids, [1, 2, 3]);
 
+    // A failed write attempt is still a clean-room write through the CLI.
+    let attempt = Entry {
+        ok: false,
+        error: Some("no such role".into()),
+        ..cli(1, "task add", true, None)
+    };
+    let all = problems(&[attempt], &[], "0.1.0+100");
+    assert_eq!(of_kind(&all, ProblemKind::CleanRoomCli).len(), 1);
+
     let none = [
         cli(1, "task add", false, None),
         cli(2, "task claim", true, None),

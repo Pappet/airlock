@@ -104,7 +104,8 @@ pub enum Via {
 }
 
 /// `previous_briefing` is when the session last got a briefing (unix
-/// seconds); answers corrected after it are reported as changed. `None` means
+/// seconds); answers corrected at or after it are reported as changed (times
+/// are whole seconds, so a same-second correction is shown rather than lost). `None` means
 /// no earlier briefing is known, so every correction counts.
 pub fn build(
     store: &Store,
@@ -155,7 +156,7 @@ pub fn build(
         .filter(|q| {
             q.status == QuestionStatus::Resolved
                 && q.corrected_at
-                    .is_some_and(|at| previous_briefing.is_none_or(|previous| at > previous))
+                    .is_some_and(|at| previous_briefing.is_none_or(|previous| at >= previous))
         })
         .cloned()
         .collect();

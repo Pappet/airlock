@@ -172,6 +172,22 @@ fn last_briefing_is_latest_briefing_command_of_that_session() {
 }
 
 #[test]
+fn last_briefing_ignores_failed_briefings() {
+    let dir = TempDir::new().unwrap();
+    let mut log = open(&dir);
+    log.record(&entry(100, "s1", "session_start")).unwrap();
+    let mut failed = entry(200, "s1", "session_start");
+    failed.ok = false;
+    failed.error = Some("boom".into());
+    log.record(&failed).unwrap();
+    assert_eq!(log.last_briefing("s1").unwrap(), Some(100));
+    let mut only_failed = entry(300, "s2", "start");
+    only_failed.ok = false;
+    log.record(&only_failed).unwrap();
+    assert_eq!(log.last_briefing("s2").unwrap(), None);
+}
+
+#[test]
 fn last_briefing_ignores_non_briefing_commands() {
     let dir = TempDir::new().unwrap();
     let mut log = open(&dir);

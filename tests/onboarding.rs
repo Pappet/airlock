@@ -899,9 +899,11 @@ fn briefing_shows_answer_changed_until_the_next_briefing() {
     assert!(!text.contains("Answer changed"), "{text}");
     assert_eq!(first["structuredContent"]["corrected_answers"], json!([]));
 
-    // Log times are whole seconds: the correction must fall after the briefing.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // No pause after the first briefing: a correction in its very second still shows.
     env.ok(&env.main, &["question", "answer", "1", "Truncated."]);
+    // Log times are whole seconds: the second briefing must fall after the
+    // correction, or the third could not tell the correction was already shown.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
 
     let second = engine_session_start(&env);
     let text = second["content"][0]["text"].as_str().unwrap();

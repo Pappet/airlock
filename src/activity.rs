@@ -298,11 +298,11 @@ impl ActivityLog {
         Ok(id.unwrap_or(0) as u64)
     }
 
-    /// When `session` last ran a briefing command, if ever.
+    /// When `session` last got a briefing (a successful briefing command), if ever.
     pub fn last_briefing(&self, session: &str) -> Result<Option<i64>> {
         let placeholders = vec!["?"; BRIEFING_COMMANDS.len()].join(", ");
         let sql = format!(
-            "SELECT MAX(at) FROM entries WHERE session = ? AND command IN ({placeholders})"
+            "SELECT MAX(at) FROM entries WHERE session = ? AND ok = 1 AND command IN ({placeholders})"
         );
         let args = std::iter::once(session).chain(BRIEFING_COMMANDS.iter().copied());
         let at: Option<i64> = self
