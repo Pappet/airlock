@@ -57,7 +57,8 @@ impl Server {
         if let Some(role) = &role {
             ensure_role(&project, role)?;
         }
-        let store = Store::open(&project.database)?;
+        let mut store = Store::open(&project.database)?;
+        store.act_as(&session)?;
         Ok(Self {
             hub,
             project,
@@ -433,6 +434,17 @@ impl Server {
                 }
                 claim(&mut self.store, &id, &self.session, lease, now)?.to_json()
             }
+            "task_hold" => {
+                let id = str_arg(args, "task_id")?;
+                let reason = str_arg(args, "reason")?;
+                let task = self.store.hold(&id, &reason, now)?;
+                Ok(json!({ "task_id": task.id, "hold": task.hold }))
+            }
+            "task_resume" => {
+                let id = str_arg(args, "task_id")?;
+                let task = self.store.resume(&id, now)?;
+                Ok(json!({ "task_id": task.id }))
+            }
             "task_release" => {
                 let id = str_arg(args, "task_id")?;
                 self.ensure_own_role(&self.store.task(&id, now)?)?;
@@ -737,6 +749,18 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
                 "notes": { "type": "string", "description": "What was done and how it was verified" },
                 "review": { "type": "boolean", "description": "Submit for human review instead of marking done" },
             }),
+            &["task_id"],
+        ),
+        tool(
+            "task_hold",
+            "Put an open task on hold because it waits for something outside Airlock (a capture, a decision): task_next passes it over and claims are refused until task_resume. Holding again replaces the reason. Keeps the task's priority.",
+            json!({ "task_id": task_id, "reason": { "type": "string", "description": "What the task waits for" } }),
+            &["task_id", "reason"],
+        ),
+        tool(
+            "task_resume",
+            "Take a task off hold; when it is ready, its role is told again (inbox).",
+            json!({ "task_id": task_id }),
             &["task_id"],
         ),
         tool(

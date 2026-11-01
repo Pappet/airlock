@@ -168,6 +168,7 @@ pub fn run(cli: Cli) -> Result<()> {
         .or(bound_session)
         .unwrap_or_else(default_session);
     let mut store = Store::open(&project.database)?;
+    store.act_as(&session)?;
     // Set from the outcome: whether this call corrected an earlier answer.
     let mut correction = false;
     // Set from the outcome: how many inbox items were read.
@@ -774,6 +775,18 @@ fn task(
             let task = store.heartbeat(&id, session, lease_secs(lease)?, notes.as_deref(), now)?;
             print_lease(out, &task, "Renewed", now)
         }
+        TaskCommand::Hold { id, reason } => {
+            let task = store.hold(&id, &reason, now)?;
+            out.print(&json!({ "task_id": task.id, "hold": task.hold }), || {
+                format!("{} is on hold: {reason}", task.id)
+            })
+        }
+        TaskCommand::Resume { id } => {
+            let task = store.resume(&id, now)?;
+            out.print(&json!({ "task_id": task.id }), || {
+                format!("Resumed {}", task.id)
+            })
+        }
         TaskCommand::Release { id, force } => {
             let task = store.release(&id, session, force, now)?;
             out.print(&json!({ "task_id": task.id }), || {
@@ -1090,10 +1103,11 @@ pub(crate) fn ready_in_order<'a>(
     role: &str,
 ) -> Vec<TaskView<'a>> {
     let done = done_ids(tasks);
+    // A task on hold waits for something outside Airlock: never handed out.
     let mut ready: Vec<TaskView<'a>> = tasks
         .iter()
         .map(|t| TaskView::new(t, &done))
-        .filter(|v| v.task.role == role && v.status == TaskStatus::Ready)
+        .filter(|v| v.task.role == role && v.status == TaskStatus::Ready && v.task.hold.is_none())
         .collect();
     ready.sort_by(|a, b| {
         rank(b.task, tracks)
@@ -1442,7 +1456,11 @@ fn task_table(views: &[TaskView]) -> String {
         .map(|v| {
             [
                 v.task.id.clone(),
-                v.status.as_str().to_string(),
+                if v.task.hold.is_some() {
+                    format!("{} (held)", v.status.as_str())
+                } else {
+                    v.status.as_str().to_string()
+                },
                 v.task.role.clone(),
                 v.task.priority.as_str().to_string(),
                 v.task.track.clone().unwrap_or_default(),
@@ -1546,6 +1564,9 @@ fn work_package(view: &TaskView) -> String {
     let mut lines = vec![format!("## {} — {}", t.id, t.title), header];
     if let Some(session) = &t.claimed_by {
         lines.push(format!("claimed by: {session}"));
+    }
+    if let Some(reason) = &t.hold {
+        lines.push(format!("on hold: {reason}"));
     }
     lines.push(String::new());
     lines.push(format!("**Blocked by:** {}", list(&t.blocked_by)));
@@ -1655,6 +1676,14 @@ pub(crate) fn inbox_text(role: &str, inbox: &Inbox) -> String {
                 EventKind::TaskChanged => task_line(item.task.as_ref()?, "changed"),
                 EventKind::TaskRejected => task_line(item.task.as_ref()?, "rejected in review"),
                 EventKind::TaskInReview => task_line(item.task.as_ref()?, "waits for review"),
+                EventKind::TaskDone => {
+                    let task = item.task.as_ref()?;
+                    let mut line = task_line(task, "done");
+                    if let Some(notes) = &task.notes {
+                        line.push_str(&format!("\n    notes: {}", notes.replace('\n', "\n    ")));
+                    }
+                    line
+                }
                 EventKind::QuestionAsked => {
                     let q = item.question.as_ref()?;
                     format!(
@@ -1714,6 +1743,7 @@ mod tests {
             claimed_by: None,
             lease_expires_at: None,
             progress: None,
+            hold: None,
             created_at,
             updated_at: created_at,
         }

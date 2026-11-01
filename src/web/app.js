@@ -338,6 +338,7 @@ function card(task, extraClass = "", onclick, showTrack = true) {
       task.claimed_by ? [" · ", h("span", { class: "card__who" }, task.claimed_by)] : "",
       minutes !== null ? ` · ${minutes} min` : ""),
     h("div", { class: "badges" },
+      task.hold ? h("span", { class: "badge", title: `on hold: ${task.hold}` }, "on hold") : null,
       task.blocked_by.length ? h("span", { class: "badge", title: "blocked by" }, `← ${task.blocked_by.join(", ")}`) : null,
       task.status !== "done" ? overlapBadges(task.id) : null),
   );
@@ -1141,6 +1142,7 @@ function renderDrawer() {
     h("section", {}, h("span", { class: "label" }, "Do"), h("pre", {}, task.do)),
     h("section", {}, h("span", { class: "label" }, "Verify · never executed by Airlock"), h("pre", {}, task.verify)),
     h("section", {}, h("span", { class: "label" }, "Notes"), task.notes ? h("pre", {}, task.notes) : h("div", { class: "muted" }, "—")),
+    task.hold ? h("section", {}, h("span", { class: "label" }, "On hold"), h("pre", {}, task.hold)) : "",
     task.progress ? h("section", {}, h("span", { class: "label" }, task.status === "in_progress" ? "Progress" : "Earlier progress"), h("pre", {}, task.progress)) : "",
     h("section", {}, h("span", { class: "label" }, "Blocked by"), idLinks(task.blocked_by)),
     h("section", {}, h("span", { class: "label" }, "Unblocks"), idLinks(dependents)),

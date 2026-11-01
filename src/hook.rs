@@ -106,6 +106,7 @@ fn reference(item: &InboxItem) -> Option<String> {
         }
         EventKind::TaskRejected => format!("{} rejected in review", task()?.0),
         EventKind::TaskInReview => format!("{} waits for review", task()?.0),
+        EventKind::TaskDone => format!("{} done", task()?.0),
         EventKind::QuestionAsked => format!("question #{}", item.question.as_ref()?.id),
         EventKind::QuestionAnswered => format!("answer to #{}", item.question.as_ref()?.id),
         EventKind::TrackChanged => {

@@ -274,7 +274,7 @@ fn unbound_session_runs_the_full_workflow() {
             ),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 19);
+    assert_eq!(s.tool_names(1).len(), 21);
     let own_id = s.tool_error(15);
     assert!(own_id.contains("ids are assigned by Airlock"), "{own_id}");
     let numeric = s.tool_error(16);
@@ -618,7 +618,7 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
             call(5, "task_claim", json!({ "task_id": "L-1" })),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 19);
+    assert_eq!(s.tool_names(1).len(), 21);
     assert_eq!(
         s.ok(2)["role"],
         "engine",
@@ -1211,4 +1211,71 @@ fn claiming_a_second_task_warns() {
     );
     assert!(s.ok(1).get("holding").is_none());
     assert_eq!(s.ok(2)["holding"], json!(["E-1"]));
+}
+
+#[test]
+fn the_lead_holds_and_resumes_engine_work() {
+    let env = Env::new();
+    env.cli(&[
+        "task", "add", "Second", "--role", "engine", "--do", "x", "--verify", "y",
+    ]); // E-2
+    let lead = ["--role", "lead", "--session", "lead-1"];
+    let engine = ["--role", "engine", "--session", "engine-1"];
+    env.session(&engine, &[call(1, "session_start", json!({}))]);
+    let s = env.session(
+        &lead,
+        &[
+            call(
+                1,
+                "task_hold",
+                json!({ "task_id": "E-1", "reason": "waits for a capture" }),
+            ),
+            call(2, "task_hold", json!({ "task_id": "E-1" })),
+        ],
+    );
+    assert_eq!(s.ok(1)["hold"], "waits for a capture");
+    assert!(s.tool_error(2).contains("reason"));
+
+    let s = env.session(
+        &engine,
+        &[
+            request(1, "tools/list", json!({})),
+            call(2, "task_next", json!({})),
+            call(3, "task_claim", json!({ "task_id": "E-1" })),
+            call(4, "task_hold", json!({ "task_id": "E-2", "reason": "x" })),
+            call(5, "task_get", json!({ "task_id": "E-1" })),
+        ],
+    );
+    let tools = s.tool_names(1);
+    assert!(
+        !tools.iter().any(|t| t == "task_hold" || t == "task_resume"),
+        "clean-room"
+    );
+    assert_eq!(s.ok(2)["task"]["id"], "E-2", "E-1 is passed over");
+    assert!(s.tool_error(3).contains("on hold (waits for a capture)"));
+    assert!(
+        s.get(4)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown tool")
+    );
+    assert_eq!(s.ok(5)["hold"], "waits for a capture");
+
+    let s = env.session(
+        &lead,
+        &[call(1, "task_resume", json!({ "task_id": "E-1" }))],
+    );
+    assert_eq!(s.ok(1)["task_id"], "E-1");
+    let s = env.session(
+        &engine,
+        &[call(1, "inbox", json!({})), call(2, "task_next", json!({}))],
+    );
+    let ids: Vec<&str> = s.ok(1)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["task"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["E-1"], "resumed after the engine's briefing");
+    assert_eq!(s.ok(2)["task"]["id"], "E-1");
 }

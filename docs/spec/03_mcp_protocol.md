@@ -51,7 +51,7 @@ If the bound role has `clean_room: true` in the project config, the server expos
 
 `session_start`, `task_next`, `inbox`, `task_get`, `task_claim`, `task_heartbeat`, `task_release`, `task_complete`, `question_ask`, `question_list`
 
-restricted to the bound role's tasks (including `task_get`) and the session's own questions (`question_list`). `task_create`, `task_update`, `track_list`, `track_create`, `track_update`, `track_remove`, `question_answer`, `question_resolve`, and `doc_sync` are not listed at all. This keeps an agent from accidentally answering its own questions or browsing other roles' work; it is a guardrail, not a security boundary (Spec 05 §4). Task ids, role names, and track names (which appear in the work packages of the role's own tasks) are coordination metadata, not material from the analysis side, so naming them would be harmless; clean-room errors nevertheless name only the session's own role ("task `L-1` is not available to role `engine`"), keeping the session's view limited to its own work.
+restricted to the bound role's tasks (including `task_get`) and the session's own questions (`question_list`). `task_create`, `task_update`, `task_hold`, `task_resume`, `track_list`, `track_create`, `track_update`, `track_remove`, `question_answer`, `question_resolve`, and `doc_sync` are not listed at all. This keeps an agent from accidentally answering its own questions or browsing other roles' work; it is a guardrail, not a security boundary (Spec 05 §4). Task ids, role names, and track names (which appear in the work packages of the role's own tasks) are coordination metadata, not material from the analysis side, so naming them would be harmless; clean-room errors nevertheless name only the session's own role ("task `L-1` is not available to role `engine`"), keeping the session's view limited to its own work.
 
 Without `--role`, all tools are exposed and `role` parameters are required where listed.
 
@@ -87,6 +87,11 @@ What changed for the role since this session last looked (Spec 01 §2.6): ready,
 ### 3.4 `task_heartbeat`
 - **Parameters:** `task_id` (string), `lease_minutes` (integer, optional), `notes` (string, optional): the running note for the session's successor — done so far, remaining, next step. It replaces the previous note; an empty string removes it; without `notes` the note stays (Spec 01 §2.4). There is no separate tool for it, so the clean-room tool set is unchanged.
 - **Returns:** `{ task_id, lease_expires_at, progress }` (`progress` is `null` when the task has no note)
+
+### 3.4a `task_hold` / `task_resume`
+Put an `open` task on hold because it waits for something outside Airlock, or take it off hold (Spec 01 §2.1, *On Hold*). Not in the clean-room tool set.
+- **Parameters:** `task_hold`: `task_id` (string), `reason` (string, required); `task_resume`: `task_id` (string)
+- **Returns:** `{ task_id, hold }` / `{ task_id }`. `task_next` passes a held task over and `task_claim` refuses it with the reason; `task_get` and task lists carry `hold`.
 
 ### 3.5 `task_release`
 - **Parameters:** `task_id` (string)

@@ -86,10 +86,16 @@ stateDiagram-v2
 | finish | `task done [--review]` | `task_complete` | lease holder; others with `--force` |
 | approve | `task approve` | — | human / lead (CLI, dashboard) |
 | reject | `task reject --notes` | — | human / lead (CLI, dashboard) |
+| hold | `task hold --reason` | `task_hold` | any non-clean-room session; `open` tasks only |
+| resume | `task resume` | `task_resume` | any non-clean-room session |
 
 Editing changes only the content fields (`title`, `role`, `priority`, `track`, `blocked_by`, `read`, `touch`, `do`, `verify`) and is not a transition: state, claim, lease, and `notes` stay as they are, and the id never changes. A task that is `in_progress`, `in_review`, or `done` is edited only with `--force`, since a session may be working from the old content.
 
 Leaving `in_progress` always clears `claimed_by` and `lease_expires_at`. `done` is terminal; there is no reopen in v0.x — create a follow-up task instead.
+
+#### On Hold
+
+A task that waits for something outside Airlock — a capture the user still has to record, a decision — is put **on hold** with a reason (`task hold <id> --reason "…"`, MCP `task_hold`). It is not a state: the task stays `open` with its effective status (`ready` or `blocked`) and keeps its priority, so the order of the work is not bent to keep it out of the way. While it is on hold, `task next` (and the briefing's next package) passes it over, a claim is refused with the reason, and a `task_ready` event is neither written nor shown for it. `task resume` takes it off hold; if it is ready, its role is told again (`task_ready`, §2.6). Only `open` tasks can be put on hold (release a claimed one first); holding again replaces the reason. Coordinating roles hold and resume; the clean-room tool set has neither tool. The hold is machine-local like a claim: it is not exported (Spec 05 §3.2), and an import drops it. `task list` marks a held task `ready (held)` / `blocked (held)`, `task show` prints the reason, and the dashboard shows an "on hold" badge.
 
 #### Dependency Rules
 
@@ -99,7 +105,7 @@ Leaving `in_progress` always clears `claimed_by` and `lease_expires_at`. `done` 
 
 #### Selection Order for `task next`
 
-Among tasks of the requested role with effective status `ready`:
+Among tasks of the requested role with effective status `ready` that are not on hold:
 
 1. highest **track priority** first (a task without a track, or with a track that is unknown, counts as `normal`),
 2. then highest task `priority`,
@@ -226,12 +232,13 @@ Every change that concerns another session writes an **event** in the same trans
 | `task_in_review` | a task is completed for review | every coordinating role except the task's own |
 | `question_asked` | a question is asked, including the automatic `overlap:` question at claim time | every coordinating role except the asker's |
 | `question_answered` | a question is answered or its answer corrected | the asker's role |
+| `task_done` | a task is completed (not for review) or approved | every coordinating role except the task's own |
 
-A **coordinating** role is any role without `clean_room`. The asker's role is the role the asking session acted in (the MCP server's bound role, the CLI worktree binding of that session); if it is unknown, a `question_asked` event reaches every coordinating role. The answer finds the asker through the question's `question_asked` event or, failing that, a worktree binding of the asking session; when neither names a role (an unbound asker after the event was pruned, or an imported question), `question_answered` goes to every coordinating role instead. An expired lease writes no event (expiry is derived, §2.4): the task shows up again through `task next`, not through the inbox.
+Every event also records the session that caused it, and **a session never sees its own changes** in its inbox: the lead that edits, releases, or holds its own tasks is not told about them, nor is an engine that releases its own task. A **coordinating** role is any role without `clean_room`. The asker's role is the role the asking session acted in (the MCP server's bound role, the CLI worktree binding of that session); if it is unknown, a `question_asked` event reaches every coordinating role. The answer finds the asker through the question's `question_asked` event or, failing that, a worktree binding of the asking session; when neither names a role (an unbound asker after the event was pruned, or an imported question), `question_answered` goes to every coordinating role instead. An expired lease writes no event (expiry is derived, §2.4): the task shows up again through `task next`, not through the inbox.
 
 The **inbox** of a session for a role lists the events for that role since the session last read it, joined with what that role may read anyway:
 
-- tasks: id, title, priority, track, effective status. `task_ready` and `task_changed` appear only while the task is still ready and still the role's; `task_in_review` only while it is in review.
+- tasks: id, title, priority, track, effective status. `task_ready` and `task_changed` appear only while the task is still ready, still the role's, and not on hold; `task_in_review` only while it is in review. `task_done` carries the completion notes, so a coordinating role reads a request such as "needs a follow-up task" without anyone copying it.
 - questions: id and topic; for `question_asked` (coordinating roles only) the question, while it is still open; for `question_answered` the current answer, its spec file, and whether it was a correction.
 - tracks: name and current priority.
 

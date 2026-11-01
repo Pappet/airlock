@@ -1334,25 +1334,26 @@ fn events_are_written_with_their_change() {
     store
         .complete("E-1", "engine-1", None, false, false, 3)
         .unwrap();
-    assert_eq!(kinds(&dir)[1..], ["task_ready engine"]);
-    assert_eq!(events(&dir)[1].3.as_deref(), Some("E-2"));
+    assert_eq!(kinds(&dir)[1..], ["task_done *", "task_ready engine"]);
+    assert_eq!(events(&dir)[1].2.as_deref(), Some("engine"), "origin");
+    assert_eq!(events(&dir)[2].3.as_deref(), Some("E-2"));
 
     // release → ready again
     store.claim("E-2", "engine-1", 600, 4).unwrap();
     store.release("E-2", "engine-1", false, 5).unwrap();
-    assert_eq!(kinds(&dir)[2..], ["task_ready engine"]);
+    assert_eq!(kinds(&dir)[3..], ["task_ready engine"]);
 
     // review: in_review for the coordinators, origin engine; reject → ready, rejected
     store.claim("E-2", "engine-1", 600, 6).unwrap();
     store
         .complete("E-2", "engine-1", None, true, false, 7)
         .unwrap();
-    assert_eq!(events(&dir)[3].0, "task_in_review");
-    assert_eq!(events(&dir)[3].1, "*");
-    assert_eq!(events(&dir)[3].2.as_deref(), Some("engine"));
+    assert_eq!(events(&dir)[4].0, "task_in_review");
+    assert_eq!(events(&dir)[4].1, "*");
+    assert_eq!(events(&dir)[4].2.as_deref(), Some("engine"));
     store.reject("E-2", "again", 8).unwrap();
     assert_eq!(
-        kinds(&dir)[4..],
+        kinds(&dir)[5..],
         ["task_ready engine", "task_rejected engine"]
     );
 
@@ -1362,7 +1363,7 @@ fn events_are_written_with_their_change() {
         ..Default::default()
     };
     store.edit_task("E-2", edit, false, 9).unwrap();
-    assert_eq!(kinds(&dir)[6..], ["task_changed engine"]);
+    assert_eq!(kinds(&dir)[7..], ["task_changed engine"]);
     store
         .add_task(role_task("engine", "E", &["E-2"]), 10)
         .unwrap(); // E-3, blocked
@@ -1371,7 +1372,7 @@ fn events_are_written_with_their_change() {
         ..Default::default()
     };
     store.edit_task("E-3", edit, false, 11).unwrap();
-    assert_eq!(events(&dir).len(), 7);
+    assert_eq!(events(&dir).len(), 8);
     // moving a ready task to another role → task_ready for that role
     let mut spec = role_task("engine", "E", &[]);
     spec.track = Some("core".into());
@@ -1381,7 +1382,7 @@ fn events_are_written_with_their_change() {
         ..Default::default()
     };
     store.edit_task("E-4", edit, false, 13).unwrap();
-    assert_eq!(kinds(&dir)[7..], ["task_ready engine", "task_ready spec"]);
+    assert_eq!(kinds(&dir)[8..], ["task_ready engine", "task_ready spec"]);
 
     // track priority → every role with open tasks on it; a description only → nothing
     let edit = TrackEdit {
@@ -1389,13 +1390,13 @@ fn events_are_written_with_their_change() {
         ..Default::default()
     };
     store.edit_track("core", edit, 14).unwrap();
-    assert_eq!(kinds(&dir)[9..], ["track_changed spec"]);
+    assert_eq!(kinds(&dir)[10..], ["track_changed spec"]);
     let edit = TrackEdit {
         description: Some("d".into()),
         ..Default::default()
     };
     store.edit_track("core", edit, 15).unwrap();
-    assert_eq!(events(&dir).len(), 10);
+    assert_eq!(events(&dir).len(), 11);
 
     // questions: asked for the coordinators, answered for the asker's role
     store
@@ -1404,7 +1405,7 @@ fn events_are_written_with_their_change() {
     store.answer(1, "Front", "lead-1", None, 17).unwrap();
     store.answer(1, "Front 90°", "lead-1", None, 18).unwrap();
     assert_eq!(
-        kinds(&dir)[10..],
+        kinds(&dir)[11..],
         [
             "question_asked *",
             "question_answered engine",
@@ -1419,7 +1420,7 @@ fn events_are_written_with_their_change() {
         .complete("E-2", "engine-1", None, true, false, 21)
         .unwrap();
     store.approve("E-2", None, 22).unwrap();
-    let tail: Vec<_> = events(&dir)[13..]
+    let tail: Vec<_> = events(&dir)[14..]
         .iter()
         .map(|e| (e.0.clone(), e.3.clone()))
         .collect();
@@ -1427,6 +1428,7 @@ fn events_are_written_with_their_change() {
         tail,
         [
             ("task_in_review".to_string(), Some("E-2".to_string())),
+            ("task_done".to_string(), Some("E-2".to_string())),
             ("task_ready".to_string(), Some("E-3".to_string()))
         ]
     );
@@ -1684,4 +1686,109 @@ fn answers_to_an_unknown_asker_go_to_the_coordinating_roles() {
     );
     let engine = store.inbox("engine-1", "engine", false, false, 3).unwrap();
     assert!(engine.items.is_empty());
+}
+
+#[test]
+fn a_session_never_sees_its_own_changes() {
+    let (dir, _) = open();
+    let path = dir.path().join("airlock.db");
+    let mut engine1 = Store::open(&path).unwrap();
+    engine1.act_as("engine-1").unwrap();
+    let mut engine2 = Store::open(&path).unwrap();
+    engine2.act_as("engine-2").unwrap();
+    for s in [&mut engine1, &mut engine2] {
+        s.add_task(role_task("engine", "E", &[]), 0)
+            .unwrap_or_else(|_| unreachable!());
+    }
+    engine1
+        .inbox("engine-1", "engine", false, false, 1)
+        .unwrap();
+    engine2
+        .inbox("engine-2", "engine", false, false, 1)
+        .unwrap();
+    // engine-1 claims and releases E-1: news for engine-2, not for itself.
+    engine1.claim("E-1", "engine-1", 600, 2).unwrap();
+    engine1.release("E-1", "engine-1", false, 3).unwrap();
+    assert!(
+        engine1
+            .inbox("engine-1", "engine", false, false, 4)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let other = engine2
+        .inbox("engine-2", "engine", false, false, 4)
+        .unwrap();
+    assert_eq!(inbox_kinds(&other), ["task_ready E-1"]);
+}
+
+#[test]
+fn completions_reach_the_coordinating_roles_with_their_notes() {
+    let (_dir, mut store) = open();
+    store.inbox("lead-1", "lead", true, false, 0).unwrap();
+    store.inbox("engine-2", "engine", false, false, 0).unwrap();
+    store.act_as("engine-1").unwrap();
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap();
+    store.claim("E-1", "engine-1", 600, 2).unwrap();
+    store
+        .complete(
+            "E-1",
+            "engine-1",
+            Some("done; needs a follow-up task"),
+            false,
+            false,
+            3,
+        )
+        .unwrap();
+    let lead = store.inbox("lead-1", "lead", true, false, 4).unwrap();
+    assert_eq!(inbox_kinds(&lead), ["task_done E-1"]);
+    let task = lead.items[0].task.as_ref().unwrap();
+    assert_eq!(task.notes.as_deref(), Some("done; needs a follow-up task"));
+    assert_eq!(task.status, airlock::core::TaskStatus::Done);
+    // Not for the engine's own role, and never for clean-room roles.
+    let engine = store.inbox("engine-2", "engine", false, false, 4).unwrap();
+    assert!(
+        engine.items.is_empty(),
+        "E-1's creation is stale: it is done"
+    );
+}
+
+#[test]
+fn holding_a_task_keeps_it_from_being_claimed_until_resumed() {
+    let (_dir, mut store) = open();
+    store.inbox("engine-1", "engine", false, false, 0).unwrap();
+    store.act_as("lead-1").unwrap();
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap(); // E-1
+    store.add_task(role_task("engine", "E", &[]), 1).unwrap(); // E-2
+    store
+        .add_task(role_task("engine", "E", &["E-2"]), 1)
+        .unwrap(); // E-3, blocked
+
+    assert!(err(store.hold("E-1", "  ", 2)).contains("needs a reason"));
+    let held = store.hold("E-1", "waits for a BF003 capture", 2).unwrap();
+    assert_eq!(held.hold.as_deref(), Some("waits for a BF003 capture"));
+    assert_eq!(held.priority, Priority::Normal, "the priority stays");
+    let refused = err(store.claim("E-1", "engine-1", 600, 3));
+    assert!(
+        refused.contains("on hold (waits for a BF003 capture)"),
+        "{refused}"
+    );
+    // A blocked task can be held too; becoming ready then announces nothing.
+    store.hold("E-3", "capture", 3).unwrap();
+    store.claim("E-2", "engine-1", 600, 4).unwrap();
+    assert!(err(store.hold("E-2", "x", 4)).contains("only open tasks"));
+    store
+        .complete("E-2", "engine-1", None, false, false, 5)
+        .unwrap();
+
+    // The engine's inbox: E-1 dropped while held, E-3 never announced.
+    let inbox = store.inbox("engine-1", "engine", false, false, 6).unwrap();
+    assert!(inbox.items.is_empty(), "{:?}", inbox.items);
+    // Resuming announces a ready task once more.
+    store.resume("E-1", 7).unwrap();
+    store.resume("E-3", 7).unwrap();
+    let inbox = store.inbox("engine-1", "engine", false, false, 8).unwrap();
+    assert_eq!(inbox_kinds(&inbox), ["task_ready E-1", "task_ready E-3"]);
+    assert!(err(store.resume("E-1", 9)).contains("not on hold"));
+    store.claim("E-1", "engine-1", 600, 9).unwrap();
 }

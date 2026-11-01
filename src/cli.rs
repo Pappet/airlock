@@ -227,6 +227,15 @@ pub enum TaskCommand {
         #[arg(long)]
         notes: Option<String>,
     },
+    /// Put an open task on hold: `task next` passes it over until it is resumed
+    Hold {
+        id: String,
+        /// What the task waits for (a capture, a decision)
+        #[arg(long)]
+        reason: String,
+    },
+    /// Take a task off hold
+    Resume { id: String },
     /// Give a claimed task back (state returns to open)
     Release {
         id: String,
@@ -470,6 +479,8 @@ impl Command {
                 TaskCommand::Claim { .. } => "task claim",
                 TaskCommand::Heartbeat { .. } => "task heartbeat",
                 TaskCommand::Release { .. } => "task release",
+                TaskCommand::Hold { .. } => "task hold",
+                TaskCommand::Resume { .. } => "task resume",
                 TaskCommand::Done { .. } => "task done",
                 TaskCommand::Approve { .. } => "task approve",
                 TaskCommand::Reject { .. } => "task reject",

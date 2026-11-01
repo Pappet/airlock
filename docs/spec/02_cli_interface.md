@@ -60,7 +60,7 @@ Templates, the layout file, commits, and worktree creation are specified in Spec
 ### 3.2 Task Operations
 
 #### `airlock task list [--role <role>] [--status <status>] [--track <name> | --no-track] [--priority <level>]`
-Lists tasks as a table (id, status, role, priority, track, claimed by, title), sorted by id with numbers compared as numbers (Spec 01 §2.1, id order). `<status>` is one of `blocked`, `ready`, `in_progress`, `in_review`, `done` (effective status, Spec 01 §2.1). `--track` keeps the tasks of one track (an unknown track is an error that names the defined tracks), `--no-track` those without a track (the two exclude each other). `--priority` means "at least this level": `--priority high` lists `high` and `critical` tasks.
+Lists tasks as a table (id, status — `(held)` added for a task on hold —, role, priority, track, claimed by, title), sorted by id with numbers compared as numbers (Spec 01 §2.1, id order). `<status>` is one of `blocked`, `ready`, `in_progress`, `in_review`, `done` (effective status, Spec 01 §2.1). `--track` keeps the tasks of one track (an unknown track is an error that names the defined tracks), `--no-track` those without a track (the two exclude each other). `--priority` means "at least this level": `--priority high` lists `high` and `critical` tasks.
 
 #### `airlock task next [--role <role>]`
 Shows the next ready task for the role (default: the worktree binding's role) (selection order, track priority first: Spec 01 §2.1) as a compact work package: id, title, track (when set) and priority, prerequisites, **Read**, **Touch**, **Do**, **Verify**. Does not claim it. With `--json` it prints the task with its `track` (the track name, `null` when the task has none) and `priority` (`critical`, `high`, `normal`, or `low`). Exits `1` with a clear message if no task is ready. Tasks sharing files with running work are handed out last (Spec 01 §2.1); if one is returned anyway, a warning naming the shared paths goes to stderr and `--json` carries `overlaps: [{ id, occupied, paths }]`.
@@ -101,6 +101,9 @@ Extends the current session's lease from now. Fails if the session does not hold
 
 #### `airlock task release <id> [--force]`
 Returns a claimed task to `open`. Without `--force`, only the lease holder may release.
+
+#### `airlock task hold <id> --reason <text>` / `airlock task resume <id>`
+Puts an `open` task on hold with the reason it waits for, or takes it off hold (Spec 01 §2.1, *On Hold*). A held task keeps its priority; `task next` passes it over and `task claim` refuses it with the reason. `--reason` is free text and logged as a key only.
 
 #### `airlock task done <id> [--notes <text>] [--review] [--force]`
 Finishes a claimed task: `done`, or `in_review` with `--review`. Without `--force`, only the lease holder may finish it. Prints the ids of tasks that became ready, then what changed for the task's role since this session last looked (`Since your last look:` with the inbox lines, Spec 01 §2.6; the inbox is marked as read) and the next task `task next` hands out (`Next: E-3 (critical, Navigation) Hotfix`, or `Next: nothing ready for <role>`). `--json` carries `inbox` and `next` as MCP `task_complete` does.
