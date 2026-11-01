@@ -7,7 +7,7 @@
 //! airlock processes (MCP servers and dashboards) with their build identity.
 
 use crate::cli::{Command, QuestionCommand, RoleCommand, TaskCommand, TrackCommand};
-use crate::store::Store;
+use crate::core::Question;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, Row, TransactionBehavior, params, params_from_iter};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,9 @@ pub const LIVE_SECS: i64 = 180;
 pub const TOUCH_SECS: u64 = 60;
 /// Longest `error` text kept, in characters.
 pub const ERROR_MAX: usize = 300;
+/// Longest `target` and argument key kept, in characters, so a hostile or
+/// mistaken value in an identifying argument cannot fill the log.
+pub const NAME_MAX: usize = 120;
 /// Commands that count as an agent's session briefing.
 pub const BRIEFING_COMMANDS: &[&str] = &["session_start", "prompt start", "start"];
 
@@ -83,6 +86,7 @@ CREATE TABLE entries (
     build      TEXT NOT NULL
 ) STRICT;
 CREATE INDEX entries_at ON entries (at);
+CREATE INDEX entries_session_at ON entries (session, at);
 
 CREATE TABLE processes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,19 +243,20 @@ impl ActivityLog {
         );
         conn.pragma_update(None, "synchronous", "NORMAL")?;
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        let version = usize::try_from(version).unwrap_or(usize::MAX);
-        ensure!(
-            version <= MIGRATIONS.len(),
-            "{} has schema version {version}; this airlock supports up to {}",
-            path.display(),
-            MIGRATIONS.len()
-        );
-        for migration in &MIGRATIONS[version..] {
-            tx.execute_batch(migration)?;
+        // A current log needs no write: readers then never wait for the lock.
+        if schema_version(&conn, path)? == MIGRATIONS.len() {
+            return Ok(Self { conn });
         }
-        tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
+        // Create or migrate; the version is read again under the write lock,
+        // since a concurrent opener may have done it meanwhile.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version = schema_version(&tx, path)?;
+        if version < MIGRATIONS.len() {
+            for migration in &MIGRATIONS[version..] {
+                tx.execute_batch(migration)?;
+            }
+            tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
+        }
         tx.commit()?;
         Ok(Self { conn })
     }
@@ -435,6 +440,19 @@ impl ActivityLog {
     }
 }
 
+/// The log's schema version, refused when newer than this airlock knows.
+fn schema_version(conn: &Connection, path: &Path) -> Result<usize> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let version = usize::try_from(version).unwrap_or(usize::MAX);
+    ensure!(
+        version <= MIGRATIONS.len(),
+        "{} has schema version {version}; this airlock supports up to {}",
+        path.display(),
+        MIGRATIONS.len()
+    );
+    Ok(version)
+}
+
 /// Switch to WAL. On a fresh file SQLite answers a concurrent switch with
 /// SQLITE_BUSY without consulting the busy timeout, so retry for a while.
 fn enable_wal(conn: &Connection) -> Result<String> {
@@ -537,11 +555,18 @@ pub fn truncate_error(message: &str) -> String {
     message.chars().take(ERROR_MAX).collect()
 }
 
-/// Whether answering question `id` now would correct an earlier answer: the
-/// question exists and already has one. Callers check this before the answer
-/// runs and add `correction` to the entry's `changed` list.
-pub fn is_correction(store: &Store, id: u64) -> bool {
-    store.question(id).is_ok_and(|q| q.answer.is_some())
+/// Whether the answer call that returned `question` corrected an earlier
+/// answer. Exact, because the store sets `corrected_at` to the answer's time
+/// on a correction and leaves it unset on a first answer. Callers add
+/// `correction` to the entry's `changed` list when it holds; reading it from
+/// the outcome means a concurrent answer cannot make the mark wrong.
+pub fn corrects(question: &Question) -> bool {
+    question.corrected_at.is_some() && question.corrected_at == question.answered_at
+}
+
+/// Cut a target or argument key to [`NAME_MAX`] characters.
+fn cap(text: &str) -> String {
+    text.chars().take(NAME_MAX).collect()
 }
 
 /// Whether `command` changes state: false for the reads (MCP, CLI and REST
@@ -557,12 +582,13 @@ pub fn is_write(command: &str) -> bool {
 /// (letters, digits, `-`, `_`, `.`) is reduced to its key. `target` is the
 /// first of `task_id`, `question_id`, `id`, `name` that holds a string or a
 /// number (`question_id` numbers read `#<n>`); `changed` lists every other
-/// key, with `new_name` recorded as plain `name`. `_command` is unused so far:
+/// key, with `new_name` recorded as plain `name`. Target and keys are cut to
+/// [`NAME_MAX`] characters. `_command` is unused so far:
 /// no command needs rules of its own.
 pub fn summarize_json(_command: &str, args: &Map<String, Value>) -> (Option<String>, Vec<String>) {
     let target = TARGET_KEYS.iter().find_map(|&key| {
         let text = match args.get(key)? {
-            Value::String(s) => s.clone(),
+            Value::String(s) => cap(s),
             Value::Number(n) if key == "question_id" => format!("#{n}"),
             Value::Number(n) => n.to_string(),
             _ => return None,
@@ -577,7 +603,7 @@ pub fn summarize_json(_command: &str, args: &Map<String, Value>) -> (Option<Stri
             let key = if key == "new_name" { "name" } else { key };
             match value_text(key, value) {
                 Some(text) => format!("{key}: {text}"),
-                None => key.to_string(),
+                None => cap(key),
             }
         })
         .collect();
@@ -587,7 +613,8 @@ pub fn summarize_json(_command: &str, args: &Map<String, Value>) -> (Option<Stri
 /// The target and changed fields of an entry, from a parsed CLI command.
 ///
 /// `target` is what the command acts on: a task id, a question as `#<id>`, a
-/// track or role name (for `use`, the role it binds). `changed` lists the
+/// track or role name (for `use`, the role it binds), cut to [`NAME_MAX`]
+/// characters. `changed` lists the
 /// arguments the caller gave, in the key vocabulary of the MCP tools (`--lease`
 /// is `lease_minutes`, `--spec` is `spec_file`, dashes become underscores) and
 /// under the same rule as [`summarize_json`]: a key only, except for the short
@@ -695,7 +722,7 @@ pub fn summarize_cli(command: &Command) -> (Option<String>, Vec<String>) {
         | Command::Mcp { .. }
         | Command::Serve { .. } => None,
     };
-    (target, changed.0)
+    (target.as_deref().map(cap), changed.0)
 }
 
 fn summarize_task(sub: &TaskCommand, changed: &mut Changed) -> Option<String> {

@@ -417,7 +417,10 @@ fn activity_text_has_day_headers_rows_and_problem_lines() {
 
     let text = env.ok(&["activity"]);
     let day = text.lines().next().unwrap();
-    let date = day.strip_prefix("── ").unwrap_or_else(|| panic!("{day:?}"));
+    let date = day
+        .strip_prefix("── ")
+        .and_then(|d| d.strip_suffix(" (UTC)"))
+        .unwrap_or_else(|| panic!("{day:?}"));
     assert_eq!(date.len(), "YYYY-MM-DD".len(), "{day:?}");
     assert!(date.starts_with("20"), "{day:?}");
     let row = text
@@ -447,7 +450,12 @@ fn activity_text_has_day_headers_rows_and_problem_lines() {
         .find(|l| l.contains("  failure  "))
         .unwrap_or_else(|| panic!("{problems}"));
     let columns: Vec<&str> = failure.split("  ").collect();
-    assert_eq!(columns[0].len(), "YYYY-MM-DD HH:MM".len(), "{failure:?}");
+    assert_eq!(
+        columns[0].len(),
+        "YYYY-MM-DD HH:MM UTC".len(),
+        "{failure:?}"
+    );
+    assert!(columns[0].ends_with(" UTC"), "{failure:?}");
     assert_eq!(columns[2], "engine-1");
     assert_eq!(columns[3], "no task `E-99`");
     assert!(problems.contains("  clean_room_cli  "), "{problems}");

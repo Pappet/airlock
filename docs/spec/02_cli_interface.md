@@ -173,10 +173,10 @@ airlock activity [--session <id>] [--role <role>] [--channel <mcp|cli|rest>]
                  [--limit <n>] [--problems] [--json]
 ```
 
-Prints the activity log (Spec 01 §3.5), newest first, grouped under a date heading (UTC), one line per call: time, session, channel, command, target, the names changed, and for failures the error. It is the terminal view of the dashboard's Activity tab (Spec 04 §3.11) and the source of evidence for validation runs (`docs/walkthroughs/agent-validation.md`).
+Prints the activity log (Spec 01 §3.5), newest first, grouped under a date heading marked UTC (`── 2026-11-01 (UTC)`), one line per call: time (UTC), session, channel, command, target, the names changed, and for failures the error. It is the terminal view of the dashboard's Activity tab (Spec 04 §3.11) and the source of evidence for validation runs (`docs/walkthroughs/agent-validation.md`).
 
 - `--session` is the global option (§2.1), so `AIRLOCK_SESSION` narrows the output too; a worktree binding does not (without either, all sessions are shown).
 - `--role`, `--channel`, `--since` (`30m`, `2h`, `1d`, or unix seconds; the unit is minutes, hours, or days ago), `--writes` (only calls that change state), and `--failures` (only failed calls) each narrow the result; `--limit` caps the number of calls (default 50).
-- `--problems` lists the problems of the whole 30-day window instead of calls (Spec 01 §3.7), narrowed only by `--session` and `--role`; the other filters do not apply to problems.
+- `--problems` lists the problems of the whole 30-day window instead of calls (Spec 01 §3.7), narrowed only by `--session` and `--role`; the other filters do not apply to problems. Each line starts with the time of the problem's latest entry, `YYYY-MM-DD HH:MM UTC`.
 - `--json` prints the entries (or problems) as one array with the fields of Spec 01 §3.5.
 - With nothing to show it prints `No activity.` (`No problems.` for `--problems`; `[]` with `--json`). Reading the log is itself not logged.

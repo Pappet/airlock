@@ -13,7 +13,7 @@ use crate::activity::{Filter as ActivityFilter, Since};
 use crate::app::{
     TaskView, TrackView, current_problems, done_ids, ensure_role, existing_activity_log, unix_now,
 };
-use crate::core::{Priority, QuestionStatus, TaskStatus, dependents};
+use crate::core::{Priority, Question, QuestionStatus, TaskStatus, dependents};
 use crate::hub::Project;
 use crate::overlap;
 use crate::store::{NewTask, NotFound, Store, TaskEdit};
@@ -344,22 +344,24 @@ async fn log_call(
         _ => (None, Vec::new()),
     };
     target = target.or(path_id);
-    // Decided before the answer runs: afterwards every answered question has one.
-    let correction = match &target {
-        Some(target) if command == "POST /api/questions/{id}/answer" => {
-            let (state, target) = (state.clone(), target.clone());
-            tokio::task::spawn_blocking(move || is_correction(&state, &target))
-                .await
-                .unwrap_or(false)
-        }
-        _ => false,
-    };
     let req = Request::from_parts(parts, Body::from(bytes));
 
     let response = next.run(req).await;
     let status = response.status();
+    let mut correction = false;
     let (response, error) = if status.is_success() {
-        (response, None)
+        if command == "POST /api/questions/{id}/answer" {
+            // Read from the outcome: the returned question says whether this call corrected it.
+            let (parts, response_body) = response.into_parts();
+            let bytes = axum::body::to_bytes(response_body, usize::MAX)
+                .await
+                .unwrap_or_default();
+            correction =
+                serde_json::from_slice::<Question>(&bytes).is_ok_and(|q| activity::corrects(&q));
+            (Response::from_parts(parts, Body::from(bytes)), None)
+        } else {
+            (response, None)
+        }
     } else {
         let (parts, response_body) = response.into_parts();
         let bytes = axum::body::to_bytes(response_body, usize::MAX)
@@ -400,14 +402,6 @@ async fn log_call(
     // Blocking SQLite work; a failed write only reaches stderr.
     let _ = tokio::task::spawn_blocking(move || activity::record_quietly(&database, &entry)).await;
     response
-}
-
-/// Whether answering the question `#<n>` now would correct an earlier answer.
-fn is_correction(state: &AppState, target: &str) -> bool {
-    let Some(id) = target.strip_prefix('#').and_then(|n| n.parse().ok()) else {
-        return false;
-    };
-    Store::open(&state.project.database).is_ok_and(|store| activity::is_correction(&store, id))
 }
 
 /// The `id` of the route's path parameters, `#<n>` for a question.

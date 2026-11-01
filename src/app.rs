@@ -148,13 +148,8 @@ pub fn run(cli: Cli) -> Result<()> {
         .or(bound_session)
         .unwrap_or_else(default_session);
     let mut store = Store::open(&project.database)?;
-    // Decided before the answer runs: afterwards every answered question has one.
-    let correction = match &command {
-        Command::Question(QuestionCommand::Answer { id, .. }) => {
-            activity::is_correction(&store, *id)
-        }
-        _ => false,
-    };
+    // Set from the outcome: whether this call corrected an earlier answer.
+    let mut correction = false;
 
     let caller_role = match &command {
         Command::Start { role: Some(role) }
@@ -192,7 +187,10 @@ pub fn run(cli: Cli) -> Result<()> {
             Command::Role(sub) => role(&hub, &store, &project, sub, now, &out),
             Command::Task(sub) => task(&mut store, &project, &session, sub, now, &out),
             Command::Track(sub) => track(&mut store, sub, now, &out),
-            Command::Question(sub) => question(&mut store, &session, sub, now, &out),
+            Command::Question(sub) => {
+                correction = question(&mut store, &session, sub, now, &out)?;
+                Ok(())
+            }
             Command::Sync { force } => {
                 let root = project_root(&project, "sync")?;
                 let report = sync::sync(&mut store, &project, root, force, now)?;
@@ -358,7 +356,7 @@ fn show_activity(
     out.print(&entries, || entries_text(&entries))
 }
 
-/// One line per call, newest first, under a `── YYYY-MM-DD` header (UTC) for
+/// One line per call, newest first, under a `── YYYY-MM-DD (UTC)` header for
 /// each day: `HH:MM  session  CHANNEL  command target changed  ✖ error`.
 fn entries_text(entries: &[Entry]) -> String {
     if entries.is_empty() {
@@ -370,7 +368,7 @@ fn entries_text(entries: &[Entry]) -> String {
         let stamp = views::utc_minute(e.at);
         let (date, time) = stamp.split_once(' ').unwrap_or((&stamp, ""));
         if date != day {
-            lines.push(format!("── {date}"));
+            lines.push(format!("── {date} (UTC)"));
             day = date.to_string();
         }
         let mut what = vec![e.command.clone()];
@@ -399,7 +397,7 @@ fn entries_text(entries: &[Entry]) -> String {
 }
 
 /// One line per problem, newest first:
-/// `YYYY-MM-DD HH:MM  kind  session  message (×count)`.
+/// `YYYY-MM-DD HH:MM UTC  kind  session  message (×count)`.
 fn problems_text(found: &[Problem]) -> String {
     if found.is_empty() {
         return "No problems.".to_string();
@@ -418,7 +416,7 @@ fn problems_text(found: &[Problem]) -> String {
             };
             let message = p.message.split_whitespace().collect::<Vec<_>>().join(" ");
             format!(
-                "{}  {kind}  {}  {message}{times}",
+                "{} UTC  {kind}  {}  {message}{times}",
                 views::utc_minute(p.last_at),
                 p.session.as_deref().unwrap_or("-")
             )
@@ -778,13 +776,14 @@ fn track(store: &mut Store, sub: TrackCommand, now: i64, out: &Output) -> Result
     }
 }
 
+/// Runs a `question` subcommand; `true` when it corrected an earlier answer.
 fn question(
     store: &mut Store,
     session: &str,
     sub: QuestionCommand,
     now: i64,
     out: &Output,
-) -> Result<()> {
+) -> Result<bool> {
     match sub {
         QuestionCommand::List { topic, status } => {
             let questions: Vec<Question> = store
@@ -793,23 +792,25 @@ fn question(
                 .filter(|q| topic.as_deref().is_none_or(|t| q.topic == t))
                 .filter(|q| status.is_none_or(|s| q.status == s))
                 .collect();
-            out.print(&questions, || question_list(&questions))
+            out.print(&questions, || question_list(&questions))?;
         }
         QuestionCommand::Ask { question, topic } => {
             let q = store.ask(&topic, &question, session, now)?;
             out.print(&json!({ "question_id": q.id }), || {
                 format!("Asked question #{} on {}", q.id, q.topic)
-            })
+            })?;
         }
         QuestionCommand::Answer { id, answer, spec } => {
             let q = store.answer(id, &answer, session, spec.as_deref(), now)?;
-            out.print(&q, || format!("Answered question #{}", q.id))
+            out.print(&q, || format!("Answered question #{}", q.id))?;
+            return Ok(activity::corrects(&q));
         }
         QuestionCommand::Resolve { id, spec } => {
             let q = store.resolve(id, spec.as_deref(), now)?;
-            out.print(&q, || format!("Resolved question #{}", q.id))
+            out.print(&q, || format!("Resolved question #{}", q.id))?;
         }
     }
+    Ok(false)
 }
 
 /// A task together with its effective status, as printed by `--json`.

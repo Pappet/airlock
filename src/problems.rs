@@ -246,7 +246,7 @@ fn old_processes(processes: &[Process], own_build: &str) -> Vec<Problem> {
             command: None,
             target: None,
             message: format!(
-                "old airlock process: PID {}, {}, started {}, build {}",
+                "old airlock process: PID {}, {}, started {} UTC, build {}",
                 p.pid,
                 p.session.as_deref().unwrap_or(&p.kind),
                 utc_minute(p.started_at),

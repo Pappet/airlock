@@ -235,7 +235,7 @@ fn older_live_process_is_an_old_process() {
     assert_eq!(all[0].kind, ProblemKind::OldProcess);
     assert_eq!(
         all[0].message,
-        "old airlock process: PID 4001, engine-1, started 2023-11-14 22:13, build 0.1.0+100"
+        "old airlock process: PID 4001, engine-1, started 2023-11-14 22:13 UTC, build 0.1.0+100"
     );
     assert_eq!(all[0].session.as_deref(), Some("engine-1"));
 

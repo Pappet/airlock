@@ -1,7 +1,10 @@
 use airlock::activity::{
-    ActivityLog, Channel, ERROR_MAX, Entry, Filter, LIVE_SECS, RETENTION_SECS, agent_from_env,
-    build_time, is_write, record_quietly, summarize_json, truncate_error,
+    ActivityLog, Channel, ERROR_MAX, Entry, Filter, LIVE_SECS, NAME_MAX, RETENTION_SECS,
+    agent_from_env, build_time, corrects, is_write, record_quietly, summarize_cli, summarize_json,
+    truncate_error,
 };
+use airlock::cli::{Command, TaskCommand};
+use airlock::core::{AnswerVersion, Question, QuestionStatus};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -434,4 +437,99 @@ fn reads_are_not_writes() {
     ] {
         assert!(is_write(write), "{write}");
     }
+}
+
+#[test]
+fn hostile_targets_and_keys_are_capped() {
+    let long_id = "é".repeat(10_000);
+    let long_key = "k".repeat(10_000);
+    let mut args = serde_json::Map::new();
+    args.insert("task_id".into(), Value::String(long_id.clone()));
+    args.insert(long_key.clone(), json!(1));
+    let (target, changed) = summarize_json("cmd", &args);
+    let target = target.unwrap();
+    assert_eq!(NAME_MAX, 120);
+    assert_eq!(target.chars().count(), NAME_MAX);
+    assert!(long_id.starts_with(&target));
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].chars().count(), NAME_MAX);
+    assert!(long_key.starts_with(&changed[0]));
+
+    let (target, _) = summarize_cli(&Command::Task(TaskCommand::Show {
+        id: long_id.clone(),
+    }));
+    assert_eq!(target.unwrap().chars().count(), NAME_MAX);
+}
+
+#[test]
+fn a_correction_is_read_from_the_answered_question() {
+    let first = Question {
+        id: 1,
+        topic: "melee.md".into(),
+        asked_by: "engine-1".into(),
+        question: "How?".into(),
+        status: QuestionStatus::Answered,
+        answer: Some("first".into()),
+        answered_by: Some("lead".into()),
+        spec_file: None,
+        created_at: 10,
+        answered_at: Some(11),
+        corrected_at: None,
+        corrected_by: None,
+        history: Vec::new(),
+    };
+    assert!(!corrects(&first), "a first answer");
+    let corrected = Question {
+        answer: Some("second".into()),
+        answered_at: Some(12),
+        corrected_at: Some(12),
+        corrected_by: Some("lead".into()),
+        history: vec![AnswerVersion {
+            answer: "first".into(),
+            answered_by: Some("lead".into()),
+            answered_at: Some(11),
+            spec_file: None,
+        }],
+        ..first
+    };
+    assert!(corrects(&corrected));
+}
+
+#[test]
+fn opening_a_current_log_takes_no_write_lock() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("activity.db");
+    let mut log = ActivityLog::open(&path).unwrap();
+    log.record(&entry(100, "s1", "task_claim")).unwrap();
+    drop(log);
+
+    // Another process holds the write lock.
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = std::time::Instant::now();
+    let log = ActivityLog::open(&path).expect("open while another writer holds the lock");
+    assert_eq!(log.entries(&Filter::default()).unwrap().len(), 1);
+    assert_eq!(log.last_briefing("s1").unwrap(), None);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "waited {:?} for the write lock",
+        started.elapsed()
+    );
+    writer.execute_batch("ROLLBACK").unwrap();
+}
+
+#[test]
+fn entries_are_indexed_by_session_and_time() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("activity.db");
+    drop(ActivityLog::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_index_info('entries_session_at') ORDER BY seqno")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(columns, ["session", "at"]);
 }

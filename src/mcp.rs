@@ -9,7 +9,7 @@ use crate::app::{
     TaskView, TrackView, claim, done_ids, ensure_role, next_ready, project_root, unix_now,
 };
 use crate::briefing::{self, Briefing, Via, WorkPackage};
-use crate::core::{Priority, QuestionStatus, Task, dependents};
+use crate::core::{Priority, Question, QuestionStatus, Task, dependents};
 use crate::hub::{Hub, Project};
 use crate::store::{NewTask, Store, TaskEdit, TrackEdit};
 use crate::sync;
@@ -265,12 +265,14 @@ impl Server {
             Some(Value::Object(args)) => Some(args),
             Some(_) => None,
         };
-        // Decided before the answer runs: afterwards every answered question has one.
-        let correction = name == "question_answer"
-            && args
-                .and_then(|args| args.get("question_id")?.as_u64())
-                .is_some_and(|id| activity::is_correction(&self.store, id));
         let result = self.run_tool(name, args);
+        // Read from the outcome: the returned question says whether this call corrected it.
+        let correction = name == "question_answer"
+            && result.as_ref().is_ok_and(|result| {
+                result["isError"] == false
+                    && serde_json::from_value::<Question>(result["structuredContent"].clone())
+                        .is_ok_and(|q| activity::corrects(&q))
+            });
         let (target, mut changed) = args.map_or((None, Vec::new()), |args| {
             activity::summarize_json(name, args)
         });
