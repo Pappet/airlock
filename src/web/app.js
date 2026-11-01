@@ -1168,10 +1168,13 @@ function heroNow() {
 }
 
 // Track, minimum-priority, and grouping controls; Board and Review only.
+const WIDE = matchMedia("(min-width: 1101px)");
+
 function renderFilters() {
   const slot = $("board-filters");
   const active = state.tab === "board" || state.tab === "review";
-  const key = JSON.stringify([active, state.tab === "board", state.tracks.map((t) => t.name), state.trackFilter, state.minPriority, state.groupByTrack]);
+  const wide = WIDE.matches;
+  const key = JSON.stringify([active, wide, state.tab === "board", state.tracks.map((t) => t.name), state.trackFilter, state.minPriority, state.groupByTrack]);
   if (slot.dataset.key === key) return;
   slot.dataset.key = key;
   const focused = slot.contains(document.activeElement) ? document.activeElement.id : null;
@@ -1218,7 +1221,10 @@ function renderFilters() {
       }, "group by track")
     : null;
 
-  slot.replaceChildren(track, min, group);
+  // Below 1100px the three controls fold into a "filter" pill (concept §6).
+  slot.replaceChildren(h("details", { class: "filter-pop", open: wide },
+    h("summary", { class: "pill" }, "filter ▾"),
+    h("div", { class: "filter-pop__body" }, track, min, group)));
   if (focused) $(focused)?.focus();
 }
 
@@ -1259,6 +1265,7 @@ function start() {
       }
     }, 0);
   });
+  WIDE.addEventListener("change", () => render());
   let resizeTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
