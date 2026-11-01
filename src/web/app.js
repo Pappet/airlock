@@ -510,7 +510,7 @@ function blockers(tasks, role = null) {
   const groups = new Map();
   for (const task of tasks) {
     if (task.status !== "blocked" || (role && task.role !== role)) continue;
-    const open = task.blocked_by.filter((id) => byId.get(id)?.status !== "done").sort((cmpTaskIds);
+    const open = task.blocked_by.filter((id) => byId.get(id)?.status !== "done").sort(cmpTaskIds);
     if (!open.length) continue;
     const key = open.join(" ");
     if (!groups.has(key)) {
@@ -862,7 +862,7 @@ function filesView() {
       empty("No shared files", state.analysis.tasks.length ? "No two open tasks touch the same path." : "There are no open tasks."),
       noTouch);
   }
-  const columns = [...new Set(files.flatMap((f) => f.tasks))].sort((cmpTaskIds);
+  const columns = [...new Set(files.flatMap((f) => f.tasks))].sort(cmpTaskIds);
   const running = new Set(state.analysis.tasks.filter((a) => RUNNING.has(a.status)).map((a) => a.id));
   const table = h("table", { class: "matrix" },
     h("thead", {}, h("tr", {}, h("th", {}),
