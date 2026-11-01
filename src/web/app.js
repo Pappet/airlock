@@ -824,7 +824,8 @@ function stagesView() {
           : selected.overlaps.length
             ? [
                 h("span", { class: "warn" }, `⚠ overlaps ${selected.overlaps.length} task${selected.overlaps.length > 1 ? "s" : ""}:`),
-                selected.overlaps.map((o) => h("div", {}, `${o.occupied ? "▶ " : "· "}${o.id} — ${o.paths.join(", ")}${o.occupied ? " (running)" : ""}`)),
+                h("div", { class: "selection__list" },
+                  selected.overlaps.map((o) => h("div", {}, `${o.occupied ? "▶ " : "· "}${o.id} — ${o.paths.join(", ")}${o.occupied ? " (running)" : ""}`))),
               ]
             : h("span", { class: "ok" }, "✓ shares no files with another open task"),
         h("div", { class: "muted" }, "Click again or press Esc to clear."))
@@ -1074,16 +1075,23 @@ function renderDrawer() {
   const minutes = minutesLeft(task);
 
   body.replaceChildren(
-    h("button", { type: "button", class: "btn close", onclick: closeDetail }, "Close"),
-    h("div", { class: "drawer__tags" },
-      h("span", { class: "label" }, `${task.role} · ${task.status.replace("_", " ")}`),
-      priorityChip(task.priority),
-      h("span", { class: "label" }, task.track ? `track ${task.track}` : "no track")),
+    h("div", { class: "drawer__head" },
+      h("div", { class: "drawer__tags" },
+        h("span", { class: "label" }, `${task.role} · ${task.status.replace("_", " ")}`),
+        priorityChip(task.priority),
+        h("span", { class: "label" }, task.track ? `track ${task.track}` : "no track")),
+      h("button", { type: "button", class: "btn close", onclick: closeDetail }, "Close")),
     h("h2", {}, h("span", { class: "mono" }, task.id), " ", task.title),
-    task.claimed_by ? h("div", { class: "mono muted" }, `▶ ${task.claimed_by}${minutes !== null ? ` · ${minutes} min left` : ""}`) : "",
+    task.claimed_by
+      ? h("div", { class: "drawer__claim" },
+          h("span", { class: "pulse live", "aria-hidden": "true" }),
+          h("span", { class: "act-session" }, task.claimed_by),
+          minutes !== null ? h("span", { class: "muted" }, `· ${minutes} min left`) : null)
+      : null,
     h("div", { class: "badges" }, task.status !== "done" ? overlapBadges(task.id) : null),
-    h("section", {}, h("span", { class: "label" }, "Read"), pathList(task.read, new Map())),
-    h("section", {}, h("span", { class: "label" }, "Touch"), pathList(task.touch, touchMarks)),
+    h("div", { class: "drawer__paths" },
+      h("section", {}, h("span", { class: "label" }, "Read"), pathList(task.read, new Map())),
+      h("section", {}, h("span", { class: "label" }, "Touch"), pathList(task.touch, touchMarks))),
     h("section", {}, h("span", { class: "label" }, "Do"), h("pre", {}, task.do)),
     h("section", {}, h("span", { class: "label" }, "Verify · never executed by Airlock"), h("pre", {}, task.verify)),
     h("section", {}, h("span", { class: "label" }, "Notes"), task.notes ? h("pre", {}, task.notes) : h("div", { class: "muted" }, "—")),

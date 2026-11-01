@@ -432,6 +432,7 @@ main { min-width: 0; padding: var(--space-6) var(--space-8) var(--space-8); }
   font-family: var(--font-mono);
   font-size: 0.75rem;
 }
+.selection__list { max-height: 180px; overflow: auto; padding-right: var(--space-2); }
 .selection .warn { color: var(--error); }
 .selection .ok { color: var(--primary); }
 
@@ -545,15 +546,35 @@ textarea { min-height: 72px; resize: vertical; }
   right: 0;
   bottom: 0;
   width: min(520px, 100vw);
-  background: var(--surface-container);
+  background: rgba(42, 42, 42, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   transform: translateX(100%);
   transition: transform var(--duration-slow) var(--ease-out-sharp);
   overflow-y: auto;
   z-index: 10;
 }
 .drawer.open { transform: none; }
-.drawer__body { padding: var(--space-6); }
+.drawer__body { padding: 0 var(--space-6) var(--space-6); }
+.drawer__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 calc(-1 * var(--space-6));
+  padding: var(--space-4) var(--space-6);
+  background: rgba(42, 42, 42, 0.92);
+}
 .drawer__tags { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.drawer__claim { display: inline-flex; align-items: center; gap: var(--space-2); font-family: var(--font-mono); font-size: 0.8125rem; }
+.drawer__paths { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--space-4); }
+.drawer__paths section { min-width: 0; }
+@media (max-width: 560px) {
+  .drawer__paths { grid-template-columns: 1fr; }
+}
 .drawer h2 { margin: var(--space-2) 0 var(--space-4); font-family: var(--font-display); font-weight: 600; font-size: 1.4rem; letter-spacing: -0.01em; }
 .drawer section { margin-top: var(--space-5); }
 .drawer pre {
@@ -567,9 +588,8 @@ textarea { min-height: 72px; resize: vertical; }
   word-break: break-word;
 }
 .drawer ul { margin: var(--space-2) 0 0; padding: 0; list-style: none; font-family: var(--font-mono); font-size: 0.8125rem; }
-.drawer li { padding: 3px 0; }
+.drawer li { padding: 3px 0; overflow-wrap: anywhere; }
 .link { border: none; background: none; padding: 0; color: var(--secondary); font-family: var(--font-mono); cursor: pointer; }
-.close { float: right; }
 
 .toast {
   position: fixed;

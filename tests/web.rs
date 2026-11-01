@@ -322,6 +322,24 @@ fn dashboard_leases_wrap_their_progress() {
 }
 
 #[test]
+fn dashboard_drawer_is_glass_with_sticky_head() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let css = get("/style.css").body;
+    assert!(css.contains("backdrop-filter: blur(16px)"), "glass drawer");
+    assert!(
+        css.contains(".drawer__head {\n  position: sticky"),
+        "sticky head"
+    );
+    assert!(
+        css.contains(".selection__list { max-height"),
+        "capped stages selection list"
+    );
+    let js = get("/app.js").body;
+    assert!(js.contains("drawer__paths"));
+}
+
+#[test]
 fn dashboard_assets_know_tracks() {
     let s = Server::start();
     let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
