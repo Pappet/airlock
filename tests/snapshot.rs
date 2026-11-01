@@ -3,14 +3,14 @@
 mod common;
 
 use airlock::config::ProjectConfig;
-use airlock::core::{Priority, QuestionStatus, TaskState, Track};
+use airlock::core::{AnswerVersion, Priority, QuestionStatus, TaskState, Track};
 use airlock::snapshot::Snapshot;
 use airlock::store::Store;
 use airlock::sync::check_import;
 use common::{question, task};
 
 const GOLDEN: &str = r#"{
-  "format_version": 2,
+  "format_version": 3,
   "project_id": "6f1c2a3e-0000-4000-8000-000000000001",
   "roles": {
     "engine": {
@@ -294,26 +294,26 @@ fn version_1_snapshots_import_with_converted_priorities() {
     assert_eq!(imported, expected);
     assert!(store.tracks().unwrap().is_empty());
 
-    // The next export is format 2.
+    // The next export is the current format.
     let tasks = store.tasks(10).unwrap();
     let exported = Snapshot::new(PROJECT_ID, &ProjectConfig::default(), &tasks, &[], &[]);
     assert!(
         exported
             .to_canonical_json()
             .unwrap()
-            .contains("\"format_version\": 2")
+            .contains("\"format_version\": 3")
     );
 }
 
 #[test]
 fn unsupported_versions_are_rejected_naming_the_supported_ones() {
-    let json = v1_json(&[1]).replace("\"format_version\": 1", "\"format_version\": 3");
-    let message = format!("{:#}", load(&json).err().expect("v3 must not load"));
+    let json = v1_json(&[1]).replace("\"format_version\": 1", "\"format_version\": 4");
+    let message = format!("{:#}", load(&json).err().expect("v4 must not load"));
     assert!(
-        message.contains("format version 3 is not supported"),
+        message.contains("format version 4 is not supported"),
         "{message}"
     );
-    assert!(message.contains("1, 2"), "{message}");
+    assert!(message.contains("1, 2, 3"), "{message}");
 }
 
 #[test]
@@ -395,4 +395,86 @@ fn tracks_round_trip_through_the_store() {
 
     // Importing again over tasks that use tracks works (tasks go before tracks).
     target.replace_all(&snapshot, "h", 21).unwrap();
+}
+
+fn corrected_question() -> airlock::core::Question {
+    let mut q = question(3);
+    q.status = QuestionStatus::Resolved;
+    q.answer = Some("second".into());
+    q.answered_by = Some("lead-1".into());
+    q.answered_at = Some(1_700_000_400);
+    q.corrected_at = Some(1_700_000_400);
+    q.corrected_by = Some("lead-1".into());
+    q.history = vec![
+        AnswerVersion {
+            answer: "zeroth".into(),
+            answered_by: None,
+            answered_at: None,
+            spec_file: None,
+        },
+        AnswerVersion {
+            answer: "first".into(),
+            answered_by: Some("lead".into()),
+            answered_at: Some(1_700_000_200),
+            spec_file: Some("docs/spec/melee.md".into()),
+        },
+    ];
+    q
+}
+
+#[test]
+fn snapshot_round_trips_answer_history() {
+    let original = corrected_question();
+    let snapshot = Snapshot::new(
+        PROJECT_ID,
+        &ProjectConfig::default(),
+        &[],
+        &[],
+        std::slice::from_ref(&original),
+    );
+    let json = snapshot.to_canonical_json().unwrap();
+    assert!(json.contains("\"history\""), "{json}");
+    let loaded = load(&json).expect("v3 must load");
+    assert_eq!(loaded.snapshot, snapshot);
+
+    let (_dir, mut store) = open_store();
+    store
+        .replace_all(&loaded.snapshot, &loaded.sha256, 10)
+        .unwrap();
+    assert_eq!(store.questions().unwrap(), [original]);
+    let again = Snapshot::new(
+        PROJECT_ID,
+        &ProjectConfig::default(),
+        &[],
+        &[],
+        &store.questions().unwrap(),
+    );
+    assert_eq!(again.to_canonical_json().unwrap(), json, "export is stable");
+}
+
+#[test]
+fn version_two_snapshot_imports_without_history() {
+    let json = GOLDEN.replace("\"format_version\": 3", "\"format_version\": 2");
+    let loaded = load(&json).expect("v2 must load");
+    assert_eq!(loaded.snapshot.format_version, 3);
+    assert!(
+        loaded
+            .snapshot
+            .questions
+            .iter()
+            .all(|q| q.history.is_empty() && q.corrected_at.is_none() && q.corrected_by.is_none())
+    );
+    check_import(&loaded.snapshot, PROJECT_ID).expect("v2 must pass the import checks");
+
+    let (_dir, mut store) = open_store();
+    store
+        .replace_all(&loaded.snapshot, &loaded.sha256, 10)
+        .unwrap();
+    assert!(
+        store
+            .questions()
+            .unwrap()
+            .iter()
+            .all(|q| q.history.is_empty())
+    );
 }

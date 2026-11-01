@@ -333,6 +333,16 @@ async fn log_call(
         _ => (None, Vec::new()),
     };
     target = target.or(path_id);
+    // Decided before the answer runs: afterwards every answered question has one.
+    let correction = match &target {
+        Some(target) if command == "POST /api/questions/{id}/answer" => {
+            let (state, target) = (state.clone(), target.clone());
+            tokio::task::spawn_blocking(move || is_correction(&state, &target))
+                .await
+                .unwrap_or(false)
+        }
+        _ => false,
+    };
     let req = Request::from_parts(parts, Body::from(bytes));
 
     let response = next.run(req).await;
@@ -354,6 +364,10 @@ async fn log_call(
         )
     };
 
+    let mut changed = changed;
+    if correction && error.is_none() {
+        changed.push("correction".to_string());
+    }
     let entry = Entry {
         id: 0,
         at: unix_now(),
@@ -375,6 +389,14 @@ async fn log_call(
     // Blocking SQLite work; a failed write only reaches stderr.
     let _ = tokio::task::spawn_blocking(move || activity::record_quietly(&database, &entry)).await;
     response
+}
+
+/// Whether answering the question `#<n>` now would correct an earlier answer.
+fn is_correction(state: &AppState, target: &str) -> bool {
+    let Some(id) = target.strip_prefix('#').and_then(|n| n.parse().ok()) else {
+        return false;
+    };
+    Store::open(&state.project.database).is_ok_and(|store| activity::is_correction(&store, id))
 }
 
 /// The `id` of the route's path parameters, `#<n>` for a question.

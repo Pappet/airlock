@@ -357,7 +357,7 @@ pub enum QuestionCommand {
         #[arg(long)]
         topic: String,
     },
-    /// Answer (or revise the answer to) a question
+    /// Answer a question; on an answered or resolved one, correct its answer
     Answer {
         id: u64,
         answer: String,

@@ -112,7 +112,7 @@ Tracks are named lines of work with their own priority (Spec 01 §2.5). None of 
 
 ### 3.12 `question_answer`
 - **Parameters:** `question_id` (integer), `answer` (string), `spec_file` (string, optional)
-- **Returns:** the updated question.
+- **Returns:** the updated question. Answering a question that already has an answer (also a resolved one) corrects it: `history` lists the earlier answers, `corrected_at` and `corrected_by` are set, and the status is unchanged.
 
 ### 3.13 `question_resolve`
 - **Parameters:** `question_id` (integer), `spec_file` (string, optional)

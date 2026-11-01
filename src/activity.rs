@@ -7,6 +7,7 @@
 //! airlock processes (MCP servers and dashboards) with their build identity.
 
 use crate::cli::{Command, QuestionCommand, RoleCommand, TaskCommand, TrackCommand};
+use crate::store::Store;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, Row, TransactionBehavior, params, params_from_iter};
 use serde::{Deserialize, Serialize};
@@ -452,6 +453,13 @@ pub fn agent_from_env(var: impl Fn(&str) -> Option<String>) -> Option<String> {
 /// Cut an error message to [`ERROR_MAX`] characters.
 pub fn truncate_error(message: &str) -> String {
     message.chars().take(ERROR_MAX).collect()
+}
+
+/// Whether answering question `id` now would correct an earlier answer: the
+/// question exists and already has one. Callers check this before the answer
+/// runs and add `correction` to the entry's `changed` list.
+pub fn is_correction(store: &Store, id: u64) -> bool {
+    store.question(id).is_ok_and(|q| q.answer.is_some())
 }
 
 /// Whether `command` changes state: false for the reads (MCP, CLI and REST

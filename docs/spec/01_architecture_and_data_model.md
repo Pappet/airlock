@@ -136,7 +136,7 @@ pub struct Question {
 | Transition | CLI | MCP | Effect |
 |---|---|---|---|
 | ask | `question ask` | `question_ask` | new question, `open` |
-| answer | `question answer [--spec]` | `question_answer` | `open`/`answered` → `answered`; revising an answer overwrites it and updates `answered_at` |
+| answer | `question answer [--spec]` | `question_answer` | `open` → `answered`. On a question that already has an answer (`answered` or `resolved`) this is a correction: the status stays, the new answer replaces the current one, the replaced answer moves to the question's history (oldest first), and `corrected_at`/`corrected_by` are set |
 | resolve | `question resolve [--spec]` | `question_resolve` | `answered` → `resolved`; asker or any non-clean-room session |
 
 ### 2.3 Sessions

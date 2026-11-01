@@ -875,3 +875,44 @@ fn agent_is_taken_from_client_info() {
     assert_eq!(entries[0].agent, None);
     assert_eq!(entries[1].agent.as_deref(), Some("claude-code"));
 }
+
+#[test]
+fn question_answer_on_resolved_question_corrects_it() {
+    let env = Env::new();
+    let s = env.session(
+        &["--session", "lead-1"],
+        &[
+            call(
+                1,
+                "question_ask",
+                json!({ "topic": "melee.md", "question": "Arc?" }),
+            ),
+            call(
+                2,
+                "question_answer",
+                json!({ "question_id": 1, "answer": "Rounded." }),
+            ),
+            call(3, "question_resolve", json!({ "question_id": 1 })),
+            call(
+                4,
+                "question_answer",
+                json!({ "question_id": 1, "answer": "Truncated." }),
+            ),
+        ],
+    );
+    let corrected = s.ok(4);
+    assert_eq!(corrected["status"], "resolved");
+    assert_eq!(corrected["answer"], "Truncated.");
+    assert_eq!(corrected["history"][0]["answer"], "Rounded.");
+    assert_eq!(corrected["corrected_by"], "lead-1");
+
+    let entries = logged(&env);
+    assert_eq!(
+        entries[1].changed,
+        ["answer"],
+        "first answer is not a correction"
+    );
+    assert_eq!(entries[3].command, "question_answer");
+    assert!(entries[3].ok, "{:?}", entries[3]);
+    assert_eq!(entries[3].changed, ["answer", "correction"]);
+}

@@ -65,7 +65,7 @@ The snapshot (`src/snapshot.rs`) contains semantic project state only. **Session
 
 ```json
 {
-  "format_version": 2,
+  "format_version": 3,
   "project_id": "<uuid>",
   "roles": { "<name>": { "description": "...", "clean_room": false } },
   "tracks": [ … ],
@@ -102,10 +102,11 @@ Re-running `airlock sync` on unchanged state must produce a zero diff:
 
 `tests/snapshot.rs` pins the exact bytes with a golden file; any change to it is a format change and requires bumping `format_version`.
 
-The Markdown views (`src/views.rs`) are rendered from the snapshot itself, not from live state, so they follow the same rules: sorted, no timestamps, and unchanged by claims (a claimed task appears as ready). Files whose content is unchanged are not rewritten; changed files are written atomically (temp file, `fsync`, rename). Single-line fields (ids, titles, roles, topics, session ids) have their whitespace collapsed in headings and table cells, so input with newlines cannot break the document structure.
+The Markdown views (`src/views.rs`) are rendered from the snapshot itself, not from live state, so they follow the same rules: sorted, free of timestamps except the date of an answer correction, and unchanged by claims (a claimed task appears as ready). Files whose content is unchanged are not rewritten; changed files are written atomically (temp file, `fsync`, rename). Single-line fields (ids, titles, roles, topics, session ids) have their whitespace collapsed in headings and table cells, so input with newlines cannot break the document structure.
 
 ### 3.4 Import (`airlock import`)
-- Format 1 snapshots (integer priorities, no tracks) are still read: priorities convert as 30 and up `high`, 10 to 29 `normal`, below 10 `low`, and there are no tracks. The next `sync` writes format 2.
+- Format 1 snapshots (integer priorities, no tracks) are still read: priorities convert as 30 and up `high`, 10 to 29 `normal`, below 10 `low`, and there are no tracks. The next `sync` writes the current format.
+- Format 2 snapshots (no answer history) are read as is; format 3 adds `corrected_at`, `corrected_by`, and `history` to questions. They are omitted for a question that was never corrected, so those questions export unchanged.
 - The JSON snapshot is the only import source. Markdown files are views and are never parsed to reconstruct state.
 - Before writing, import checks: `format_version` is supported, `project_id` matches the resolved project, roles referenced by tasks exist, track names are valid and unique and every task track is defined in the snapshot, and the dependency graph is valid (unique ids, known prerequisites, no cycles).
 - Import replaces tasks, tracks, and questions and records the snapshot's hash as known in one transaction, then writes the roles to `project.json`. If that last write fails, the data is already imported; re-running the import completes it. Import requires confirmation (`--yes` or interactive prompt). Question ids are kept; new questions continue after the highest id this hub ever used or imported, so ids are never reused.

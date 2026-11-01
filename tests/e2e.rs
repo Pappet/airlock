@@ -643,7 +643,7 @@ fn import_accepts_a_version_1_snapshot_and_the_next_sync_writes_format_2() {
 
     env.ok(&project, &["sync"]);
     let exported: Value = serde_json::from_str(&read(&state_path)).unwrap();
-    assert_eq!(exported["format_version"], 2);
+    assert_eq!(exported["format_version"], 3);
     assert_eq!(exported["tracks"], serde_json::json!([]));
     assert_eq!(exported["tasks"][0]["priority"], "high");
 }

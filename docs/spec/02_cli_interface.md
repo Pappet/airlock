@@ -124,7 +124,7 @@ Submits a question; prints its id.
 Lists questions, newest first.
 
 #### `airlock question answer <id> "<answer>" [--spec <file>]`
-Answers or revises the answer to a question that is not resolved.
+Answers a question. On a question that already has an answer, including a resolved one, this is a correction: the earlier answer is kept in the question's history, the status stays, and the question records who corrected it and when.
 
 #### `airlock question resolve <id> [--spec <file>]`
 Closes an answered question, optionally recording the spec file that now codifies the answer.

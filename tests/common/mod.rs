@@ -37,5 +37,8 @@ pub fn question(id: u64) -> Question {
         spec_file: None,
         created_at: 1_700_000_100,
         answered_at: None,
+        corrected_at: None,
+        corrected_by: None,
+        history: Vec::new(),
     }
 }

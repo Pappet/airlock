@@ -335,3 +335,21 @@ fn activity_command_is_not_logged() {
     env.ok(&["activity"]);
     assert_eq!(env.entries().len(), before);
 }
+
+#[test]
+fn answering_an_answered_question_is_logged_as_a_correction() {
+    let env = Env::new();
+    env.ok(&["question", "ask", "Why?", "--topic", "plan.md"]);
+    env.ok(&["question", "answer", "1", "first"]);
+    env.ok(&["question", "resolve", "1"]);
+    env.ok(&["question", "answer", "1", "second"]);
+    let answers: Vec<Entry> = env
+        .entries()
+        .into_iter()
+        .filter(|e| e.command == "question answer")
+        .collect();
+    assert_eq!(answers.len(), 2, "{answers:?}");
+    assert_eq!(answers[0].changed, ["answer"]);
+    assert_eq!(answers[1].changed, ["answer", "correction"]);
+    assert!(answers[1].ok);
+}

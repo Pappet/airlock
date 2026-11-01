@@ -1037,3 +1037,36 @@ fn events_stream_is_never_logged() {
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0].command, "GET /api/tasks");
 }
+
+#[test]
+fn correcting_an_answer_over_rest_is_logged_as_a_correction() {
+    let s = Server::start();
+    s.cli(&["question", "ask", "Why?", "--topic", "melee.md"]);
+    let answer = |text: &str| {
+        s.api(
+            "POST",
+            "/api/questions/1/answer",
+            Some(serde_json::json!({ "answer": text })),
+        )
+    };
+    assert_eq!(answer("first").status, 200);
+    let resolved = s.api(
+        "POST",
+        "/api/questions/1/resolve",
+        Some(serde_json::json!({})),
+    );
+    assert_eq!(resolved.status, 200, "{}", resolved.body);
+    let corrected = answer("second");
+    assert_eq!(corrected.status, 200, "{}", corrected.body);
+    assert_eq!(corrected.json()["status"], "resolved");
+    assert_eq!(corrected.json()["history"][0]["answer"], "first");
+
+    let entries = rest_entries(&s.hub);
+    let answers: Vec<_> = entries
+        .iter()
+        .filter(|e| e.command == "POST /api/questions/{id}/answer")
+        .collect();
+    assert_eq!(answers.len(), 2, "{entries:?}");
+    assert_eq!(answers[0].changed, ["answer"]);
+    assert_eq!(answers[1].changed, ["answer", "correction"]);
+}

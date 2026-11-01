@@ -256,8 +256,13 @@ impl Server {
             Some(Value::Object(args)) => Some(args),
             Some(_) => None,
         };
+        // Decided before the answer runs: afterwards every answered question has one.
+        let correction = name == "question_answer"
+            && args
+                .and_then(|args| args.get("question_id")?.as_u64())
+                .is_some_and(|id| activity::is_correction(&self.store, id));
         let result = self.run_tool(name, args);
-        let (target, changed) = args.map_or((None, Vec::new()), |args| {
+        let (target, mut changed) = args.map_or((None, Vec::new()), |args| {
             activity::summarize_json(name, args)
         });
         let error = match &result {
@@ -265,6 +270,9 @@ impl Server {
             Ok(result) if result["isError"] == true => result["content"][0]["text"].as_str(),
             Ok(_) => None,
         };
+        if correction && error.is_none() {
+            changed.push("correction".to_string());
+        }
         self.log_call(name, target, changed, error);
         result
     }
@@ -757,7 +765,7 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
         ),
         tool(
             "question_answer",
-            "Answer or revise the answer to a question, in behavioral prose.",
+            "Answer a question in behavioral prose. Answering one that already has an answer, resolved or not, corrects it; the earlier answer is kept.",
             json!({
                 "question_id": question_id,
                 "answer": { "type": "string" },

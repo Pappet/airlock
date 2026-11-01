@@ -574,6 +574,7 @@ function questionItem(q) {
     h("span", { class: "card__id" }, `#${q.id}`),
     h("span", { class: "label" }, q.topic),
     h("span", { class: "label" }, q.status === "open" ? "● open" : q.status === "answered" ? "◐ answered" : "✓ resolved"),
+    q.corrected_at ? h("span", { class: "chip", title: `Corrected by ${q.corrected_by || "unknown"}; ${(q.history || []).length} earlier answer(s) kept` }, "corrected") : null,
     h("span", { class: "muted mono" }, `asked by ${q.asked_by}`));
   const body = [h("p", {}, q.question)];
   if (q.answer) body.push(h("p", { class: "muted" }, `→ ${q.answer}`, q.answered_by ? ` (${q.answered_by})` : ""));

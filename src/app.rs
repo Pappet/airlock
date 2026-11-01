@@ -84,7 +84,7 @@ pub fn run(cli: Cli) -> Result<()> {
         return server.run(std::io::stdin().lock(), std::io::stdout().lock());
     }
     let name = command.name();
-    let summary = activity::summarize_cli(&command);
+    let mut summary = activity::summarize_cli(&command);
     match command {
         Command::Use {
             role,
@@ -124,6 +124,13 @@ pub fn run(cli: Cli) -> Result<()> {
         .or(bound_session)
         .unwrap_or_else(default_session);
     let mut store = Store::open(&project.database)?;
+    // Decided before the answer runs: afterwards every answered question has one.
+    let correction = match &command {
+        Command::Question(QuestionCommand::Answer { id, .. }) => {
+            activity::is_correction(&store, *id)
+        }
+        _ => false,
+    };
 
     let caller_role = match &command {
         Command::Start { role: Some(role) }
@@ -213,6 +220,9 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         }
     })();
+    if correction && result.is_ok() {
+        summary.1.push("correction".to_string());
+    }
     log_cli_call(
         &project,
         name,
