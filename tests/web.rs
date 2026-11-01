@@ -119,8 +119,10 @@ impl Server {
         }
         request.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
         stream.write_all(request.as_bytes()).unwrap();
-        let mut text = String::new();
-        stream.read_to_string(&mut text).unwrap();
+        // Font bodies are binary; lossy decoding keeps the headers and magic bytes readable.
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
         let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
         let status = head
             .split_whitespace()
@@ -162,6 +164,44 @@ fn serves_dashboard_with_allowed_host() {
     for asset in ["/app.js", "/style.css"] {
         assert_eq!(s.raw("GET", asset, &[("Host", &s.host())], "").status, 200);
     }
+}
+
+#[test]
+fn serves_embedded_fonts() {
+    let s = Server::start();
+    for name in ["space-grotesk", "manrope", "jetbrains-mono"] {
+        let r = s.raw(
+            "GET",
+            &format!("/fonts/{name}.woff2"),
+            &[("Host", &s.host())],
+            "",
+        );
+        assert_eq!(r.status, 200, "{name}");
+        assert!(r.body.starts_with("wOF2"), "{name}: not a woff2 body");
+        assert!(
+            r.head.to_lowercase().contains("content-type: font/woff2"),
+            "{name}: {}",
+            r.head
+        );
+    }
+    let css = s.raw("GET", "/style.css", &[("Host", &s.host())], "").body;
+    assert!(
+        css.contains("url(/fonts/space-grotesk.woff2)"),
+        "style.css must use the embedded fonts"
+    );
+    assert!(!css.contains("googleapis"), "no external font host");
+}
+
+#[test]
+fn fonts_need_allowed_host() {
+    let s = Server::start();
+    let r = s.raw(
+        "GET",
+        "/fonts/manrope.woff2",
+        &[("Host", "evil.example")],
+        "",
+    );
+    assert_eq!(r.status, 403);
 }
 
 #[test]

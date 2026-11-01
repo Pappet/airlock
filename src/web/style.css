@@ -1,4 +1,7 @@
-/* Airlock dashboard: SPECTRUM tokens; no external fonts (loopback-only, Spec 04 §1). */
+/* Airlock dashboard: SPECTRUM tokens; fonts embedded in the binary, served under /fonts/ (Spec 04 §1: nothing external). */
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 500 700; font-display: swap; src: url(/fonts/space-grotesk.woff2) format("woff2"); }
+@font-face { font-family: "Manrope"; font-style: normal; font-weight: 400 700; font-display: swap; src: url(/fonts/manrope.woff2) format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400 600; font-display: swap; src: url(/fonts/jetbrains-mono.woff2) format("woff2"); }
 :root {
   --surface-container-lowest: #0e0e0e;
   --surface: #131313;

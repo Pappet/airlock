@@ -50,6 +50,11 @@ const LOGGED_BODY_MAX: usize = 1024 * 1024;
 const INDEX_HTML: &str = include_str!("web/index.html");
 const APP_JS: &str = include_str!("web/app.js");
 const STYLE_CSS: &str = include_str!("web/style.css");
+// Latin subsets, variable weight, SIL OFL 1.1 (licence texts next to the files).
+const FONT_SPACE_GROTESK: &[u8] = include_bytes!("web/fonts/space-grotesk.woff2");
+const FONT_MANROPE: &[u8] = include_bytes!("web/fonts/manrope.woff2");
+const FONT_JETBRAINS_MONO: &[u8] = include_bytes!("web/fonts/jetbrains-mono.woff2");
+const CSP: &str = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'";
 
 /// Shared server state.
 struct AppState {
@@ -202,6 +207,15 @@ fn router(state: Shared) -> Router {
             "/style.css",
             get(|| async { asset("text/css; charset=utf-8", STYLE_CSS) }),
         )
+        .route(
+            "/fonts/space-grotesk.woff2",
+            get(|| async { font(FONT_SPACE_GROTESK) }),
+        )
+        .route("/fonts/manrope.woff2", get(|| async { font(FONT_MANROPE) }))
+        .route(
+            "/fonts/jetbrains-mono.woff2",
+            get(|| async { font(FONT_JETBRAINS_MONO) }),
+        )
         .route("/api/project", get(show_project))
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(show_task).patch(edit_task))
@@ -236,10 +250,20 @@ fn asset(content_type: &'static str, body: &'static str) -> Response {
         [
             (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, "no-store"),
-            (
-                header::CONTENT_SECURITY_POLICY,
-                "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
-            ),
+            (header::CONTENT_SECURITY_POLICY, CSP),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// An embedded font; cacheable for a day, as its bytes only change with the build.
+fn font(body: &'static [u8]) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "font/woff2"),
+            (header::CACHE_CONTROL, "max-age=86400"),
+            (header::CONTENT_SECURITY_POLICY, CSP),
         ],
         body,
     )
