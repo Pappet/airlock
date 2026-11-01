@@ -116,7 +116,7 @@ Agents use Airlock's MCP tools directly. `airlock setup` prints the configuratio
 ```bash
 cd ../my-project-engine
 airlock setup claude > .mcp.json   # per worktree; not `claude mcp add --scope local` (applies to all worktrees)
-mkdir -p .claude && airlock setup claude-hooks > .claude/settings.local.json   # optional; merge by hand if the file exists
+mkdir -p .claude && airlock setup claude-hooks > .claude/settings.local.json   # optional, for worktrees with one fixed role; merge by hand if the file exists
 airlock setup antigravity   # entry for the global ~/.gemini/antigravity/mcp_config.json
 airlock setup dsh > ~/.dsh/airlock/my-project-engine.yml   # patch overlay; start: dsh web --patch … --port 0
 ```
