@@ -1,5 +1,6 @@
 //! Airlock: local-first multi-agent workflow coordinator and task management hub.
 
+pub mod activity;
 pub mod app;
 pub mod briefing;
 pub mod cli;
