@@ -88,7 +88,7 @@ The same briefing arrives over MCP (`session_start`), over the CLI (`airlock sta
 
 ## Quickstart
 
-Requires Rust 1.85+.
+Download a binary for Linux, macOS, or Windows from the [latest release](https://github.com/Pappet/airlock/releases/latest), or build from source with Rust 1.85+:
 
 ```bash
 cargo install --locked --git https://github.com/Pappet/airlock
