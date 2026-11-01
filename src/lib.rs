@@ -1,5 +1,6 @@
 //! Airlock: local-first multi-agent workflow coordinator and task management hub.
 
+pub mod activity;
 pub mod app;
 pub mod briefing;
 pub mod cli;
@@ -12,6 +13,7 @@ pub mod init;
 pub mod layout;
 pub mod mcp;
 pub mod overlap;
+pub mod problems;
 pub mod setup;
 pub mod snapshot;
 pub mod store;

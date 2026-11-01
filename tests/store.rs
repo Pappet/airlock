@@ -1,7 +1,7 @@
 //! Hub store: transitions, leases, validation, concurrency (Spec 01 §2, §3.2).
 
-use airlock::core::{QuestionStatus, TaskState};
-use airlock::store::{NewTask, NotFound, Store, TaskEdit};
+use airlock::core::{AnswerVersion, Priority, QuestionStatus, TaskState};
+use airlock::store::{NewTask, NotFound, Store, TaskEdit, TrackEdit};
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
@@ -18,7 +18,8 @@ fn new_task(blocked_by: &[&str]) -> NewTask {
         prefix: "T".to_string(),
         title: "Task".to_string(),
         role: "engine".to_string(),
-        priority: 0,
+        priority: Priority::Normal,
+        track: None,
         blocked_by: blocked_by.iter().map(|s| s.to_string()).collect(),
         read: vec!["docs/spec/a.md".to_string()],
         touch: vec!["src/a.rs".to_string()],
@@ -157,7 +158,7 @@ fn add_continues_after_the_highest_number_including_done_tasks() {
     let mut lower = tasks[0].clone();
     lower.id = "t-50".to_string();
     tasks.push(lower);
-    let snapshot = Snapshot::new("id", &ProjectConfig::default(), &tasks, &[]);
+    let snapshot = Snapshot::new("id", &ProjectConfig::default(), &tasks, &[], &[]);
 
     let (_dir, mut store) = open();
     store.replace_all(&snapshot, "hash", 3).unwrap();
@@ -222,7 +223,7 @@ fn tasks_round_trip_through_the_database() {
     store.add_task(new_task(&[]), 0).unwrap();
     store.add_task(new_task(&[]), 0).unwrap();
     let mut spec = new_task(&["T-2", "T-1"]);
-    spec.priority = -3;
+    spec.priority = Priority::Low;
     let added = store.add_task(spec, 42).unwrap();
     drop(store);
 
@@ -232,7 +233,10 @@ fn tasks_round_trip_through_the_database() {
     let c = store.task("T-3", 42).unwrap();
     assert_eq!(c, added);
     assert_eq!(c.blocked_by, ["T-2", "T-1"], "authored order preserved");
-    assert_eq!((c.priority, c.created_at, c.updated_at), (-3, 42, 42));
+    assert_eq!(
+        (c.priority, c.created_at, c.updated_at),
+        (Priority::Low, 42, 42)
+    );
 }
 
 #[test]
@@ -264,7 +268,7 @@ fn question_lifecycle() {
 
     let resolved = store.resolve(1, None, 15).unwrap();
     assert_eq!(resolved.status, QuestionStatus::Resolved);
-    assert!(err(store.answer(1, "late", "lead", None, 16)).contains("already resolved"));
+    assert!(err(store.resolve(1, None, 16)).contains("already resolved"));
     assert!(err(store.question(9).map(|_| ())).contains("no question #9"));
 
     let ids: Vec<u64> = store.questions().unwrap().iter().map(|q| q.id).collect();
@@ -301,16 +305,218 @@ fn concurrent_claims_from_separate_connections_have_one_winner() {
     assert_eq!(winners, 1);
 }
 
+/// The version 1 layout (tasks, task_deps, questions), as it was released.
+const LEGACY_V1: &str = "
+CREATE TABLE tasks (
+    id               TEXT PRIMARY KEY,
+    title            TEXT NOT NULL,
+    role             TEXT NOT NULL,
+    state            TEXT NOT NULL CHECK (state IN ('open', 'in_progress', 'in_review', 'done')),
+    priority         INTEGER NOT NULL DEFAULT 0,
+    read             TEXT NOT NULL,
+    touch            TEXT NOT NULL,
+    do               TEXT NOT NULL,
+    verify           TEXT NOT NULL,
+    notes            TEXT,
+    claimed_by       TEXT,
+    lease_expires_at INTEGER,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+) STRICT;
+CREATE TABLE task_deps (
+    task_id    TEXT NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+    blocked_by TEXT NOT NULL REFERENCES tasks (id),
+    PRIMARY KEY (task_id, blocked_by)
+) STRICT;
+CREATE TABLE questions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic       TEXT NOT NULL,
+    asked_by    TEXT NOT NULL,
+    question    TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('open', 'answered', 'resolved')),
+    answer      TEXT,
+    answered_by TEXT,
+    spec_file   TEXT,
+    created_at  INTEGER NOT NULL,
+    answered_at INTEGER
+) STRICT;
+";
+
+const LEGACY_V2_V3: &str = "
+CREATE TABLE exports (
+    sha256      TEXT PRIMARY KEY,
+    recorded_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE bindings (
+    root    TEXT PRIMARY KEY,
+    role    TEXT NOT NULL,
+    session TEXT NOT NULL,
+    locked  INTEGER NOT NULL DEFAULT 0
+) STRICT;
+";
+
+/// Builds a database at `version` (1 or 3) holding one task per entry of
+/// `priorities`, ids `T-1`, `T-2`, ...
+fn legacy_db(path: &std::path::Path, version: i64, priorities: &[i64]) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(LEGACY_V1).unwrap();
+    if version >= 3 {
+        conn.execute_batch(LEGACY_V2_V3).unwrap();
+    }
+    for (i, p) in priorities.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, created_at, updated_at)
+             VALUES (?1, 't', 'engine', 'open', ?2, '[]', '[]', 'd', 'v', 0, 0)",
+            rusqlite::params![format!("T-{}", i + 1), p],
+        )
+        .unwrap();
+    }
+    conn.pragma_update(None, "user_version", version).unwrap();
+}
+
+#[test]
+fn version_3_priorities_are_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    legacy_db(&path, 3, &[40, 30, 29, 22, 10, 9, 5, -1]);
+
+    let store = Store::open(&path).unwrap();
+    let tasks = store.tasks(0).unwrap();
+    let priorities: Vec<Priority> = tasks.iter().map(|t| t.priority).collect();
+    assert_eq!(
+        priorities,
+        [
+            Priority::High,
+            Priority::High,
+            Priority::Normal,
+            Priority::Normal,
+            Priority::Normal,
+            Priority::Low,
+            Priority::Low,
+            Priority::Low
+        ]
+    );
+    drop(store);
+
+    // The migration also created the track storage Task 2 builds on.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let tracks: i64 = conn
+        .query_row("SELECT count(*) FROM tracks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tracks, 0);
+    let unset: i64 = conn
+        .query_row("SELECT count(*) FROM tasks WHERE track IS NULL", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(unset, 8, "migrated tasks have no track");
+
+    let mut store = Store::open(&path).unwrap();
+    let track = store.add_track("core", Priority::High, "", 0).unwrap();
+    assert_eq!(track.name, "core");
+    assert_eq!(store.tracks().unwrap(), [track]);
+}
+
+#[test]
+fn out_of_range_priority_fails_to_load_and_names_the_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    let mut store = Store::open(&path).unwrap();
+    store.add_task(new_task(&[]), 0).unwrap();
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    // Only a database without the guard triggers can hold such a rank.
+    conn.execute_batch(
+        "DROP TRIGGER tasks_priority_rank_insert; DROP TRIGGER tasks_priority_rank_update;",
+    )
+    .unwrap();
+    conn.execute("UPDATE tasks SET priority = 9", []).unwrap();
+    drop(conn);
+
+    let store = Store::open(&path).unwrap();
+    let message = err(store.tasks(0));
+    assert!(message.contains("task `T-1`"), "{message}");
+    assert!(message.contains("rank 9"), "{message}");
+}
+
+#[test]
+fn old_processes_cannot_write_priorities_outside_the_scale() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    let mut store = Store::open(&path).unwrap();
+    store.add_task(new_task(&[]), 0).unwrap();
+    drop(store);
+
+    // What an airlock process from before the migration would still do.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let insert = conn
+        .execute(
+            "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, created_at, updated_at)
+             VALUES ('T-9', 't', 'engine', 'open', 25, '[]', '[]', 'd', 'v', 0, 0)",
+            [],
+        )
+        .expect_err("insert of rank 25 must be refused");
+    assert!(
+        insert.to_string().contains("restart old airlock processes"),
+        "{insert}"
+    );
+    let update = conn
+        .execute("UPDATE tasks SET priority = 25 WHERE id = 'T-1'", [])
+        .expect_err("update to rank 25 must be refused");
+    assert!(
+        update.to_string().contains("restart old airlock processes"),
+        "{update}"
+    );
+    // A valid rank still goes through.
+    conn.execute("UPDATE tasks SET priority = 3 WHERE id = 'T-1'", [])
+        .unwrap();
+    drop(conn);
+
+    let store = Store::open(&path).unwrap();
+    let tasks = store.tasks(0).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].priority, Priority::Critical);
+}
+
+#[test]
+fn renaming_a_track_after_a_v3_migration_carries_its_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    legacy_db(&path, 3, &[40, 10]);
+
+    let mut store = Store::open(&path).unwrap();
+    store.add_track("core", Priority::High, "", 0).unwrap();
+    store
+        .edit_task(
+            "T-1",
+            TaskEdit {
+                track: Some(Some("core".to_string())),
+                ..TaskEdit::default()
+            },
+            false,
+            1,
+        )
+        .unwrap();
+    store
+        .edit_track(
+            "core",
+            TrackEdit {
+                name: Some("engine-core".to_string()),
+                ..TrackEdit::default()
+            },
+            2,
+        )
+        .unwrap();
+    let tasks = store.tasks(3).unwrap();
+    assert_eq!(tasks[0].track.as_deref(), Some("engine-core"));
+    assert_eq!(tasks[1].track, None);
+}
+
 #[test]
 fn version_1_databases_are_migrated() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("airlock.db");
-    Store::open(&path).unwrap();
-    // Roll back to the version 1 layout.
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("DROP TABLE exports; DROP TABLE bindings; PRAGMA user_version = 1;")
-        .unwrap();
-    drop(conn);
+    legacy_db(&path, 1, &[]);
 
     let mut store = Store::open(&path).unwrap();
     store.record_export("abc", 1).unwrap();
@@ -338,6 +544,7 @@ fn replace_all_swaps_state_and_never_reuses_question_ids() {
         "id",
         &ProjectConfig::default(),
         &source.tasks(3).unwrap(),
+        &[],
         &source.questions().unwrap(),
     );
 
@@ -391,7 +598,7 @@ fn edit_changes_only_given_fields() {
             "T-2",
             TaskEdit {
                 title: Some("New title".into()),
-                priority: Some(7),
+                priority: Some(Priority::High),
                 touch: Some(vec!["src/b.rs".into(), "src/c.rs".into()]),
                 blocked_by: Some(vec!["T-1".into(), "T-1".into()]),
                 ..TaskEdit::default()
@@ -401,7 +608,7 @@ fn edit_changes_only_given_fields() {
         )
         .unwrap();
     assert_eq!(edited.title, "New title");
-    assert_eq!(edited.priority, 7);
+    assert_eq!(edited.priority, Priority::High);
     assert_eq!(edited.touch, ["src/b.rs", "src/c.rs"]);
     assert_eq!(edited.blocked_by, ["T-1"], "duplicates dropped");
     assert_eq!(edited.updated_at, 5);
@@ -532,4 +739,341 @@ fn ask_once_keeps_one_open_question_per_session_and_topic() {
         "an answered question does not swallow a new claim"
     );
     assert_eq!(store.questions().unwrap().len(), 3);
+}
+
+fn track_task(track: Option<&str>) -> NewTask {
+    NewTask {
+        track: track.map(str::to_string),
+        ..new_task(&[])
+    }
+}
+
+#[test]
+fn tracks_are_created_listed_and_validated() {
+    let (_dir, mut store) = open();
+    let core = store
+        .add_track("core", Priority::Critical, "Core fidelity", 5)
+        .unwrap();
+    store.add_track("comfort", Priority::Low, "", 6).unwrap();
+    store
+        .add_track("infra", Priority::default(), "", 7)
+        .unwrap();
+
+    assert_eq!(core.priority, Priority::Critical);
+    assert_eq!(core.description, "Core fidelity");
+    assert_eq!((core.created_at, core.updated_at), (5, 5));
+    let names: Vec<String> = store
+        .tracks()
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(names, ["core", "infra", "comfort"]);
+    assert_eq!(store.track("infra").unwrap().priority, Priority::Normal);
+
+    assert!(err(store.add_track("core", Priority::Low, "", 8)).contains("already exists"));
+    store.add_track("Core", Priority::Low, "", 8).unwrap();
+    assert!(
+        store.track("Core").is_ok(),
+        "names are unique exactly, case kept"
+    );
+    assert!(
+        err(store.add_track("Core fidelity", Priority::Low, "", 8)).contains("invalid track name")
+    );
+}
+
+#[test]
+fn tasks_reference_existing_tracks() {
+    let (_dir, mut store) = open();
+    store.add_track("comfort", Priority::Low, "", 0).unwrap();
+    store.add_track("core", Priority::High, "", 0).unwrap();
+
+    let task = store.add_task(track_task(Some("comfort")), 1).unwrap();
+    assert_eq!(task.track.as_deref(), Some("comfort"));
+    assert_eq!(
+        store.task(&task.id, 1).unwrap().track.as_deref(),
+        Some("comfort")
+    );
+
+    let message = err(store.add_task(track_task(Some("nope")), 2));
+    assert!(message.contains("no track `nope`"), "{message}");
+    assert!(
+        message.contains("defined tracks: comfort, core"),
+        "{message}"
+    );
+    assert_eq!(store.tasks(2).unwrap().len(), 1, "nothing was created");
+
+    let clear = TaskEdit {
+        track: Some(None),
+        ..TaskEdit::default()
+    };
+    assert_eq!(
+        store.edit_task(&task.id, clear, false, 3).unwrap().track,
+        None
+    );
+    let set = TaskEdit {
+        track: Some(Some("core".to_string())),
+        ..TaskEdit::default()
+    };
+    assert_eq!(
+        store
+            .edit_task(&task.id, set, false, 4)
+            .unwrap()
+            .track
+            .as_deref(),
+        Some("core")
+    );
+    let unknown = TaskEdit {
+        track: Some(Some("nope".to_string())),
+        ..TaskEdit::default()
+    };
+    assert!(err(store.edit_task(&task.id, unknown, false, 5)).contains("no track `nope`"));
+    assert_eq!(
+        store.task(&task.id, 5).unwrap().track.as_deref(),
+        Some("core")
+    );
+}
+
+#[test]
+fn no_tracks_defined_hints_at_the_command() {
+    let (_dir, mut store) = open();
+    let message = err(store.add_task(track_task(Some("core")), 0));
+    assert!(
+        message.contains("no tracks defined (airlock track add)"),
+        "{message}"
+    );
+}
+
+#[test]
+fn renaming_a_track_moves_its_tasks() {
+    let (_dir, mut store) = open();
+    store.add_track("comfort", Priority::Low, "", 0).unwrap();
+    store.add_track("core", Priority::High, "", 0).unwrap();
+    store.add_task(track_task(Some("comfort")), 1).unwrap();
+    let t2 = store.add_task(track_task(Some("comfort")), 1).unwrap();
+    store.add_task(track_task(None), 1).unwrap();
+    store.claim(&t2.id, "s", 600, 2).unwrap();
+    store.complete(&t2.id, "s", None, false, false, 3).unwrap();
+
+    let renamed = store
+        .edit_track(
+            "comfort",
+            TrackEdit {
+                name: Some("polish".to_string()),
+                ..TrackEdit::default()
+            },
+            10,
+        )
+        .unwrap();
+    assert_eq!(renamed.name, "polish");
+    assert_eq!(renamed.updated_at, 10);
+    assert_eq!(renamed.created_at, 0);
+
+    let tracks: Vec<Option<String>> = store
+        .tasks(10)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.track)
+        .collect();
+    assert_eq!(tracks, [Some("polish".into()), Some("polish".into()), None]);
+    assert_eq!(store.task("T-1", 10).unwrap().updated_at, 1);
+    let missing = store.track("comfort").unwrap_err();
+    assert!(missing.downcast_ref::<NotFound>().is_some());
+
+    let clash = TrackEdit {
+        name: Some("core".to_string()),
+        ..TrackEdit::default()
+    };
+    assert!(err(store.edit_track("polish", clash, 11)).contains("already exists"));
+    let bad = TrackEdit {
+        name: Some("a b".to_string()),
+        ..TrackEdit::default()
+    };
+    assert!(err(store.edit_track("polish", bad, 11)).contains("invalid track name"));
+    assert_eq!(store.track("polish").unwrap().updated_at, 10);
+}
+
+#[test]
+fn tracks_are_edited_in_place() {
+    let (_dir, mut store) = open();
+    store.add_track("core", Priority::Normal, "old", 0).unwrap();
+    assert!(err(store.edit_track("core", TrackEdit::default(), 1)).contains("nothing to change"));
+    assert!(
+        err(store.edit_track(
+            "nope",
+            TrackEdit {
+                priority: Some(Priority::Low),
+                ..TrackEdit::default()
+            },
+            1
+        ))
+        .contains("no track `nope`")
+    );
+
+    let edited = store
+        .edit_track(
+            "core",
+            TrackEdit {
+                priority: Some(Priority::Critical),
+                description: Some("new".to_string()),
+                ..TrackEdit::default()
+            },
+            2,
+        )
+        .unwrap();
+    assert_eq!(edited.priority, Priority::Critical);
+    assert_eq!(edited.description, "new");
+    assert_eq!((edited.created_at, edited.updated_at), (0, 2));
+}
+
+#[test]
+fn tracks_in_use_cannot_be_removed() {
+    let (_dir, mut store) = open();
+    store.add_track("core", Priority::High, "", 0).unwrap();
+    let task = store.add_task(track_task(Some("core")), 1).unwrap();
+    store.claim(&task.id, "s", 600, 2).unwrap();
+    store
+        .complete(&task.id, "s", None, false, false, 3)
+        .unwrap();
+
+    assert!(err(store.remove_track("core", 5)).contains("track `core` is used by 1 task(s)"));
+    assert!(store.track("core").is_ok());
+
+    let clear = TaskEdit {
+        track: Some(None),
+        ..TaskEdit::default()
+    };
+    store.edit_task(&task.id, clear, true, 6).unwrap();
+    store.remove_track("core", 7).unwrap();
+    assert!(store.tracks().unwrap().is_empty());
+    let gone = store.remove_track("core", 8).unwrap_err();
+    assert!(gone.downcast_ref::<NotFound>().is_some());
+}
+
+#[test]
+fn correcting_a_resolved_answer_keeps_status_and_history() {
+    let (_dir, mut store) = open();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store
+        .answer(1, "first", "lead", Some("docs/spec/melee.md"), 11)
+        .unwrap();
+    store.resolve(1, None, 12).unwrap();
+
+    let corrected = store.answer(1, "second", "lead-1", None, 13).unwrap();
+    assert_eq!(corrected.status, QuestionStatus::Resolved);
+    assert_eq!(corrected.answer.as_deref(), Some("second"));
+    assert_eq!(corrected.answered_by.as_deref(), Some("lead-1"));
+    assert_eq!(corrected.answered_at, Some(13));
+    assert_eq!(corrected.corrected_at, Some(13));
+    assert_eq!(corrected.corrected_by.as_deref(), Some("lead-1"));
+    assert_eq!(
+        corrected.history,
+        [AnswerVersion {
+            answer: "first".into(),
+            answered_by: Some("lead".into()),
+            answered_at: Some(11),
+            spec_file: Some("docs/spec/melee.md".into()),
+        }]
+    );
+    assert_eq!(store.question(1).unwrap(), corrected, "persisted");
+    assert_eq!(store.questions().unwrap(), [corrected]);
+}
+
+#[test]
+fn answering_an_open_question_is_not_a_correction() {
+    let (_dir, mut store) = open();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    let answered = store.answer(1, "first", "lead", None, 11).unwrap();
+    assert_eq!(answered.status, QuestionStatus::Answered);
+    assert_eq!(answered.corrected_at, None);
+    assert_eq!(answered.corrected_by, None);
+    assert!(answered.history.is_empty());
+}
+
+#[test]
+fn two_corrections_keep_both_earlier_answers() {
+    let (_dir, mut store) = open();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    for (i, text) in ["first", "second", "third"].into_iter().enumerate() {
+        store.answer(1, text, "lead", None, 11 + i as i64).unwrap();
+    }
+    let q = store.question(1).unwrap();
+    assert_eq!(q.status, QuestionStatus::Answered);
+    assert_eq!(q.answer.as_deref(), Some("third"));
+    assert_eq!(q.corrected_at, Some(13));
+    let earlier: Vec<&str> = q.history.iter().map(|v| v.answer.as_str()).collect();
+    assert_eq!(earlier, ["first", "second"], "oldest first");
+}
+
+#[test]
+fn answered_questions_from_older_databases_can_be_corrected_after_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    legacy_db(&path, 3, &[]);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO questions (topic, asked_by, question, status, answer, answered_by, created_at, answered_at)
+             VALUES ('melee.md', 'engine-1', 'Arc?', 'resolved', 'old', 'lead', 1, 2)",
+            [],
+        )
+        .unwrap();
+
+    let mut store = Store::open(&path).unwrap();
+    let before = store.question(1).unwrap();
+    assert_eq!(before.corrected_at, None);
+    assert!(before.history.is_empty());
+
+    let corrected = store.answer(1, "new", "lead", None, 10).unwrap();
+    assert_eq!(corrected.status, QuestionStatus::Resolved);
+    assert_eq!(corrected.history[0].answer, "old");
+    assert_eq!(corrected.history[0].answered_at, Some(2));
+}
+
+#[test]
+fn old_processes_cannot_replace_an_answer_without_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("airlock.db");
+    let mut store = Store::open(&path).unwrap();
+    store.ask("melee.md", "How?", "engine-1", 10).unwrap();
+    store.answer(1, "first", "lead", None, 11).unwrap();
+    drop(store);
+
+    // What an airlock process from before the migration would still do.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let update = conn
+        .execute(
+            "UPDATE questions SET status = 'answered', answer = 'overwritten', answered_by = 'lead',
+                    answered_at = 12 WHERE id = 1",
+            [],
+        )
+        .expect_err("an answer change without history must be refused");
+    assert!(
+        update.to_string().contains("restart old airlock processes"),
+        "{update}"
+    );
+    // Other columns of an answered question still change freely.
+    conn.execute("UPDATE questions SET status = 'resolved' WHERE id = 1", [])
+        .unwrap();
+    drop(conn);
+
+    // The normal correction path passes, also twice within one second.
+    let mut store = Store::open(&path).unwrap();
+    store.answer(1, "second", "lead-1", None, 13).unwrap();
+    let q = store.answer(1, "third", "lead-1", None, 13).unwrap();
+    assert_eq!(q.answer.as_deref(), Some("third"));
+    assert_eq!(q.status, QuestionStatus::Resolved);
+    let earlier: Vec<&str> = q.history.iter().map(|v| v.answer.as_str()).collect();
+    assert_eq!(earlier, ["first", "second"]);
+    drop(store);
+
+    // Earlier history does not cover the current answer.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let again = conn
+        .execute("UPDATE questions SET answer = 'lost' WHERE id = 1", [])
+        .expect_err("history of earlier answers does not cover the current one");
+    assert!(
+        again.to_string().contains("restart old airlock processes"),
+        "{again}"
+    );
 }

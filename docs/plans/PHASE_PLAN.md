@@ -64,6 +64,7 @@ Goal: a Claude Code session that runs out of context, crashes, or is compacted i
 - [x] Server-Sent Events driven by `PRAGMA data_version` polling.
 - [x] Task editing: `airlock task edit`, MCP `task_update`, `PATCH /api/tasks/{id}` with whole-graph validation; tasks past `open` only with `--force`.
 - [x] Overlap warning at claim time: `task next` (CLI, MCP, briefing) hands out tasks sharing files with occupying tasks last, with a warning; `task claim` never refuses but warns and records an `overlap:<id>` question for the lead. Reuses `overlap::analyze`.
+- [x] Tracks and a fixed priority scale (`critical`/`high`/`normal`/`low`): `track` commands and MCP tools, `--track` on tasks, store schema v4 (integer priorities converted), snapshot format 2, `task next` by track priority, Tracks tab with per-role course warning, board swimlanes and filters, `/api/tracks` and `track_changed` (Spec 01 §2.5, Spec 04 §3.9; design: [`docs/superpowers/specs/2026-10-31-tracks-and-priority-design.md`](../superpowers/specs/2026-10-31-tracks-and-priority-design.md)).
 - [x] Assigned task ids: `task add` / `task_create` / `POST /api/tasks` take no id; Airlock numbers tasks `<prefix>-<n>` per role (`role set --prefix`, default: first letter), inside the write transaction. Prevents agents from picking ids that already exist.
 
 ---

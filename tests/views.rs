@@ -3,7 +3,7 @@
 mod common;
 
 use airlock::config::ProjectConfig;
-use airlock::core::{QuestionStatus, TaskState};
+use airlock::core::{AnswerVersion, Priority, QuestionStatus, TaskState};
 use airlock::snapshot::Snapshot;
 use airlock::views;
 use common::{question, task};
@@ -12,6 +12,8 @@ fn snapshot() -> Snapshot {
     let mut spec = task("L-1", TaskState::Done, &[]);
     spec.role = "spec".into();
     let mut engine = task("E-1", TaskState::InProgress, &["L-1"]);
+    engine.track = Some("core".into());
+    engine.priority = Priority::High;
     engine.r#do = "Line one\nline two".into();
     engine.notes = Some("half done".into());
     let blocked = task("E-2", TaskState::Open, &["E-1"]);
@@ -28,6 +30,7 @@ fn snapshot() -> Snapshot {
         "p",
         &ProjectConfig::default(),
         &[blocked, engine, spec],
+        &[],
         &[other, answered],
     )
 }
@@ -48,7 +51,7 @@ On a merge conflict, take either side and re-run `airlock sync`. -->
 
 ### E-1 — Task E-1
 
-- **Status:** ready · **Priority:** 0
+- **Status:** ready · **Track:** core · **Priority:** high
 - **Blocked by:** L-1
 - **Read:** `docs/spec/missiles.md`
 - **Touch:** `src/missiles.rs`
@@ -59,7 +62,7 @@ On a merge conflict, take either side and re-run `airlock sync`. -->
 
 ### E-2 — Task E-2
 
-- **Status:** blocked · **Priority:** 0
+- **Status:** blocked · **Priority:** normal
 - **Blocked by:** E-1
 - **Read:** `docs/spec/missiles.md`
 - **Touch:** `src/missiles.rs`
@@ -70,7 +73,7 @@ On a merge conflict, take either side and re-run `airlock sync`. -->
 
 ### L-1 — Task L-1
 
-- **Status:** done · **Priority:** 0
+- **Status:** done · **Priority:** normal
 - **Read:** `docs/spec/missiles.md`
 - **Touch:** `src/missiles.rs`
 - **Do:** Implement shot clock
@@ -95,7 +98,7 @@ fn questions_view_groups_by_topic() {
 
 #[test]
 fn empty_views() {
-    let empty = Snapshot::new("p", &ProjectConfig::default(), &[], &[]);
+    let empty = Snapshot::new("p", &ProjectConfig::default(), &[], &[], &[]);
     assert!(views::plan(&empty).ends_with("# Plan\n\n_No tasks._\n"));
     assert!(views::questions(&empty).ends_with("_No questions._\n"));
 }
@@ -108,7 +111,7 @@ fn single_line_fields_cannot_break_the_structure() {
     let mut q = question(1);
     q.topic = "melee\n# injected".into();
     q.asked_by = "engine\n- fake".into();
-    let snapshot = Snapshot::new("p", &ProjectConfig::default(), &[t], &[q]);
+    let snapshot = Snapshot::new("p", &ProjectConfig::default(), &[t], &[], &[q]);
 
     let plan = views::plan(&snapshot);
     assert!(plan.contains("\n### E-1 — Two lines and tabs\n"));
@@ -118,4 +121,44 @@ fn single_line_fields_cannot_break_the_structure() {
     let questions = views::questions(&snapshot);
     assert!(questions.contains("\n## melee # injected\n"));
     assert!(questions.contains("- **Asked by:** engine - fake\n"));
+}
+
+#[test]
+fn questions_md_marks_corrections_and_lists_earlier_answers() {
+    let mut q = question(1);
+    q.status = QuestionStatus::Resolved;
+    q.answer = Some("third".into());
+    q.answered_by = Some("lead-2".into());
+    // 2023-11-14 22:13:20 UTC
+    q.corrected_at = Some(1_700_000_000);
+    q.corrected_by = Some("lead-2".into());
+    q.history = vec![
+        AnswerVersion {
+            answer: "first".into(),
+            answered_by: Some("lead".into()),
+            answered_at: None,
+            spec_file: None,
+        },
+        AnswerVersion {
+            answer: "second\nline".into(),
+            answered_by: None,
+            answered_at: None,
+            spec_file: None,
+        },
+    ];
+    q.spec_file = Some("docs/spec/melee.md".into());
+    let corrected = Snapshot::new("p", &ProjectConfig::default(), &[], &[], &[q]);
+    let text = views::questions(&corrected);
+    assert!(
+        text.contains(
+            "- **Answer** (lead-2): third\n- **Corrected** (lead-2, 2023-11-14)\n\
+             - **Earlier answer** (unknown): second\n  line\n\
+             - **Earlier answer** (lead): first\n\
+             - **Codified in:** `docs/spec/melee.md`\n"
+        ),
+        "{text}"
+    );
+
+    // Questions without history render as before.
+    assert!(!views::questions(&snapshot()).contains("Corrected"));
 }

@@ -4,7 +4,8 @@ mod common;
 
 use airlock::config::ProjectConfig;
 use airlock::core::{
-    GraphError, TaskState, TaskStatus, check_dependencies, dependents, task_number,
+    GraphError, Priority, TaskState, TaskStatus, check_dependencies, check_track_name, dependents,
+    task_number,
 };
 use common::task;
 
@@ -252,5 +253,48 @@ fn task_number_reads_only_prefix_dash_digits() {
         ("E-99999999999999999999999", "E"),
     ] {
         assert_eq!(task_number(id, prefix), None, "{id} under {prefix}");
+    }
+}
+
+#[test]
+fn priority_orders_and_parses() {
+    use airlock::core::Priority::*;
+    assert!(Critical > High && High > Normal && Normal > Low);
+    assert_eq!(Priority::default(), Normal);
+    assert_eq!("high".parse::<Priority>().unwrap(), High);
+    let err = "22".parse::<Priority>().unwrap_err().to_string();
+    assert!(err.contains("critical, high, normal, or low"), "{err}");
+    assert_eq!(serde_json::to_string(&Critical).unwrap(), "\"critical\"");
+    for (old, new) in [
+        (40, High),
+        (30, High),
+        (29, Normal),
+        (10, Normal),
+        (9, Low),
+        (0, Low),
+        (-3, Low),
+    ] {
+        assert_eq!(Priority::from_legacy(old), new, "{old}");
+    }
+    assert_eq!(
+        (0..4)
+            .map(|r| Priority::from_rank(r).unwrap().rank())
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+    assert_eq!(Priority::from_rank(4), None);
+}
+
+#[test]
+fn track_names_use_the_role_name_alphabet() {
+    for ok in ["core", "comfort-2", "Engine_UI"] {
+        assert!(check_track_name(ok).is_ok(), "{ok}");
+    }
+    for bad in ["", "a b", "ä", "a.b"] {
+        let message = check_track_name(bad).unwrap_err();
+        assert_eq!(
+            message,
+            format!("invalid track name `{bad}`: use letters, digits, `-`, or `_`")
+        );
     }
 }

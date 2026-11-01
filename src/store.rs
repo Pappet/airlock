@@ -7,8 +7,8 @@
 //! seconds) so behavior is testable without a clock.
 
 use crate::core::{
-    Question, QuestionStatus, Task, TaskState, TaskStatus, check_dependencies, check_task_prefix,
-    dependents, task_number,
+    AnswerVersion, Priority, Question, QuestionStatus, Task, TaskState, TaskStatus, Track,
+    check_dependencies, check_task_prefix, check_track_name, dependents, task_number,
 };
 use crate::hub::{Binding, Bindings};
 use crate::snapshot::Snapshot;
@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
 
 const SCHEMA_V1: &str = "
 CREATE TABLE tasks (
@@ -77,15 +77,77 @@ CREATE TABLE bindings (
 ) STRICT;
 ";
 
+/// Priority becomes a four-level scale stored as a rank 0 to 3 (the old
+/// integers map by threshold, never to critical), and tasks may belong to a
+/// track. Triggers refuse any other priority on tasks, so an airlock process
+/// from before the migration, still running, cannot write integers the new
+/// binary could not read back.
+const SCHEMA_V4: &str = "
+UPDATE tasks SET priority = CASE WHEN priority >= 30 THEN 2 WHEN priority >= 10 THEN 1 ELSE 0 END;
+CREATE TABLE tracks (
+    name        TEXT PRIMARY KEY,
+    priority    INTEGER NOT NULL DEFAULT 1 CHECK (priority BETWEEN 0 AND 3),
+    description TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+) STRICT;
+ALTER TABLE tasks ADD COLUMN track TEXT REFERENCES tracks (name) ON UPDATE CASCADE;
+CREATE TRIGGER tasks_priority_rank_insert BEFORE INSERT ON tasks
+WHEN NEW.priority NOT BETWEEN 0 AND 3
+BEGIN
+    SELECT RAISE(ABORT, 'priority must be a rank 0 to 3; restart old airlock processes');
+END;
+CREATE TRIGGER tasks_priority_rank_update BEFORE UPDATE OF priority ON tasks
+WHEN NEW.priority NOT BETWEEN 0 AND 3
+BEGIN
+    SELECT RAISE(ABORT, 'priority must be a rank 0 to 3; restart old airlock processes');
+END;
+";
+
+/// Answer corrections: the replaced answers are kept per question, oldest
+/// first, and the question records who corrected it last and when. A trigger
+/// refuses to replace an answer unless the newest history row holds it, so an
+/// airlock process from before the migration, still running, cannot overwrite
+/// an answer and lose the earlier text.
+const SCHEMA_V5: &str = "
+ALTER TABLE questions ADD COLUMN corrected_at INTEGER;
+ALTER TABLE questions ADD COLUMN corrected_by TEXT;
+CREATE TABLE answer_history (
+    question_id INTEGER NOT NULL REFERENCES questions (id),
+    seq         INTEGER NOT NULL,
+    answer      TEXT NOT NULL,
+    answered_by TEXT,
+    answered_at INTEGER,
+    spec_file   TEXT,
+    PRIMARY KEY (question_id, seq)
+) STRICT;
+CREATE TRIGGER questions_answer_history BEFORE UPDATE OF answer ON questions
+WHEN OLD.answer IS NOT NULL
+ AND NOT EXISTS (
+     SELECT 1 FROM answer_history h
+      WHERE h.question_id = OLD.id
+        AND h.seq = (SELECT max(seq) FROM answer_history WHERE question_id = OLD.id)
+        AND h.answer = OLD.answer
+        AND h.answered_by IS OLD.answered_by
+        AND h.answered_at IS OLD.answered_at)
+BEGIN
+    SELECT RAISE(ABORT, 'answer history missing for a replaced answer; restart old airlock processes');
+END;
+";
+
 const SELECT_TASKS: &str = "
 SELECT id, title, role, state, priority,
        (SELECT json_group_array(blocked_by)
           FROM (SELECT blocked_by FROM task_deps WHERE task_id = t.id ORDER BY rowid)),
-       read, touch, do, verify, notes, claimed_by, lease_expires_at, created_at, updated_at
+       read, touch, do, verify, notes, claimed_by, lease_expires_at, created_at, updated_at, track
   FROM tasks t";
 
+const SELECT_TRACKS: &str =
+    "SELECT name, priority, description, created_at, updated_at FROM tracks";
+
 const SELECT_QUESTIONS: &str = "
-SELECT id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at
+SELECT id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at,
+       corrected_at, corrected_by
   FROM questions";
 
 /// Fields of a task to be created. The store assigns the id
@@ -96,7 +158,9 @@ pub struct NewTask {
     pub prefix: String,
     pub title: String,
     pub role: String,
-    pub priority: i32,
+    pub priority: Priority,
+    /// Must name a defined track
+    pub track: Option<String>,
     pub blocked_by: Vec<String>,
     pub read: Vec<String>,
     pub touch: Vec<String>,
@@ -105,13 +169,15 @@ pub struct NewTask {
 }
 
 /// Changes to an existing task; `None` keeps the field, a list replaces it.
+/// `track` is doubly optional: `Some(None)` clears it.
 /// A new content field must also go into `cli::TaskEditSpec`, the MCP
 /// `task_update` tool, the REST `EditTask` body, and Specs 02–04.
 #[derive(Debug, Clone, Default)]
 pub struct TaskEdit {
     pub title: Option<String>,
     pub role: Option<String>,
-    pub priority: Option<i32>,
+    pub priority: Option<Priority>,
+    pub track: Option<Option<String>>,
     pub blocked_by: Option<Vec<String>>,
     pub read: Option<Vec<String>>,
     pub touch: Option<Vec<String>>,
@@ -124,11 +190,26 @@ impl TaskEdit {
         self.title.is_none()
             && self.role.is_none()
             && self.priority.is_none()
+            && self.track.is_none()
             && self.blocked_by.is_none()
             && self.read.is_none()
             && self.touch.is_none()
             && self.r#do.is_none()
             && self.verify.is_none()
+    }
+}
+
+/// Changes to an existing track; `None` keeps the field.
+#[derive(Debug, Clone, Default)]
+pub struct TrackEdit {
+    pub name: Option<String>,
+    pub priority: Option<Priority>,
+    pub description: Option<String>,
+}
+
+impl TrackEdit {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.priority.is_none() && self.description.is_none()
     }
 }
 
@@ -216,16 +297,108 @@ impl Store {
             .conn
             .prepare(&format!("{SELECT_QUESTIONS} ORDER BY id DESC"))?;
         let rows = stmt.query_map([], question_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut questions: Vec<Question> = rows.collect::<rusqlite::Result<_>>()?;
+        for question in &mut questions {
+            question.history = load_history(&self.conn, question.id)?;
+        }
+        Ok(questions)
     }
 
     pub fn question(&self, id: u64) -> Result<Question> {
         load_question(&self.conn, id)
     }
 
+    /// Fails with the defined track names unless `name` is a track.
+    pub fn ensure_track(&self, name: &str) -> Result<()> {
+        ensure_track(&self.conn, name)
+    }
+
+    /// All tracks, highest priority first, then by name.
+    pub fn tracks(&self) -> Result<Vec<Track>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("{SELECT_TRACKS} ORDER BY priority DESC, name"))?;
+        let rows = stmt.query_map([], track_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn track(&self, name: &str) -> Result<Track> {
+        load_track(&self.conn, name)
+    }
+
+    pub fn add_track(
+        &mut self,
+        name: &str,
+        priority: Priority,
+        description: &str,
+        now: i64,
+    ) -> Result<Track> {
+        check_track_name(name).map_err(anyhow::Error::msg)?;
+        let tx = self.write(now)?;
+        ensure!(!track_exists(&tx, name)?, "track `{name}` already exists");
+        tx.execute(
+            "INSERT INTO tracks (name, priority, description, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![name, priority.rank(), description, now],
+        )?;
+        let track = load_track(&tx, name)?;
+        tx.commit()?;
+        Ok(track)
+    }
+
+    /// Renames, reprioritizes, or redescribes a track. A rename moves the
+    /// track's tasks along (`ON UPDATE CASCADE`) without touching their
+    /// `updated_at`.
+    pub fn edit_track(&mut self, name: &str, edit: TrackEdit, now: i64) -> Result<Track> {
+        ensure!(!edit.is_empty(), "nothing to change for track `{name}`");
+        if let Some(new_name) = &edit.name {
+            check_track_name(new_name).map_err(anyhow::Error::msg)?;
+        }
+        let tx = self.write(now)?;
+        let mut track = load_track(&tx, name)?;
+        if let Some(new_name) = edit.name.filter(|n| n != name) {
+            ensure!(
+                !track_exists(&tx, &new_name)?,
+                "track `{new_name}` already exists"
+            );
+            track.name = new_name;
+        }
+        if let Some(priority) = edit.priority {
+            track.priority = priority;
+        }
+        if let Some(description) = edit.description {
+            track.description = description;
+        }
+        tx.execute(
+            "UPDATE tracks SET name = ?1, priority = ?2, description = ?3, updated_at = ?4 WHERE name = ?5",
+            params![track.name, track.priority.rank(), track.description, now, name],
+        )?;
+        let track = load_track(&tx, &track.name)?;
+        tx.commit()?;
+        Ok(track)
+    }
+
+    /// Removes a track no task belongs to.
+    pub fn remove_track(&mut self, name: &str, now: i64) -> Result<()> {
+        let tx = self.write(now)?;
+        load_track(&tx, name)?;
+        let used: i64 = tx.query_row(
+            "SELECT count(*) FROM tasks WHERE track = ?1",
+            [name],
+            |row| row.get(0),
+        )?;
+        ensure!(used == 0, "track `{name}` is used by {used} task(s)");
+        tx.execute("DELETE FROM tracks WHERE name = ?1", [name])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn add_task(&mut self, new: NewTask, now: i64) -> Result<Task> {
         check_task_prefix(&new.prefix).map_err(anyhow::Error::msg)?;
         let tx = self.write(now)?;
+        if let Some(track) = &new.track {
+            ensure_track(&tx, track)?;
+        }
         // Numbered inside the write transaction, so concurrent adds never collide.
         let id = format!("{}-{}", new.prefix, next_task_number(&tx, &new.prefix)?);
         let mut seen = HashSet::new();
@@ -242,13 +415,14 @@ impl Store {
         }
 
         tx.execute(
-            "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+            "INSERT INTO tasks (id, title, role, state, priority, track, read, touch, do, verify, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
             params![
                 id,
                 new.title,
                 new.role,
-                new.priority,
+                new.priority.rank(),
+                new.track,
                 serde_json::to_string(&new.read)?,
                 serde_json::to_string(&new.touch)?,
                 new.r#do,
@@ -302,6 +476,12 @@ impl Store {
         if let Some(priority) = edit.priority {
             task.priority = priority;
         }
+        if let Some(track) = edit.track {
+            if let Some(name) = &track {
+                ensure_track(&tx, name)?;
+            }
+            task.track = track;
+        }
         if let Some(read) = edit.read {
             task.read = read;
         }
@@ -322,12 +502,13 @@ impl Store {
 
         let task = &tasks[pos];
         let changed = tx.execute(
-            "UPDATE tasks SET title = ?1, role = ?2, priority = ?3, read = ?4, touch = ?5, do = ?6, verify = ?7, updated_at = ?8
-              WHERE id = ?9 AND state = ?10",
+            "UPDATE tasks SET title = ?1, role = ?2, priority = ?3, track = ?4, read = ?5, touch = ?6, do = ?7, verify = ?8, updated_at = ?9
+              WHERE id = ?10 AND state = ?11",
             params![
                 task.title,
                 task.role,
-                task.priority,
+                task.priority.rank(),
+                task.track,
                 serde_json::to_string(&task.read)?,
                 serde_json::to_string(&task.touch)?,
                 task.r#do,
@@ -555,6 +736,9 @@ impl Store {
         Ok(question)
     }
 
+    /// Records the answer. On a question that already has one (answered or
+    /// resolved) this is a correction: the current answer moves to the
+    /// history, the status stays, and `corrected_at`/`corrected_by` are set.
     pub fn answer(
         &mut self,
         id: u64,
@@ -565,17 +749,36 @@ impl Store {
     ) -> Result<Question> {
         let tx = self.write(now)?;
         let question = load_question(&tx, id)?;
-        ensure!(
-            question.status != QuestionStatus::Resolved,
-            "question #{id} is already resolved"
-        );
-        tx.execute(
-            "UPDATE questions
-                SET status = 'answered', answer = ?1, answered_by = ?2, answered_at = ?3,
-                    spec_file = coalesce(?4, spec_file)
-              WHERE id = ?5",
-            params![answer, session, now, spec_file, sql_id(id)?],
-        )?;
+        if let Some(previous) = &question.answer {
+            tx.execute(
+                "INSERT INTO answer_history (question_id, seq, answer, answered_by, answered_at, spec_file)
+                 VALUES (?1, (SELECT coalesce(max(seq), 0) + 1 FROM answer_history WHERE question_id = ?1),
+                         ?2, ?3, ?4, ?5)",
+                params![
+                    sql_id(id)?,
+                    previous,
+                    question.answered_by,
+                    question.answered_at,
+                    question.spec_file
+                ],
+            )?;
+            tx.execute(
+                "UPDATE questions
+                    SET answer = ?1, answered_by = ?2, answered_at = ?3,
+                        spec_file = coalesce(?4, spec_file),
+                        corrected_at = ?3, corrected_by = ?2
+                  WHERE id = ?5",
+                params![answer, session, now, spec_file, sql_id(id)?],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE questions
+                    SET status = 'answered', answer = ?1, answered_by = ?2, answered_at = ?3,
+                        spec_file = coalesce(?4, spec_file)
+                  WHERE id = ?5",
+                params![answer, session, now, spec_file, sql_id(id)?],
+            )?;
+        }
         let question = load_question(&tx, id)?;
         tx.commit()?;
         Ok(question)
@@ -619,7 +822,7 @@ impl Store {
         Ok(())
     }
 
-    /// Replaces all tasks and questions with the snapshot's content and records
+    /// Replaces all tasks, tracks, and questions with the snapshot's content and records
     /// the snapshot's hash (`sha256`) as known, in one transaction. The caller
     /// validates the snapshot first. Question ids are kept; new questions
     /// continue after the highest id this store ever used.
@@ -629,21 +832,39 @@ impl Store {
             "INSERT OR IGNORE INTO exports (sha256, recorded_at) VALUES (?1, ?2)",
             params![sha256, now],
         )?;
-        tx.execute_batch("DELETE FROM task_deps; DELETE FROM tasks; DELETE FROM questions;")?;
+        // Tasks reference tracks, so tasks go first and come back last.
+        tx.execute_batch(
+            "DELETE FROM task_deps; DELETE FROM tasks; DELETE FROM tracks;
+             DELETE FROM answer_history; DELETE FROM questions;",
+        )?;
+        for track in &snapshot.tracks {
+            tx.execute(
+                "INSERT INTO tracks (name, priority, description, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    track.name,
+                    track.priority.rank(),
+                    track.description,
+                    track.created_at,
+                    now
+                ],
+            )?;
+        }
         for t in &snapshot.tasks {
             let state = match t.state {
                 TaskState::InProgress => TaskState::Open,
                 state => state,
             };
             tx.execute(
-                "INSERT INTO tasks (id, title, role, state, priority, read, touch, do, verify, notes, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO tasks (id, title, role, state, priority, track, read, touch, do, verify, notes, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     t.id,
                     t.title,
                     t.role,
                     state.as_str(),
-                    t.priority,
+                    t.priority.rank(),
+                    t.track,
                     serde_json::to_string(&t.read)?,
                     serde_json::to_string(&t.touch)?,
                     t.r#do,
@@ -664,8 +885,8 @@ impl Store {
         }
         for q in &snapshot.questions {
             tx.execute(
-                "INSERT INTO questions (id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO questions (id, topic, asked_by, question, status, answer, answered_by, spec_file, created_at, answered_at, corrected_at, corrected_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     sql_id(q.id)?,
                     q.topic,
@@ -676,9 +897,25 @@ impl Store {
                     q.answered_by,
                     q.spec_file,
                     q.created_at,
-                    q.answered_at
+                    q.answered_at,
+                    q.corrected_at,
+                    q.corrected_by
                 ],
             )?;
+            for (seq, version) in (1_i64..).zip(&q.history) {
+                tx.execute(
+                    "INSERT INTO answer_history (question_id, seq, answer, answered_by, answered_at, spec_file)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        sql_id(q.id)?,
+                        seq,
+                        version.answer,
+                        version.answered_by,
+                        version.answered_at,
+                        version.spec_file
+                    ],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -792,14 +1029,66 @@ fn load_task(conn: &Connection, id: &str) -> Result<Task> {
     .ok_or_else(|| NotFound(format!("no task `{id}`")).into())
 }
 
-fn load_question(conn: &Connection, id: u64) -> Result<Question> {
+fn load_track(conn: &Connection, name: &str) -> Result<Track> {
     conn.query_row(
-        &format!("{SELECT_QUESTIONS} WHERE id = ?1"),
-        [sql_id(id)?],
-        question_from_row,
+        &format!("{SELECT_TRACKS} WHERE name = ?1"),
+        [name],
+        track_from_row,
     )
     .optional()?
-    .ok_or_else(|| NotFound(format!("no question #{id}")).into())
+    .ok_or_else(|| NotFound(format!("no track `{name}`")).into())
+}
+
+fn track_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn
+        .query_row("SELECT 1 FROM tracks WHERE name = ?1", [name], |_| Ok(()))
+        .optional()?
+        .is_some())
+}
+
+/// Fails with the defined track names unless `name` is a track.
+fn ensure_track(conn: &Connection, name: &str) -> Result<()> {
+    if track_exists(conn, name)? {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT name FROM tracks ORDER BY name")?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if names.is_empty() {
+        bail!("no track `{name}`; no tracks defined (airlock track add)");
+    }
+    bail!("no track `{name}`; defined tracks: {}", names.join(", "))
+}
+
+fn load_question(conn: &Connection, id: u64) -> Result<Question> {
+    let mut question = conn
+        .query_row(
+            &format!("{SELECT_QUESTIONS} WHERE id = ?1"),
+            [sql_id(id)?],
+            question_from_row,
+        )
+        .optional()?
+        .ok_or_else(|| NotFound(format!("no question #{id}")))?;
+    question.history = load_history(conn, id)?;
+    Ok(question)
+}
+
+/// The answers a question's corrections replaced, oldest first.
+fn load_history(conn: &Connection, id: u64) -> Result<Vec<AnswerVersion>> {
+    let mut stmt = conn.prepare(
+        "SELECT answer, answered_by, answered_at, spec_file FROM answer_history
+          WHERE question_id = ?1 ORDER BY seq",
+    )?;
+    let rows = stmt.query_map([sql_id(id)?], |row| {
+        Ok(AnswerVersion {
+            answer: row.get(0)?,
+            answered_by: row.get(1)?,
+            answered_at: row.get(2)?,
+            spec_file: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 fn find<'a>(tasks: &'a [Task], id: &str) -> Result<&'a Task> {
@@ -919,13 +1208,28 @@ fn enum_column<T: serde::de::DeserializeOwned>(row: &Row<'_>, idx: usize) -> rus
     })
 }
 
+/// Reads a priority rank, rejecting values outside 0 to 3; `owner` names the
+/// row in the error ("task `L-48`").
+fn priority_column(row: &Row<'_>, idx: usize, owner: &str) -> rusqlite::Result<Priority> {
+    let rank: i64 = row.get(idx)?;
+    Priority::from_rank(rank).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            idx,
+            rusqlite::types::Type::Integer,
+            format!("{owner} has priority rank {rank}, outside 0 to 3").into(),
+        )
+    })
+}
+
 fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
+    let id: String = row.get(0)?;
+    let priority = priority_column(row, 4, &format!("task `{id}`"))?;
     Ok(Task {
-        id: row.get(0)?,
+        id,
         title: row.get(1)?,
         role: row.get(2)?,
         state: enum_column(row, 3)?,
-        priority: row.get(4)?,
+        priority,
         blocked_by: json_column(row, 5)?,
         read: json_column(row, 6)?,
         touch: json_column(row, 7)?,
@@ -936,6 +1240,19 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         lease_expires_at: row.get(12)?,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+        track: row.get(15)?,
+    })
+}
+
+fn track_from_row(row: &Row<'_>) -> rusqlite::Result<Track> {
+    let name: String = row.get(0)?;
+    let priority = priority_column(row, 1, &format!("track `{name}`"))?;
+    Ok(Track {
+        name,
+        priority,
+        description: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
     })
 }
 
@@ -958,5 +1275,8 @@ fn question_from_row(row: &Row<'_>) -> rusqlite::Result<Question> {
         spec_file: row.get(7)?,
         created_at: row.get(8)?,
         answered_at: row.get(9)?,
+        corrected_at: row.get(10)?,
+        corrected_by: row.get(11)?,
+        history: Vec::new(),
     })
 }

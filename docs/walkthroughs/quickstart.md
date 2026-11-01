@@ -74,6 +74,26 @@ airlock task add "Initial setup" --role engine \
 
 Airlock assigns ids: the role's prefix (`S` for spec, `E` for engine, set with `airlock role set <role> --prefix <P>`) and the next free number. Prerequisites must exist before a task can reference them. `E-1` stays `blocked` until `S-1` is `done`.
 
+### Tracks and priority
+
+A track is a named line of work with its own priority. Create tracks as the project needs them, then put tasks into them:
+
+```bash
+airlock track add Combat --priority high --description "The battle, faithful to the tick"
+airlock track add Comfort --priority low --description "Things we COULD build into the engine"
+
+airlock task add "Missiles implementation" --role engine \
+  --track Combat --priority high \
+  --do "Implement shot clock and volley firing cycle" \
+  --verify "cargo test missiles"                     # Added E-2 (ready)
+
+airlock track list                                   # most important first, with task counts
+airlock task list --track Combat --priority normal   # at least normal
+airlock task edit E-2 --track Comfort                # move it; --clear-track takes it out
+```
+
+The scale is `critical` > `high` > `normal` (the default) > `low`; numbers are rejected. `airlock task next` hands out the ready task of the most important track first, then by task priority, then the oldest; a task without a track counts as `normal`. A track cannot be removed while any task uses it, but it can be renamed (`airlock track edit Combat --name Core`): its tasks follow.
+
 ---
 
 ## 4. Working as an Agent
@@ -181,11 +201,13 @@ This writes the canonical snapshot and the Markdown views into the current workt
 airlock serve            # or: airlock -C ~/Projects/game serve --port 3100
 ```
 
-Open the printed `http://127.0.0.1:3000/#token=…` URL. The token changes on every start; after a restart, open the new URL (the same tab is fine). The server only listens on loopback.
+Open the printed `http://127.0.0.1:3000/#token=…` URL (the Board is the default tab; Tracks is the first tab). The token changes on every start; after a restart, open the new URL (the same tab is fine). The server only listens on loopback.
 
-- **Board** — Kanban by effective status, with overlap badges.
+- **Tracks** — one row per track with a progress bar, what is running, and a warning when a role works in a less important track while a more important one has ready work for it. Click a row to see its tasks.
+- **Board** — Kanban by effective status, in swimlanes per track (switch "group by track"), with a priority stripe and pips on every card, overlap badges, and filters for track and minimum priority.
 - **Stages** — what can run now and what waits; select a task to see every open task that touches the same files.
 - **Files** — the files several open tasks touch; ▶ marks files held by a running task.
 - **Review**, **Questions**, **Leases** — approve or reject, answer and resolve, force-release.
+- **Activity** — what needs attention (failed calls, clean-room sessions writing through the CLI, bursts of errors, corrected answers, `airlock mcp` processes older than the installed build), who works on what, and a logbook of every MCP, CLI, and REST call by day. The log keeps metadata only (no task bodies, notes, or question and answer text) for 30 days. In the terminal, `airlock activity` prints the logbook (times in UTC) and `airlock activity --problems` the list of problems.
 
 Tasks without `--touch` show "no touch data": list the files a task changes so overlaps become visible.

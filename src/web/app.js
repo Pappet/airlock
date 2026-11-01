@@ -2,6 +2,9 @@
 // All data is rendered with textContent; `verify` is shown, never executed.
 
 const TOKEN_KEY = "airlock-token";
+const GROUP_KEY = "airlock-group-by-track";
+const PRIORITIES = ["critical", "high", "normal", "low"];
+const PIPS = { critical: "●●●●", high: "●●●○", normal: "●●○○", low: "●○○○" };
 const STATUS_COLUMNS = [
   ["blocked", "Blocked"],
   ["ready", "Ready"],
@@ -10,6 +13,8 @@ const STATUS_COLUMNS = [
   ["done", "Done"],
 ];
 const TABS = [
+  ["tracks", "Tracks"],
+  ["activity", "Activity"],
   ["board", "Board"],
   ["stages", "Stages"],
   ["files", "Files"],
@@ -19,9 +24,21 @@ const TABS = [
 ];
 const RUNNING = new Set(["in_progress", "in_review"]);
 
+function loadGroupByTrack() {
+  try { return localStorage.getItem(GROUP_KEY) !== "false"; } catch (_) { return true; }
+}
+
+function saveGroupByTrack(on) {
+  try { localStorage.setItem(GROUP_KEY, String(on)); } catch (_) { /* private mode */ }
+}
+
 const state = {
   project: null,
   tasks: [],
+  tracks: [],
+  groupByTrack: loadGroupByTrack(),
+  trackFilter: null, // null = all tracks, "" = no track, otherwise a track name
+  minPriority: null, // null = all, otherwise a level
   analysis: { tasks: [], files: [], no_touch: [] },
   questions: [],
   tab: "board",
@@ -30,6 +47,11 @@ const state = {
   detail: null,
   questionFilter: "open",
   live: false,
+  // Activity tab: `key` is the entries path last requested; `entries` stays
+  // null until the first answer. `session`, `filter` and `problem` are the
+  // logbook filters (a problem key overrides the others).
+  // `extra`: the unfiltered newest calls, loaded for the "failures & problems" view.
+  activity: { key: null, entries: null, extra: [], problems: [], sessions: [], session: null, filter: "all", problem: null },
 };
 
 // ─── Token & API ─────────────────────────────────────────────────────
@@ -47,7 +69,7 @@ function token() {
 }
 
 async function api(method, path, body) {
-  const headers = { Authorization: `Bearer ${state.token}` };
+  const headers = { Authorization: `Bearer ${state.token}`, "X-Airlock-Client": "dashboard" };
   if (method === "POST") headers["Content-Type"] = "application/json";
   const res = await fetch(path, {
     method,
@@ -69,12 +91,18 @@ function tokenRejected() {
 }
 
 async function load() {
-  const [tasks, analysis, questions] = await Promise.all([
+  const [tasks, analysis, questions, tracks] = await Promise.all([
     api("GET", "/api/tasks"),
     api("GET", "/api/overlaps"),
     api("GET", "/api/questions"),
+    api("GET", "/api/tracks"),
   ]);
-  Object.assign(state, { tasks, analysis, questions });
+  tracks.sort(byTrackOrder);
+  Object.assign(state, { tasks, analysis, questions, tracks });
+  // A renamed or removed track would leave an invisible active filter behind.
+  if (state.trackFilter && !tracks.some((t) => t.name === state.trackFilter) && !tasks.some((t) => t.track === state.trackFilter)) {
+    state.trackFilter = null;
+  }
   // Do not wipe a half-written answer or feedback; render once focus leaves.
   if (document.activeElement?.matches("#view textarea, #view input")) {
     state.pending = true;
@@ -90,14 +118,44 @@ function scheduleReload() {
   reloadTimer = setTimeout(() => load().catch(showError), 150);
 }
 
+let activityTimer = null;
+// Off the Activity tab, a new call only marks its data stale; returning to
+// the tab refetches.
+function scheduleActivityReload() {
+  clearTimeout(activityTimer);
+  activityTimer = setTimeout(() => {
+    if (state.tab === "activity") loadActivity().catch(showError);
+    else state.activity.key = null;
+  }, 150);
+}
+
+// Entries for the current filters plus all problems and sessions; a response
+// to a superseded request is dropped.
+async function loadActivity() {
+  const path = activityPath();
+  state.activity.key = path;
+  // The failures view also shows the successful calls behind problems.
+  const extraPath = state.activity.filter === "problems" && !selectedProblem() ? activityPath(false) : null;
+  const [entries, problems, sessions, extra] = await Promise.all([
+    api("GET", path),
+    api("GET", "/api/activity/problems"),
+    api("GET", "/api/activity/sessions"),
+    extraPath ? api("GET", extraPath) : [],
+  ]);
+  if (state.activity.key !== path) return;
+  Object.assign(state.activity, { entries, problems, sessions, extra });
+  if (state.tab === "activity") render();
+}
+
 // SSE over fetch: EventSource cannot send the Authorization header.
 async function listen() {
   for (;;) {
     try {
-      const res = await fetch("/api/events", { headers: { Authorization: `Bearer ${state.token}` } });
+      const res = await fetch("/api/events", { headers: { Authorization: `Bearer ${state.token}`, "X-Airlock-Client": "dashboard" } });
       if (res.status === 401) return tokenRejected();
       if (!res.ok) throw new Error(`events: ${res.status}`);
       setLive(true);
+      state.activity.key = null; // refetch the Activity tab on (re)connect
       await load();
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -110,7 +168,14 @@ async function listen() {
         while ((end = buffer.indexOf("\n\n")) >= 0) {
           const block = buffer.slice(0, end);
           buffer = buffer.slice(end + 2);
-          if (/^event: /m.test(block)) scheduleReload();
+          const name = block.match(/^event: (.*)$/m)?.[1];
+          // A logged call changes only the Activity tab; its own task or
+          // question events follow separately.
+          if (name === "activity") scheduleActivityReload();
+          else if (name) {
+            scheduleReload();
+            if (name === "resync") scheduleActivityReload();
+          }
         }
       }
     } catch (_) { /* reconnect below */ }
@@ -164,6 +229,48 @@ function setLive(live) {
 const taskById = (id) => state.tasks.find((t) => t.id === id);
 const analysisById = (id) => state.analysis.tasks.find((t) => t.id === id);
 const visible = (task) => !state.role || task.role === state.role;
+
+// critical = 3 … low = 0; unknown levels count as normal.
+function priorityRank(level) {
+  const i = PRIORITIES.indexOf(level);
+  return i < 0 ? priorityRank("normal") : PRIORITIES.length - 1 - i;
+}
+
+const trackOf = (task) => (task.track && state.tracks.find((t) => t.name === task.track)) || null;
+
+// A task without a track ranks as a `normal` track.
+const trackRank = (task) => priorityRank(trackOf(task)?.priority ?? "normal");
+
+// Role, track, and minimum-priority filters together (Board and Review).
+function matchesFilters(task) {
+  if (!visible(task)) return false;
+  if (state.trackFilter !== null && (task.track || "") !== state.trackFilter) return false;
+  if (state.minPriority !== null && priorityRank(task.priority) < priorityRank(state.minPriority)) return false;
+  return true;
+}
+
+function priorityChip(level) {
+  return h("span", { class: `chip p-${level}` }, level);
+}
+
+function pips(level) {
+  return h("span", { class: `pips p-${level}`, title: `priority ${level}`, "aria-label": `priority ${level}` }, PIPS[level] || PIPS.normal);
+}
+
+// Track order everywhere: priority desc, then name. Works on tracks and lanes.
+function byTrackOrder(a, b) {
+  return priorityRank(b.priority) - priorityRank(a.priority) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+
+// Task priority desc, then oldest first.
+function byPriority(a, b) {
+  return priorityRank(b.priority) - priorityRank(a.priority)
+    || (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0)
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+// The `task next` order: track rank, task priority, oldest first.
+const byNextOrder = (a, b) => trackRank(b) - trackRank(a) || byPriority(a, b);
 const now = () => Math.floor(Date.now() / 1000);
 
 function minutesLeft(task) {
@@ -185,23 +292,24 @@ function overlapBadges(id) {
   return badges;
 }
 
-function card(task, extraClass = "", onclick) {
+function card(task, extraClass = "", onclick, showTrack = true) {
   const running = RUNNING.has(task.status);
   const minutes = minutesLeft(task);
   return h(
     "button",
     {
       type: "button",
-      class: `card ${running ? "is-running" : ""} ${extraClass}`,
+      class: `card p-${task.priority} ${running ? "is-running" : ""} ${extraClass}`,
       "data-id": task.id,
       onclick: onclick || (() => openDetail(task.id)),
     },
     h("div", { class: "card__head" },
       h("span", { class: "card__id" }, running ? `▶ ${task.id}` : task.id),
-      h("span", { class: "label" }, `P${task.priority}`)),
+      pips(task.priority)),
     h("div", { class: "card__title" }, task.title),
     h("div", { class: "card__meta" },
       task.role,
+      showTrack && task.track ? ` · ${task.track}` : "",
       task.claimed_by ? ` · ${task.claimed_by}` : "",
       minutes !== null ? ` · ${minutes} min` : ""),
     h("div", { class: "badges" },
@@ -211,16 +319,446 @@ function card(task, extraClass = "", onclick) {
 }
 
 // ─── Views ───────────────────────────────────────────────────────────
-function boardView() {
+// ─── Tracks tab ──────────────────────────────────────────────────────
+// Course warning, per role R: track T is off course when T has a ready task of R,
+// none of R in progress, and a track of strictly lower priority has one of R in
+// progress. `in_review` never counts as running. Tasks without a track form the
+// "" key at `normal`. Pure: the caller passes the tasks it wants checked (e.g.
+// only one role's). Returns Map<trackKey, Array<{ role, ready }>> of flagged
+// tracks only.
+function courseWarnings(tasks, tracks) {
+  const rankOf = (key) => priorityRank(tracks.find((t) => t.name === key)?.priority ?? "normal");
+  const roles = [...new Set(tasks.map((t) => t.role))].sort();
+  const warnings = new Map();
+  for (const role of roles) {
+    const mine = tasks.filter((t) => t.role === role);
+    const count = (key, status) => mine.filter((t) => (t.track || "") === key && t.status === status).length;
+    const keys = [...new Set(mine.map((t) => t.track || ""))];
+    const busyRanks = keys.filter((k) => count(k, "in_progress") > 0).map(rankOf);
+    for (const key of keys) {
+      const ready = count(key, "ready");
+      if (ready > 0 && count(key, "in_progress") === 0 && busyRanks.some((r) => r < rankOf(key))) {
+        warnings.set(key, [...(warnings.get(key) || []), { role, ready }]);
+      }
+    }
+  }
+  return warnings;
+}
+
+const BAR_SEGMENTS = [
+  ["done", "done", "done"],
+  ["in_review", "in review", "review"],
+  ["in_progress", "running", "run"],
+  ["ready", "ready", "ready"],
+  ["blocked", "blocked", "blocked"],
+];
+
+function tracksView() {
   const tasks = state.tasks.filter(visible);
-  if (!tasks.length) return empty("No tasks", "Add tasks with `airlock task add` or over MCP.");
+  const rows = state.tracks.map((t) => ({ name: t.name, priority: t.priority, description: t.description }));
+  for (const name of new Set(tasks.map((t) => t.track || ""))) {
+    if (!rows.some((r) => r.name === name)) rows.push({ name, priority: "normal", description: "" });
+  }
+  rows.sort(byTrackOrder);
+  if (!rows.length) return empty("No tracks", "Create tracks with `airlock track add` or over MCP.");
+  const warnings = courseWarnings(tasks, state.tracks);
+
+  return h("div", { class: "tracks" }, rows.map((row) => {
+    const own = tasks.filter((t) => (t.track || "") === row.name);
+    const count = (status) => own.filter((t) => t.status === status).length;
+    const running = own.filter((t) => t.status === "in_progress");
+    const lastDone = own.filter((t) => t.status === "done").sort((a, b) => b.updated_at - a.updated_at)[0];
+    const flagged = warnings.get(row.name) || [];
+    const open = () => {
+      state.trackFilter = row.name;
+      state.tab = "board";
+      location.replace("#board");
+      render();
+    };
+    const bar = h("div", { class: "bar", role: "img", "aria-label": own.length ? `${own.length} tasks` : "no tasks" },
+      BAR_SEGMENTS.map(([status, name, cls]) => {
+        const n = count(status);
+        if (!n) return null;
+        const seg = h("span", { class: `bar__seg bar__seg--${cls}`, title: `${n} ${name}` });
+        seg.style.flexGrow = String(n);
+        return seg;
+      }));
+    return h("div", {
+      class: `track-row p-${row.priority}${flagged.length ? " is-offcourse" : ""}`,
+      role: "button",
+      tabindex: "0",
+      title: "Show this track's tasks on the board",
+      "data-track": row.name,
+      onclick: open,
+      onkeydown: (e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      },
+    },
+      h("div", { class: "track-row__name" },
+        priorityChip(row.priority),
+        h("b", { class: row.name ? "" : "muted" }, row.name || "no track"),
+        row.description ? h("span", { class: "muted swim__desc" }, row.description) : null),
+      h("div", { class: "track-row__bar" },
+        bar,
+        h("div", { class: "track-row__counts" },
+          BAR_SEGMENTS.map(([status, name]) => `${count(status)} ${name}`).join(" · "))),
+      h("div", { class: "track-row__now" },
+        flagged.map((w) => h("div", { class: "course-warning" }, `${w.role}: nothing running, ${w.ready} ready`)),
+        running.map((t) => {
+          const minutes = minutesLeft(t);
+          return h("div", { class: "track-run" }, `▶ ${t.id} ${t.title}`, t.claimed_by ? ` · ${t.claimed_by}` : "", minutes !== null ? ` · ${minutes} min` : "");
+        }),
+        !running.length && !flagged.length ? h("div", { class: "muted" }, own.length ? "idle" : "no tasks") : null,
+        lastDone ? h("div", { class: "muted track-last" }, `last done: ${lastDone.id} ${lastDone.title}`) : null));
+  }));
+}
+
+// ─── Activity helpers (pure; times are unix seconds, shown in local time) ───
+const CHANNELS = ["mcp", "cli", "rest"];
+const pad2 = (n) => String(n).padStart(2, "0");
+
+function localDay(at) {
+  const d = new Date(at * 1000);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function clock(at) {
+  const d = new Date(at * 1000);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+// "Today", "Yesterday", otherwise the local date.
+function dayLabel(at, now) {
+  const day = localDay(at);
+  if (day === localDay(now)) return "Today";
+  const d = new Date(now * 1000);
+  const yesterday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
+  return day === localDay(yesterday.getTime() / 1000) ? "Yesterday" : day;
+}
+
+// Day and clock time of a moment, short for today.
+function when(at, now) {
+  const label = dayLabel(at, now);
+  return label === "Today" ? clock(at) : `${label === "Yesterday" ? "yesterday" : label} ${clock(at)}`;
+}
+
+function ago(at, now) {
+  const minutes = Math.max(0, Math.floor((now - at) / 60));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)} h ago`;
+  return `${Math.floor(minutes / 1440)} d ago`;
+}
+
+// Entries, in the order given, as runs of one local day: [{ label, entries }].
+function groupByDay(entries, now) {
+  const groups = [];
+  for (const entry of entries) {
+    const label = dayLabel(entry.at, now);
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.entries.push(entry);
+    else groups.push({ label, entries: [entry] });
+  }
+  return groups;
+}
+
+// Two entry lists as one, without duplicates, newest first.
+function mergeEntries(a, b) {
+  const byId = new Map([...a, ...b].map((e) => [e.id, e]));
+  return [...byId.values()].sort((x, y) => y.at - x.at || y.id - x.id);
+}
+
+// Session bar chips: [{ session, role, calls: [[channel, n]] (non-zero only), ago }].
+function sessionChips(sessions, now) {
+  return sessions.map((s) => ({
+    session: s.session,
+    role: s.role,
+    calls: CHANNELS.filter((c) => s.calls[c] > 0).map((c) => [c, s.calls[c]]),
+    ago: ago(s.last_at, now),
+  }));
+}
+
+// Blocked tasks grouped by their unfinished prerequisites, in task order:
+// [{ blocked: [id], waitingOn: [{ id, role, holder }] }]. `role` limits the
+// blocked tasks; prerequisites of every role count. An unknown prerequisite
+// counts as unfinished with role null.
+function blockers(tasks, role = null) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const groups = new Map();
+  for (const task of tasks) {
+    if (task.status !== "blocked" || (role && task.role !== role)) continue;
+    const open = task.blocked_by.filter((id) => byId.get(id)?.status !== "done").sort();
+    if (!open.length) continue;
+    const key = open.join(" ");
+    if (!groups.has(key)) {
+      groups.set(key, {
+        blocked: [],
+        waitingOn: open.map((id) => ({ id, role: byId.get(id)?.role ?? null, holder: byId.get(id)?.claimed_by ?? null })),
+      });
+    }
+    groups.get(key).blocked.push(task.id);
+  }
+  return [...groups.values()];
+}
+
+// ─── Activity view ───────────────────────────────────────────────────
+const SEVERE = new Set(["failure", "error_burst"]);
+// The server's default length of `GET /api/activity`.
+const ACTIVITY_LIMIT = 500;
+const LOG_FILTERS = [
+  ["all", "all"],
+  ["writes", "writes only"],
+  ["problems", "failures & problems"],
+  ["mcp", "MCP"],
+  ["cli", "CLI"],
+  ["rest", "REST"],
+];
+// With a role selected, rows without a role or with another one are hidden.
+const roleVisible = (item) => !state.role || item.role === state.role;
+// Problems of one kind never share entries, so the oldest entry names one.
+const problemKey = (p) => `${p.kind}:${p.entry_ids[0]}`;
+
+// A session filter whose chip the role filter hides is dropped.
+function dropHiddenSession() {
+  const a = state.activity;
+  if (!a.session || !state.role) return;
+  const session = a.sessions.find((s) => s.session === a.session);
+  if (!session || !roleVisible(session)) a.session = null;
+}
+
+function selectedProblem() {
+  const key = state.activity.problem;
+  return key ? state.activity.problems.find((p) => p.entry_ids.length && problemKey(p) === key && roleVisible(p)) || null : null;
+}
+
+// A selected problem loads its own entries; otherwise session, role, channel,
+// writes and failures filter on the server.
+function activityPath(failuresOnly = true) {
+  const a = state.activity;
+  const q = new URLSearchParams();
+  const problem = selectedProblem();
+  if (problem) {
+    q.set("since", String(problem.first_at));
+    if (problem.session) q.set("session", problem.session);
+    q.set("limit", "5000");
+  } else {
+    if (a.session) q.set("session", a.session);
+    if (state.role) q.set("role", state.role);
+    if (CHANNELS.includes(a.filter)) q.set("channel", a.filter);
+    if (a.filter === "writes") q.set("writes", "true");
+    if (a.filter === "problems" && failuresOnly) q.set("failures", "true");
+  }
+  return `/api/activity?${q}`;
+}
+
+function channelBadge(channel) {
+  return h("span", { class: `ch ch--${channel}` }, channel.toUpperCase());
+}
+
+function problemText(p) {
+  const who = p.session && !p.message.includes(p.session) ? `${p.session} · ` : "";
+  if (p.kind !== "failure") return `${who}${p.message}`;
+  return `${who}${p.command || "call"}${p.target ? ` ${p.target}` : ""} → ${p.message}`;
+}
+
+function problemRow(p, selected, t) {
+  const severe = SEVERE.has(p.kind);
+  const content = [
+    h("span", { class: `act-icon ${severe ? "bad" : "warn"}`, "aria-hidden": "true" }, severe ? "✖" : "⚠"),
+    " ",
+    problemText(p),
+    h("span", { class: "muted" }, p.count > 1 ? ` · ${p.count}×` : "", ` · ${when(p.last_at, t)}`),
+  ];
+  if (!p.entry_ids.length) return h("div", { class: "act-problem" }, content);
+  const key = problemKey(p);
+  return h("button", {
+    type: "button",
+    class: "act-problem",
+    "aria-pressed": String(selected === p),
+    title: "Show this problem's calls in the logbook",
+    onclick: () => {
+      state.activity.problem = state.activity.problem === key ? null : key;
+      render();
+    },
+  }, content);
+}
+
+function problemsPanel(problems, selected, t) {
+  return h("section", { class: `act-panel${problems.length ? " is-bad" : ""}` },
+    h("div", { class: "label" }, problems.length ? `Problems · ${problems.length}` : "Problems"),
+    problems.length
+      ? problems.map((p) => problemRow(p, selected, t))
+      : h("div", { class: "muted" }, "No problems in the last 30 days."));
+}
+
+function waitingOn(list) {
+  const byHolder = new Map();
+  for (const w of list) {
+    const key = JSON.stringify([w.role, w.holder]);
+    byHolder.set(key, [...(byHolder.get(key) || []), w.id]);
+  }
+  return [...byHolder].map(([key, ids], i) => {
+    const [role, holder] = JSON.parse(key);
+    return [
+      i ? "; " : "",
+      ids.join(", "),
+      h("span", { class: "muted" }, ` · ${role ?? "unknown task"}, `),
+      holder ? h("span", { class: "act-session" }, holder) : h("span", { class: "act-nobody" }, "nobody on it"),
+    ];
+  });
+}
+
+function statePanel() {
+  const claimed = state.tasks
+    .filter((t) => t.status === "in_progress" && t.claimed_by && visible(t))
+    .sort((a, b) => (a.claimed_by < b.claimed_by ? -1 : a.claimed_by > b.claimed_by ? 1 : 0));
+  const blocked = blockers(state.tasks, state.role);
+  const idLink = (id) => h("button", { type: "button", class: "link", onclick: () => openDetail(id) }, id);
+  return h("section", { class: "act-panel" },
+    h("div", { class: "label" }, "State"),
+    claimed.length
+      ? claimed.map((t) => {
+          const minutes = minutesLeft(t);
+          const lease = minutes === null ? "no lease" : minutes === 0 ? "lease expired" : `lease ${minutes} min`;
+          return h("div", {}, h("span", { class: "act-session" }, t.claimed_by), " ", idLink(t.id),
+            h("span", { class: "muted" }, ` ${t.track || "no track"} · ${lease}`));
+        })
+      : h("div", { class: "muted" }, "Nothing claimed."),
+    h("div", { class: "label" }, "Blockers"),
+    blocked.length
+      ? blocked.map((g) => h("div", {},
+          g.blocked.map((id, i) => [i ? ", " : "", idLink(id)]),
+          h("span", { class: "muted" }, " ← "),
+          waitingOn(g.waitingOn)))
+      : h("div", { class: "muted" }, "Nothing blocked."));
+}
+
+function sessionBar(t) {
+  const a = state.activity;
+  const pick = (session) => () => { a.session = session; a.problem = null; render(); };
+  return h("div", { class: "act-sessions", role: "group", "aria-label": "Sessions" },
+    h("button", { type: "button", class: "act-chip", "aria-pressed": String(!a.session), onclick: pick(null) }, h("b", {}, "all")),
+    sessionChips(a.sessions.filter(roleVisible), t).map((c) => h("button", {
+      type: "button",
+      class: "act-chip",
+      "aria-pressed": String(a.session === c.session),
+      onclick: pick(a.session === c.session ? null : c.session),
+    },
+      h("b", {}, c.session),
+      c.role ? h("span", { class: "muted" }, c.role) : null,
+      c.calls.map(([channel, n]) => h("span", {}, channelBadge(channel), ` ${n}`)),
+      h("span", { class: "muted" }, c.ago))));
+}
+
+function logRow(e, mark) {
+  return h("div", {
+    class: `act-row${mark ? ` is-${mark}` : ""}${e.ok ? "" : " is-failed"}`,
+    title: [e.agent, `pid ${e.pid}`, `build ${e.build}`, e.clean_room ? "clean room" : null].filter(Boolean).join(" · "),
+  },
+    h("span", { class: "act-time" }, clock(e.at)),
+    h("span", { class: "act-session" }, e.session),
+    channelBadge(e.channel),
+    h("span", { class: "act-what" },
+      e.command,
+      e.target ? ` ${e.target}` : "",
+      e.changed.length ? h("span", { class: "act-changed" }, ` · ${e.changed.join(", ")}`) : null,
+      e.ok ? null : ` → ${e.error || "failed"}`));
+}
+
+function logbook(problems, selected, t) {
+  const a = state.activity;
+  // Row highlight per entry: a severe problem wins over a warning.
+  const marks = new Map();
+  for (const p of problems) {
+    for (const id of p.entry_ids) if (marks.get(id) !== "bad") marks.set(id, SEVERE.has(p.kind) ? "bad" : "warn");
+  }
+  let entries;
+  if (selected) {
+    const ids = new Set(selected.entry_ids);
+    entries = a.entries.filter((e) => ids.has(e.id));
+  } else {
+    entries = a.filter === "problems" ? mergeEntries(a.entries, a.extra.filter((e) => marks.has(e.id))) : a.entries;
+    entries = entries.filter(roleVisible);
+  }
+  const pills = h("div", { class: "filters", role: "group", "aria-label": "Logbook filter" },
+    LOG_FILTERS.map(([id, name]) => h("button", {
+      type: "button",
+      class: "pill",
+      "aria-pressed": String(!selected && a.filter === id),
+      onclick: () => { a.filter = id; a.problem = null; render(); },
+    }, name)));
+  const focus = selected
+    ? h("div", { class: "act-focus" },
+        h("span", {}, `${entries.length} call${entries.length === 1 ? "" : "s"} behind: ${problemText(selected)}`),
+        h("button", { type: "button", class: "link", onclick: () => { a.problem = null; render(); } }, "show all"))
+    : null;
+  return h("section", { class: "act-log" },
+    h("div", { class: "act-loghead" }, h("div", { class: "label" }, "Logbook"), pills),
+    focus,
+    entries.length
+      ? groupByDay(entries, t).map((g) => h("div", {},
+          h("div", { class: "label act-day" }, g.label),
+          g.entries.map((e) => logRow(e, marks.get(e.id)))))
+      : h("div", { class: "muted act-none" }, "No calls match."),
+    !selected && a.entries.length >= ACTIVITY_LIMIT ? h("div", { class: "muted act-none" }, `Newest ${ACTIVITY_LIMIT} calls shown.`) : null);
+}
+
+function activityView() {
+  const a = state.activity;
+  if (!a.entries) return empty("Activity", "Loading…");
+  const t = now();
+  const problems = a.problems.filter(roleVisible);
+  const selected = selectedProblem();
+  return h("div", { class: "activity" },
+    h("div", { class: "act-strip" }, problemsPanel(problems, selected, t), statePanel()),
+    sessionBar(t),
+    logbook(problems, selected, t));
+}
+
+function boardView() {
+  if (!state.tasks.length) return empty("No tasks", "Add tasks with `airlock task add` or over MCP.");
+  const tasks = state.tasks.filter(matchesFilters);
+  if (!tasks.length) return empty("No matching tasks", "No task matches the role, track, and priority filters.");
+  return state.groupByTrack ? swimlanes(tasks) : flatBoard(tasks);
+}
+
+function flatBoard(tasks) {
   return h("div", { class: "columns" },
     STATUS_COLUMNS.map(([status, name]) => {
-      const items = tasks.filter((t) => t.status === status);
+      const items = tasks.filter((t) => t.status === status).sort(byNextOrder);
       return h("section", { class: "column" },
         h("div", { class: "label" }, h("span", {}, name), h("span", {}, items.length)),
         items.length ? items.map((t) => card(t)) : h("div", { class: "muted" }, "—"));
     }));
+}
+
+// One lane per track in track order; "no track" sorts in as a `normal` track named "".
+function swimlanes(tasks) {
+  const lanes = state.tracks.map((t) => ({ name: t.name, priority: t.priority, description: t.description }));
+  lanes.push({ name: "", priority: "normal", description: "" });
+  for (const name of new Set(tasks.map((t) => t.track || ""))) {
+    if (!lanes.some((l) => l.name === name)) lanes.push({ name, priority: "normal", description: "" });
+  }
+  lanes.sort(byTrackOrder);
+
+  const cells = [h("div", {})];
+  for (const [status, name] of STATUS_COLUMNS) {
+    cells.push(h("div", { class: "label swim__colh" }, h("span", {}, name), h("span", {}, tasks.filter((t) => t.status === status).length)));
+  }
+  for (const lane of lanes) {
+    const own = tasks.filter((t) => (t.track || "") === lane.name);
+    if (!own.length) continue;
+    cells.push(h("div", { class: "swim__lane", title: lane.description || null },
+      priorityChip(lane.priority),
+      h("b", { class: lane.name ? "" : "muted" }, lane.name || "no track"),
+      lane.description ? h("span", { class: "muted swim__desc" }, lane.description) : null));
+    for (const [status] of STATUS_COLUMNS) {
+      const items = own.filter((t) => t.status === status).sort(byPriority);
+      cells.push(h("div", { class: "swim__cell" }, items.map((t) => card(t, "", undefined, false))));
+    }
+  }
+  return h("div", { class: "swim-wrap" }, h("div", { class: "swim" }, cells));
 }
 
 function stagesView() {
@@ -339,8 +877,8 @@ function hoverColumn(table, col, on) {
 }
 
 function reviewView() {
-  const items = state.tasks.filter((t) => t.status === "in_review" && visible(t));
-  if (!items.length) return empty("Review queue empty", "Tasks completed with `--review` appear here.");
+  const items = state.tasks.filter((t) => t.status === "in_review" && matchesFilters(t));
+  if (!items.length) return empty("Review queue empty", "Tasks completed with `--review` appear here, unless a filter hides them.");
   return h("div", { class: "list" }, items.map((task) => {
     const feedback = h("textarea", { placeholder: "Feedback (required to reject)", "aria-label": `Feedback for ${task.id}` });
     const reject = h("button", { type: "button", class: "btn btn--danger", disabled: true, onclick: () => act(
@@ -350,7 +888,9 @@ function reviewView() {
       h("div", { class: "item__head" },
         h("button", { type: "button", class: "link card__id", onclick: () => openDetail(task.id) }, task.id),
         h("span", { class: "item__title" }, task.title),
-        h("span", { class: "label" }, task.role)),
+        h("span", { class: "label" }, task.role),
+        pips(task.priority),
+        h("span", { class: "label" }, task.track || "no track")),
       task.notes ? h("p", {}, task.notes) : h("p", { class: "muted" }, "No notes."),
       h("div", { class: "actions" },
         h("div", { class: "field" }, feedback),
@@ -379,6 +919,7 @@ function questionItem(q) {
     h("span", { class: "card__id" }, `#${q.id}`),
     h("span", { class: "label" }, q.topic),
     h("span", { class: "label" }, q.status === "open" ? "● open" : q.status === "answered" ? "◐ answered" : "✓ resolved"),
+    q.corrected_at ? h("span", { class: "chip", title: `Corrected by ${q.corrected_by || "unknown"}; ${(q.history || []).length} earlier answer(s) kept` }, "corrected") : null,
     h("span", { class: "muted mono" }, `asked by ${q.asked_by}`));
   const body = [h("p", {}, q.question)];
   if (q.answer) body.push(h("p", { class: "muted" }, `→ ${q.answer}`, q.answered_by ? ` (${q.answered_by})` : ""));
@@ -481,9 +1022,12 @@ function renderDrawer() {
 
   body.replaceChildren(
     h("button", { type: "button", class: "btn close", onclick: closeDetail }, "Close"),
-    h("span", { class: "label" }, `${task.role} · ${task.status.replace("_", " ")} · P${task.priority}`),
+    h("div", { class: "drawer__tags" },
+      h("span", { class: "label" }, `${task.role} · ${task.status.replace("_", " ")}`),
+      priorityChip(task.priority),
+      h("span", { class: "label" }, task.track ? `track ${task.track}` : "no track")),
     h("h2", {}, h("span", { class: "mono" }, task.id), " ", task.title),
-    task.claimed_by ? h("div", { class: "mono muted" }, `▶ ${task.claimed_by}${minutes !== null ? ` · ${minutes} min left` : ""}`) : null,
+    task.claimed_by ? h("div", { class: "mono muted" }, `▶ ${task.claimed_by}${minutes !== null ? ` · ${minutes} min left` : ""}`) : "",
     h("div", { class: "badges" }, task.status !== "done" ? overlapBadges(task.id) : null),
     h("section", {}, h("span", { class: "label" }, "Read"), pathList(task.read, new Map())),
     h("section", {}, h("span", { class: "label" }, "Touch"), pathList(task.touch, touchMarks)),
@@ -528,6 +1072,8 @@ function renderChrome() {
       onclick: () => { state.role = role; render(); },
     }, role || "all roles")));
 
+  renderFilters();
+
   const counts = {
     review: state.tasks.filter((t) => t.status === "in_review").length,
     questions: state.questions.filter((q) => q.status === "open").length,
@@ -542,10 +1088,69 @@ function renderChrome() {
   }, counts[id] ? `${name} ${counts[id]}` : name)));
 }
 
+// Track, minimum-priority, and grouping controls; Board and Review only.
+function renderFilters() {
+  const slot = $("board-filters");
+  const active = state.tab === "board" || state.tab === "review";
+  const key = JSON.stringify([active, state.tab === "board", state.tracks.map((t) => t.name), state.trackFilter, state.minPriority, state.groupByTrack]);
+  if (slot.dataset.key === key) return;
+  slot.dataset.key = key;
+  const focused = slot.contains(document.activeElement) ? document.activeElement.id : null;
+  if (!active) { slot.replaceChildren(); return; }
+
+  const track = h("select", {
+    id: "filter-track",
+    class: "select",
+    "aria-label": "Filter by track",
+    onchange: (e) => {
+      const v = e.target.value;
+      state.trackFilter = v === "all" ? null : v.slice(2);
+      render();
+    },
+  },
+    h("option", { value: "all", selected: state.trackFilter === null }, "all tracks"),
+    state.tracks.map((t) => h("option", { value: `t:${t.name}`, selected: state.trackFilter === t.name }, t.name)),
+    h("option", { value: "t:", selected: state.trackFilter === "" }, "no track"));
+
+  const min = h("select", {
+    id: "filter-priority",
+    class: "select",
+    "aria-label": "Minimum priority",
+    onchange: (e) => {
+      state.minPriority = e.target.value === "all" ? null : e.target.value;
+      render();
+    },
+  },
+    h("option", { value: "all", selected: state.minPriority === null }, "all priorities"),
+    [...PRIORITIES].reverse().map((p) => h("option", { value: p, selected: state.minPriority === p }, `≥ ${p}`)));
+
+  const group = state.tab === "board"
+    ? h("button", {
+        id: "filter-group",
+        type: "button",
+        class: "pill switch",
+        "aria-pressed": String(state.groupByTrack),
+        title: "One swimlane per track",
+        onclick: () => {
+          state.groupByTrack = !state.groupByTrack;
+          saveGroupByTrack(state.groupByTrack);
+          render();
+        },
+      }, "group by track")
+    : null;
+
+  slot.replaceChildren(track, min, group);
+  if (focused) $(focused)?.focus();
+}
+
 function render() {
   if (state.rejected) return;
   renderChrome();
-  const views = { board: boardView, stages: stagesView, files: filesView, review: reviewView, questions: questionsView, leases: leasesView };
+  if (state.tab === "activity") {
+    dropHiddenSession();
+    if (state.activity.key !== activityPath()) loadActivity().catch(showError);
+  }
+  const views = { tracks: tracksView, activity: activityView, board: boardView, stages: stagesView, files: filesView, review: reviewView, questions: questionsView, leases: leasesView };
   $("view").replaceChildren(views[state.tab]());
   renderDrawer();
 }
@@ -580,8 +1185,8 @@ function start() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => { if (state.tab === "stages") render(); }, 100);
   });
-  // Lease minutes tick without server events.
-  setInterval(() => { if (state.tab === "leases" || state.tab === "board") render(); }, 30000);
+  // Lease minutes and "N min ago" tick without server events.
+  setInterval(() => { if (["leases", "board", "tracks", "activity"].includes(state.tab)) render(); }, 30000);
   api("GET", "/api/project")
     .then((project) => { state.project = project; render(); listen(); })
     .catch((err) => {

@@ -2,7 +2,7 @@
 // Each test binary uses a different subset of these fixtures.
 #![allow(dead_code)]
 
-use airlock::core::{Question, QuestionStatus, Task, TaskState};
+use airlock::core::{Priority, Question, QuestionStatus, Task, TaskState};
 
 pub fn task(id: &str, state: TaskState, blocked_by: &[&str]) -> Task {
     Task {
@@ -10,7 +10,8 @@ pub fn task(id: &str, state: TaskState, blocked_by: &[&str]) -> Task {
         title: format!("Task {id}"),
         role: "engine".to_string(),
         state,
-        priority: 0,
+        priority: Priority::Normal,
+        track: None,
         blocked_by: blocked_by.iter().map(|s| s.to_string()).collect(),
         read: vec!["docs/spec/missiles.md".to_string()],
         touch: vec!["src/missiles.rs".to_string()],
@@ -36,5 +37,8 @@ pub fn question(id: u64) -> Question {
         spec_file: None,
         created_at: 1_700_000_100,
         answered_at: None,
+        corrected_at: None,
+        corrected_by: None,
+        history: Vec::new(),
     }
 }

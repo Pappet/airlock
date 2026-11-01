@@ -1,7 +1,7 @@
 //! CLI surface (Spec 02): documented invocations must parse.
 
-use airlock::cli::{Cli, Command, QuestionCommand, TaskCommand};
-use airlock::core::TaskStatus;
+use airlock::cli::{Cli, Command, QuestionCommand, TaskCommand, TrackCommand};
+use airlock::core::{Priority, TaskStatus};
 use clap::{CommandFactory, Parser};
 
 fn parse(args: &[&str]) -> Cli {
@@ -35,7 +35,7 @@ fn task_add_accepts_repeated_and_comma_separated_lists() {
         "--blocked-by",
         "L-1,L-2",
         "--priority",
-        "-1",
+        "low",
     ]);
     let Command::Task(TaskCommand::Add(spec)) = cli.command else {
         panic!("wrong command");
@@ -44,7 +44,43 @@ fn task_add_accepts_repeated_and_comma_separated_lists() {
     assert_eq!(spec.read, ["docs/spec/missiles.md", "docs/spec/combat.md"]);
     assert_eq!(spec.blocked_by, ["L-1", "L-2"]);
     assert_eq!(spec.r#do, "Implement shot clock");
-    assert_eq!(spec.priority, -1);
+    assert_eq!(spec.priority, Priority::Low);
+}
+
+#[test]
+fn task_add_priority_takes_a_level_not_a_number() {
+    let cli = parse(&[
+        "task",
+        "add",
+        "T",
+        "--role",
+        "engine",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+        "--priority",
+        "high",
+    ]);
+    let Command::Task(TaskCommand::Add(spec)) = cli.command else {
+        panic!("wrong command");
+    };
+    assert_eq!(spec.priority, Priority::High);
+    let numeric = Cli::try_parse_from([
+        "airlock",
+        "task",
+        "add",
+        "T",
+        "--role",
+        "engine",
+        "--do",
+        "x",
+        "--verify",
+        "y",
+        "--priority",
+        "5",
+    ]);
+    assert!(numeric.is_err(), "numeric priorities are rejected");
 }
 
 #[test]
@@ -81,7 +117,7 @@ fn task_edit_takes_optional_fields_and_clear_flags() {
         "L-1,L-2",
         "--clear-read",
         "--priority",
-        "-2",
+        "critical",
         "--force",
     ]);
     let Command::Task(TaskCommand::Edit(edit)) = cli.command else {
@@ -92,7 +128,7 @@ fn task_edit_takes_optional_fields_and_clear_flags() {
     assert_eq!(edit.touch, ["src/a.rs", "src/b.rs"]);
     assert_eq!(edit.blocked_by, ["L-1", "L-2"]);
     assert!(edit.clear_read && !edit.clear_touch && !edit.clear_blocked_by);
-    assert_eq!(edit.priority, Some(-2));
+    assert_eq!(edit.priority, Some(Priority::Critical));
     assert_eq!(edit.role, None);
     assert!(edit.force);
 
@@ -193,4 +229,232 @@ fn command_names_match_invocation() {
         Command::Question(QuestionCommand::Resolve { id: 3, .. })
     ));
     assert_eq!(cli.command.name(), "question resolve");
+}
+
+#[test]
+fn track_commands_parse() {
+    let cli = parse(&[
+        "track",
+        "add",
+        "comfort",
+        "--priority",
+        "low",
+        "--description",
+        "Could build",
+    ]);
+    let Command::Track(TrackCommand::Add {
+        name,
+        priority,
+        description,
+    }) = cli.command
+    else {
+        panic!("wrong command");
+    };
+    assert_eq!(
+        (name.as_str(), priority, description.as_str()),
+        ("comfort", Priority::Low, "Could build")
+    );
+
+    let cli = parse(&["track", "add", "core"]);
+    let Command::Track(TrackCommand::Add {
+        priority,
+        description,
+        ..
+    }) = cli.command
+    else {
+        panic!("wrong command");
+    };
+    assert_eq!((priority, description.as_str()), (Priority::Normal, ""));
+
+    let cli = parse(&[
+        "track",
+        "edit",
+        "comfort",
+        "--name",
+        "polish",
+        "--priority",
+        "high",
+    ]);
+    let Command::Track(TrackCommand::Edit {
+        name,
+        new_name,
+        priority,
+        description,
+    }) = cli.command
+    else {
+        panic!("wrong command");
+    };
+    assert_eq!(name, "comfort");
+    assert_eq!(new_name.as_deref(), Some("polish"));
+    assert_eq!(priority, Some(Priority::High));
+    assert_eq!(description, None);
+
+    let cli = parse(&["track", "remove", "comfort"]);
+    assert!(matches!(
+        cli.command,
+        Command::Track(TrackCommand::Remove { .. })
+    ));
+    assert_eq!(cli.command.name(), "track remove");
+    assert_eq!(parse(&["track", "list"]).command.name(), "track list");
+    assert_eq!(parse(&["track", "add", "x"]).command.name(), "track add");
+    assert_eq!(parse(&["track", "edit", "x"]).command.name(), "track edit");
+}
+
+#[test]
+fn task_list_filters_by_track_and_priority() {
+    let cli = parse(&["task", "list", "--track", "core", "--priority", "high"]);
+    let Command::Task(TaskCommand::List {
+        track,
+        no_track,
+        priority,
+        ..
+    }) = cli.command
+    else {
+        panic!("wrong command");
+    };
+    assert_eq!(track.as_deref(), Some("core"));
+    assert!(!no_track);
+    assert_eq!(priority, Some(Priority::High));
+
+    let cli = parse(&["task", "list", "--no-track"]);
+    let Command::Task(TaskCommand::List { no_track, .. }) = cli.command else {
+        panic!("wrong command");
+    };
+    assert!(no_track);
+    assert!(
+        Cli::try_parse_from(["airlock", "task", "list", "--track", "x", "--no-track"]).is_err(),
+        "a track and no track conflict"
+    );
+}
+
+#[test]
+fn tasks_take_and_lose_tracks() {
+    let cli = parse(&[
+        "task", "add", "T", "--role", "engine", "--do", "x", "--verify", "y", "--track", "core",
+    ]);
+    let Command::Task(TaskCommand::Add(spec)) = cli.command else {
+        panic!("wrong command");
+    };
+    assert_eq!(spec.track.as_deref(), Some("core"));
+
+    let cli = parse(&["task", "edit", "E-1", "--clear-track"]);
+    let Command::Task(TaskCommand::Edit(edit)) = cli.command else {
+        panic!("wrong command");
+    };
+    assert!(edit.clear_track && edit.track.is_none());
+
+    let cli = parse(&["task", "edit", "E-1", "--track", "core"]);
+    let Command::Task(TaskCommand::Edit(edit)) = cli.command else {
+        panic!("wrong command");
+    };
+    assert_eq!(edit.track.as_deref(), Some("core"));
+
+    assert!(
+        Cli::try_parse_from([
+            "airlock",
+            "task",
+            "edit",
+            "E-1",
+            "--track",
+            "x",
+            "--clear-track"
+        ])
+        .is_err(),
+        "a track cannot be set and cleared at once"
+    );
+}
+
+#[test]
+fn activity_cli_parses_filters() {
+    use airlock::activity::{Channel, Since};
+
+    let cli = parse(&["activity"]);
+    let Command::Activity {
+        role,
+        channel,
+        since,
+        problems,
+        writes,
+        failures,
+        limit,
+    } = cli.command
+    else {
+        panic!("wrong command");
+    };
+    assert!(role.is_none() && channel.is_none() && since.is_none());
+    assert!(!problems && !writes && !failures);
+    assert_eq!(limit, 50);
+
+    let cli = parse(&[
+        "--json",
+        "activity",
+        "--session",
+        "s1",
+        "--role",
+        "engine",
+        "--channel",
+        "cli",
+        "--since",
+        "2h",
+        "--problems",
+        "--writes",
+        "--failures",
+        "--limit",
+        "7",
+    ]);
+    assert_eq!(cli.session.as_deref(), Some("s1"), "the global --session");
+    assert!(cli.json);
+    let Command::Activity {
+        role,
+        channel,
+        since,
+        problems,
+        writes,
+        failures,
+        limit,
+    } = cli.command
+    else {
+        panic!("wrong command");
+    };
+    assert_eq!(role.as_deref(), Some("engine"));
+    assert_eq!(channel, Some(Channel::Cli));
+    assert_eq!(since, Some(Since::Ago(7200)));
+    assert!(problems && writes && failures);
+    assert_eq!(limit, 7);
+}
+
+#[test]
+fn since_accepts_minutes_hours_days_and_unix_seconds() {
+    use airlock::activity::Since;
+
+    for (text, expected) in [
+        ("30m", Since::Ago(1_800)),
+        ("2h", Since::Ago(7_200)),
+        ("1d", Since::Ago(86_400)),
+        ("1700000000", Since::At(1_700_000_000)),
+    ] {
+        assert_eq!(text.parse::<Since>().unwrap(), expected, "{text}");
+    }
+    assert_eq!(Since::Ago(7_200).resolve(10_000), 2_800);
+    assert_eq!(Since::At(5).resolve(10_000), 5);
+
+    for bad in [
+        "",
+        "h",
+        "2w",
+        "-5m",
+        "1.5h",
+        "soon",
+        "99999999999999999999d",
+    ] {
+        let error = bad.parse::<Since>().unwrap_err();
+        assert!(
+            error.contains("30m") && error.contains("2h") && error.contains("1d"),
+            "{bad}: {error}"
+        );
+    }
+    assert!(
+        Cli::try_parse_from(["airlock", "activity", "--since", "soon"]).is_err(),
+        "the CLI refuses it too"
+    );
 }

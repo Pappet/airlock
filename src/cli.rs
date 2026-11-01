@@ -1,6 +1,7 @@
 //! Command-line interface definition (Spec 02).
 
-use crate::core::{QuestionStatus, TaskStatus};
+use crate::activity::{Channel, Since};
+use crate::core::{Priority, QuestionStatus, TaskStatus};
 use crate::layout::Template;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -89,6 +90,9 @@ pub enum Command {
     /// Task operations
     #[command(subcommand)]
     Task(TaskCommand),
+    /// Track operations: named lines of work with their own priority
+    #[command(subcommand)]
+    Track(TrackCommand),
     /// Question operations across the airlock
     #[command(subcommand)]
     Question(QuestionCommand),
@@ -103,6 +107,31 @@ pub enum Command {
         /// Port on 127.0.0.1 and ::1; 0 picks a free port
         #[arg(long, default_value_t = 3000)]
         port: u16,
+    },
+    /// Show the activity log: who called what, when, and what went wrong
+    Activity {
+        /// Only this role
+        #[arg(long)]
+        role: Option<String>,
+        /// Only calls that came in through this channel
+        #[arg(long, value_enum)]
+        channel: Option<Channel>,
+        /// Only calls since then: 30m, 2h, 1d, or unix seconds
+        #[arg(long)]
+        since: Option<Since>,
+        /// List problems instead of calls: the whole 30-day log, narrowed
+        /// only by --session and --role
+        #[arg(long)]
+        problems: bool,
+        /// Only calls that change something
+        #[arg(long)]
+        writes: bool,
+        /// Only calls that failed
+        #[arg(long)]
+        failures: bool,
+        /// Show at most this many calls, newest first
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
     },
     /// Export the state snapshot and Markdown views into this project root
     Sync {
@@ -123,12 +152,21 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum TaskCommand {
-    /// List tasks, optionally filtered by role and status
+    /// List tasks, optionally filtered by role, status, track, and priority
     List {
         #[arg(long)]
         role: Option<String>,
         #[arg(long, value_enum)]
         status: Option<TaskStatus>,
+        /// Only tasks of this track
+        #[arg(long)]
+        track: Option<String>,
+        /// Only tasks without a track
+        #[arg(long, conflicts_with = "track")]
+        no_track: bool,
+        /// Only tasks of at least this priority: critical, high, normal, or low
+        #[arg(long, value_enum)]
+        priority: Option<Priority>,
     },
     /// Show the next ready task for a role
     Next {
@@ -210,8 +248,12 @@ pub struct TaskSpec {
     /// Prerequisite task ids, comma-separated; must already exist
     #[arg(long, value_delimiter = ',')]
     pub blocked_by: Vec<String>,
-    #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
-    pub priority: i32,
+    /// critical, high, normal, or low
+    #[arg(long, value_enum, default_value_t)]
+    pub priority: Priority,
+    /// Track the task belongs to; create it first with `airlock track add`
+    #[arg(long)]
+    pub track: Option<String>,
 }
 
 /// Agent harnesses `airlock setup` knows.
@@ -230,8 +272,15 @@ pub struct TaskEditSpec {
     pub title: Option<String>,
     #[arg(long)]
     pub role: Option<String>,
-    #[arg(long, allow_negative_numbers = true)]
-    pub priority: Option<i32>,
+    /// critical, high, normal, or low
+    #[arg(long, value_enum)]
+    pub priority: Option<Priority>,
+    /// Move the task to this track
+    #[arg(long)]
+    pub track: Option<String>,
+    /// Take the task out of its track
+    #[arg(long, conflicts_with = "track")]
+    pub clear_track: bool,
     /// Spec or documentation file to read (repeatable; replaces the list)
     #[arg(long)]
     pub read: Vec<String>,
@@ -290,6 +339,36 @@ pub enum RoleCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum TrackCommand {
+    /// List tracks, most important first, with their task counts
+    List,
+    /// Create a track
+    Add {
+        /// Letters, digits, `-`, `_`
+        name: String,
+        /// critical, high, normal, or low
+        #[arg(long, value_enum, default_value_t)]
+        priority: Priority,
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    /// Rename or change a track; its tasks follow a rename
+    Edit {
+        name: String,
+        /// New name
+        #[arg(long = "name", value_name = "NEW_NAME")]
+        new_name: Option<String>,
+        /// critical, high, normal, or low
+        #[arg(long, value_enum)]
+        priority: Option<Priority>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Remove a track no task belongs to
+    Remove { name: String },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum QuestionCommand {
     /// List questions
     List {
@@ -304,7 +383,7 @@ pub enum QuestionCommand {
         #[arg(long)]
         topic: String,
     },
-    /// Answer (or revise the answer to) a question
+    /// Answer a question; on an answered or resolved one, correct its answer
     Answer {
         id: u64,
         answer: String,
@@ -347,12 +426,19 @@ impl Command {
                 TaskCommand::Approve { .. } => "task approve",
                 TaskCommand::Reject { .. } => "task reject",
             },
+            Self::Track(sub) => match sub {
+                TrackCommand::List => "track list",
+                TrackCommand::Add { .. } => "track add",
+                TrackCommand::Edit { .. } => "track edit",
+                TrackCommand::Remove { .. } => "track remove",
+            },
             Self::Question(sub) => match sub {
                 QuestionCommand::List { .. } => "question list",
                 QuestionCommand::Ask { .. } => "question ask",
                 QuestionCommand::Answer { .. } => "question answer",
                 QuestionCommand::Resolve { .. } => "question resolve",
             },
+            Self::Activity { .. } => "activity",
             Self::Mcp { .. } => "mcp",
             Self::Serve { .. } => "serve",
             Self::Sync { .. } => "sync",

@@ -6,9 +6,9 @@ Behavioral and architectural specifications for **Airlock**. Where a spec and th
 
 | Document | Topic | Description |
 |---|---|---|
-| [01_architecture_and_data_model.md](01_architecture_and_data_model.md) | Architecture & Data Model | Entities, derived status, lifecycles, leases, hub store, concurrency rules |
-| [02_cli_interface.md](02_cli_interface.md) | CLI | Project and session resolution, commands, output and exit codes |
+| [01_architecture_and_data_model.md](01_architecture_and_data_model.md) | Architecture & Data Model | Entities (tasks, tracks, priority scale, questions and answer corrections), derived status, lifecycles, leases, hub store, migration, concurrency rules, activity log, process registry, problems |
+| [02_cli_interface.md](02_cli_interface.md) | CLI | Project and session resolution, commands (including `airlock activity`), output and exit codes |
 | [03_mcp_protocol.md](03_mcp_protocol.md) | MCP | Server binding, clean-room tool set, tool schemas |
-| [04_web_dashboard_and_api.md](04_web_dashboard_and_api.md) | Web UI & REST/SSE API | Local-only security model, Kanban board, review queue, endpoints |
+| [04_web_dashboard_and_api.md](04_web_dashboard_and_api.md) | Web UI & REST/SSE API | Local-only security model, Tracks and Activity tabs, Kanban board, review queue, endpoints |
 | [05_git_sync_and_airlock.md](05_git_sync_and_airlock.md) | Git Sync & Airlock Boundary | Worktree model, bootstrap, snapshot format, import, merge rule, boundary guarantees and limits |
 | [06_onboarding.md](06_onboarding.md) | Onboarding | Worktree bindings, `-C`, session briefing, role management, doctor, harness setup, guided init (planned) |
