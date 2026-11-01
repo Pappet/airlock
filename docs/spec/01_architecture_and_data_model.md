@@ -269,7 +269,7 @@ One entry per operation:
 | `command` | MCP: the tool name (`task_claim`), plus `prompt start` for the `start` prompt; CLI: the subcommand path (`task edit`, `question answer`); REST: `<METHOD> <route pattern>` (`POST /api/questions/{id}/answer`, every `GET` is logged as `GET <route>`) |
 | `target` | task id, question id (`#15`), track name, or role name, if the operation has one |
 | `changed` | for writes: a list of the argument names given, e.g. `track`, `priority: high`, `blocked_by`; `correction` is added to a successful answer that corrected an earlier one |
-| `write` | whether the command changes state: false for the reads (`session_start`, `prompt start`, `task_next`, `task_get`, `question_list`, `track_list`, `start`, `task list`, `task next`, `task show`, `track list`, `question list`, `role list`, and every REST `GET`) |
+| `write` | whether the command changes state: false for the reads (`session_start`, `prompt start`, `task_next`, `task_get`, `question_list`, `track_list`, `start`, `task list`, `task next`, `task show`, `track list`, `question list`, `role list`, a `use` that only shows the binding, and every REST `GET`) |
 | `ok` | success or failure |
 | `error` | on failure, the error message |
 | `pid`, `build` | process id and build identity (§3.6) of the caller |
@@ -301,7 +301,7 @@ Problems are computed from the log and the registry on every read, never stored,
 | Kind | Fires when | Grouping |
 |---|---|---|
 | `failure` | an entry with `ok = false`; the message is the latest error | one problem per session and command, with count |
-| `clean_room_cli` | an entry on channel `cli` by a clean-room role for a command the clean-room MCP set does not offer: `task add`, `task edit`, `task approve`, `task reject`, `track add`, `track edit`, `track remove`, `question answer`, `question resolve`, `sync`, `import`, `role set`, `role remove`, `use`. Reads and the commands the clean-room set has (`task claim`, `task heartbeat`, `task release`, `task done`, `question ask`) are not flagged. Failed attempts count; it fires whether or not `agent` is recognised, so an unknown harness cannot keep the problem list calm | one problem per session, listing the commands |
+| `clean_room_cli` | an entry on channel `cli` by a clean-room role for a command the clean-room MCP set does not offer: `task add`, `task edit`, `task approve`, `task reject`, `track add`, `track edit`, `track remove`, `question answer`, `question resolve`, `sync`, `import`, `role set`, `role remove`, `use`. Reads (including a `use` that only shows the binding) and the commands the clean-room set has (`task claim`, `task heartbeat`, `task release`, `task done`, `question ask`) are not flagged. Failed attempts count. Every command but `use` fires whether or not `agent` is recognised, so an unknown harness cannot keep the problem list calm; `use` fires only when `agent` is recognised, because binding a worktree from the user's own shell is a setup step | one problem per session, listing the commands |
 | `error_burst` | five or more failures of one session within 600 seconds | one problem per run of overlapping windows |
 | `answer_corrected` | a successful answer whose `changed` contains `correction` (§2.2) | one problem per session and question |
 | `old_process` | a live registered process whose build time is older than the newest known: the newest of the live registered processes and the process doing the check (CLI, `serve`) | one problem per process |

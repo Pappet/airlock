@@ -140,6 +140,9 @@ fn use_is_logged_with_the_session_it_binds() {
     let bind = &entries[0];
     assert_eq!(bind.command, "use");
     assert!(bind.write);
+    // Showing the binding is a read; clearing it is a write.
+    assert!(!entries[1].write, "{:?}", entries[1]);
+    assert!(entries[2].write, "{:?}", entries[2]);
     assert_eq!(bind.session, "engine-7");
     assert_eq!(bind.role.as_deref(), Some("engine"));
     assert!(bind.clean_room);
@@ -402,7 +405,13 @@ fn activity_json_lists_entries_and_problems() {
 #[test]
 fn activity_text_has_day_headers_rows_and_problem_lines() {
     let env = Env::new();
-    env.ok(&["use", "engine", "--session", "engine-1"]);
+    // Bound from an agent shell, so the clean-room rule applies to `use`.
+    let bound = env
+        .command(&["use", "engine", "--session", "engine-1"])
+        .env("CLAUDECODE", "1")
+        .output()
+        .unwrap();
+    assert!(bound.status.success());
     env.ok(&["task", "list"]);
     assert!(!env.run(&["task", "claim", "E-99"]).status.success());
 

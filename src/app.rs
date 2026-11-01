@@ -93,6 +93,8 @@ pub fn run(cli: Cli) -> Result<()> {
             force,
             clear,
         } => {
+            // Showing the binding (no role, no --clear) only reads.
+            let write = role.is_some() || clear;
             // What the call is logged under if it binds nothing: the existing binding.
             let fallback_session = (cli.session.clone())
                 .or(bound_session)
@@ -108,6 +110,7 @@ pub fn run(cli: Cli) -> Result<()> {
             log_cli_call(
                 &project,
                 "use",
+                write,
                 summary,
                 session,
                 role,
@@ -251,6 +254,7 @@ pub fn run(cli: Cli) -> Result<()> {
     log_cli_call(
         &project,
         name,
+        activity::is_write(name),
         summary,
         logged_session,
         caller_role,
@@ -264,6 +268,7 @@ pub fn run(cli: Cli) -> Result<()> {
 fn log_cli_call(
     project: &Project,
     command: &str,
+    write: bool,
     (target, changed): (Option<String>, Vec<String>),
     session: String,
     role: Option<String>,
@@ -285,7 +290,7 @@ fn log_cli_call(
         command: command.to_string(),
         target,
         changed,
-        write: activity::is_write(command),
+        write,
         ok: error.is_none(),
         error,
         pid: std::process::id(),

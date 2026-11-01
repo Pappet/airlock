@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// CLI commands that change project state a clean-room session should only
-/// change through MCP (or leave to the lead).
+/// change through MCP (or leave to the lead). `use` counts only from an agent
+/// shell (see [`clean_room_cli`]); showing a binding is a read and never counts.
 pub const CLEAN_ROOM_FLAGGED: &[&str] = &[
     "task add",
     "task edit",
@@ -127,12 +128,17 @@ fn failures(entries: &[&Entry]) -> Vec<Problem> {
 }
 
 /// Clean-room sessions that wrote through the CLI, one problem per session.
+/// Every flagged write counts whoever runs it, except `use`: binding a
+/// worktree is the user's setup step, so it counts only when an agent shell
+/// was recognised.
 fn clean_room_cli(entries: &[&Entry]) -> Vec<Problem> {
     let mut groups: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
     for entry in entries.iter().filter(|e| {
         e.channel == Channel::Cli
             && e.clean_room
+            && e.write
             && CLEAN_ROOM_FLAGGED.contains(&e.command.as_str())
+            && (e.command != "use" || e.agent.is_some())
     }) {
         groups.entry(&entry.session).or_default().push(entry);
     }

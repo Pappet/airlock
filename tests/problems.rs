@@ -119,6 +119,33 @@ fn clean_room_cli_write_is_flagged_with_or_without_agent() {
 }
 
 #[test]
+fn use_is_flagged_only_from_an_agent_shell_and_never_when_only_showing() {
+    let use_call = |id, agent: Option<&str>, write| Entry {
+        clean_room: true,
+        agent: agent.map(str::to_string),
+        write,
+        ..entry(id, 100 + id as i64, "engine-1", Channel::Cli, "use")
+    };
+    // The user binding a worktree from their own shell, and showing a binding.
+    let calm = [
+        use_call(1, None, true),
+        use_call(2, Some("claude-code"), false),
+        use_call(3, None, false),
+    ];
+    assert!(problems(&calm, &[], "0.1.0+100").is_empty());
+
+    // An agent shell rebinding its clean-room worktree.
+    let all = problems(&[use_call(4, Some("claude-code"), true)], &[], "0.1.0+100");
+    let found = of_kind(&all, ProblemKind::CleanRoomCli);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].entry_ids, [4]);
+    assert_eq!(
+        found[0].message,
+        "engine-1 (clean-room) writes through the CLI: use"
+    );
+}
+
+#[test]
 fn five_failures_in_ten_minutes_are_a_burst() {
     let run = |step: i64| -> Vec<Entry> {
         (0..5)
