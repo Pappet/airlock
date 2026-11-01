@@ -502,9 +502,38 @@ textarea { min-height: 72px; resize: vertical; }
 .btn--approve { color: var(--primary); }
 .btn--danger { color: var(--error); }
 
-.minutes { font-family: var(--font-mono); font-size: 1.5rem; font-weight: 500; }
-.minutes.low { color: var(--tertiary); }
-.minutes.expired { color: var(--error); }
+/* ─── Leases ─────────────────────────────────────────────────────── */
+.leases { display: grid; gap: var(--space-2); max-width: 1100px; }
+.lease-item { padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); background: var(--surface-container-low); }
+.lease-item__head {
+  display: grid;
+  grid-template-columns: 16px 4.2em minmax(0, 1fr) 6em 5em;
+  gap: var(--space-3);
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+.lease-item__id { font-weight: 600; text-align: left; }
+.lease-item__title { font-family: var(--font-body); overflow-wrap: anywhere; }
+.lease-item__head .lease__seam { grid-column: 2 / -1; margin-top: var(--space-1); }
+.lease-item.is-low .lease__left { color: var(--tertiary); }
+.lease-item.is-low .lease__seam i { background: var(--tertiary); }
+.lease-item.is-expired .lease__left { color: var(--error); }
+.lease-item__progress {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-lowest);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.lease-item__actions { display: flex; justify-content: flex-end; margin-top: var(--space-3); }
+@media (max-width: 600px) {
+  .lease-item__head { grid-template-columns: 16px 4.2em minmax(0, 1fr) 5em; }
+  .lease-item__head .lease__who { display: none; }
+}
 
 .empty { padding: var(--space-8) var(--space-4); text-align: center; color: var(--on-surface-variant); }
 .empty .label { display: block; margin-bottom: var(--space-2); }

@@ -309,6 +309,19 @@ fn dashboard_matrix_is_sticky_and_neutral() {
 }
 
 #[test]
+fn dashboard_leases_wrap_their_progress() {
+    let s = Server::start();
+    let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");
+    let js = get("/app.js").body;
+    assert!(js.contains("lease-item__progress"));
+    let css = get("/style.css").body;
+    assert!(
+        css.contains(".lease-item__progress {") && css.contains("white-space: pre-wrap"),
+        "progress notes wrap"
+    );
+}
+
+#[test]
 fn dashboard_assets_know_tracks() {
     let s = Server::start();
     let get = |path: &str| s.raw("GET", path, &[("Host", &s.host())], "");

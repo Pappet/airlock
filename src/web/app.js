@@ -988,11 +988,14 @@ function questionItem(q) {
 }
 
 function leasesView() {
-  const items = state.tasks.filter((t) => t.status === "in_progress");
+  const items = state.tasks.filter((t) => t.status === "in_progress").sort(byNextOrder);
   if (!items.length) return empty("No active leases", "Claimed tasks appear here with their remaining lease time.");
-  return h("div", { class: "list" }, items.map((task) => {
+  const window = state.project?.lease_minutes || 60;
+  return h("div", { class: "leases" }, items.map((task) => {
     const minutes = minutesLeft(task);
     const expired = minutes === 0;
+    const low = minutes !== null && minutes < 15;
+    const pct = minutes === null ? 100 : Math.min(100, Math.round((100 * minutes) / window));
     const release = h("button", { type: "button", class: "btn btn--danger" }, "Force release");
     release.addEventListener("click", () => {
       if (release.dataset.armed) {
@@ -1003,22 +1006,16 @@ function leasesView() {
         setTimeout(() => { delete release.dataset.armed; release.textContent = "Force release"; }, 4000);
       }
     });
-    return h("article", { class: "item" },
-      h("div", { class: "item__head" },
-        h("button", { type: "button", class: "link card__id", onclick: () => openDetail(task.id) }, `▶ ${task.id}`),
-        h("span", { class: "item__title" }, task.title)),
-      h("div", { class: "actions" },
-        h("div", { class: "field" },
-          h("span", { class: "label" }, "Session"),
-          h("span", { class: "mono" }, task.claimed_by || "?")),
-        h("div", { class: "field" },
-          h("span", { class: "label" }, "Lease"),
-          h("span", { class: `minutes${expired ? " expired" : minutes !== null && minutes <= 5 ? " low" : ""}` },
-            minutes === null ? "—" : expired ? "EXPIRED" : `${minutes} min`)),
-        release),
-      task.progress ? h("div", { class: "field" },
-        h("span", { class: "label" }, "Progress"),
-        h("pre", {}, task.progress)) : "");
+    return h("article", { class: `lease-item${expired ? " is-expired" : low ? " is-low" : ""}` },
+      h("div", { class: "lease-item__head" },
+        h("span", { class: "pulse live", "aria-hidden": "true" }),
+        h("button", { type: "button", class: "link lease-item__id", onclick: () => openDetail(task.id) }, task.id),
+        h("span", { class: "lease-item__title" }, task.title),
+        h("span", { class: "lease__who" }, task.claimed_by || "?"),
+        h("span", { class: "lease__left" }, minutes === null ? "—" : expired ? "EXPIRED" : `${minutes} min`),
+        h("span", { class: "lease__seam" }, h("i", { style: `width:${pct}%` }))),
+      task.progress ? h("pre", { class: "lease-item__progress" }, task.progress) : null,
+      h("div", { class: "lease-item__actions" }, release));
   }));
 }
 
