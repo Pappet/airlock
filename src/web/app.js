@@ -303,12 +303,14 @@ function overlapBadges(id) {
   const a = analysisById(id);
   if (!a) return [];
   const badges = [];
-  if (a.unknown) badges.push(h("span", { class: "badge badge--unknown", title: "No touch list: overlap unknown" }, "? no touch data"));
+  if (a.unknown) badges.push(h("span", { class: "badge badge--unknown", title: "No touch list: overlap unknown" }, "? no touch list"));
   if (a.overlaps.length) {
+    // Colour budget: red only when the other task is running right now.
     const running = a.overlaps.filter((o) => o.occupied).map((o) => o.id);
     const title = a.overlaps.map((o) => `${o.id}: ${o.paths.join(", ")}`).join("\n");
-    badges.push(h("span", { class: "badge badge--overlap", title }, `⚠ ${a.overlaps.length} overlap${a.overlaps.length > 1 ? "s" : ""}`));
-    if (running.length) badges.push(h("span", { class: "badge badge--overlap", title }, `⚠ with running ${running.join(", ")}`));
+    badges.push(running.length
+      ? h("span", { class: "badge badge--conflict", title }, `⚠ running ${running.join(", ")}`)
+      : h("span", { class: "badge", title }, `⧉ ${a.overlaps.length}`));
   }
   return badges;
 }
@@ -320,18 +322,18 @@ function card(task, extraClass = "", onclick, showTrack = true) {
     "button",
     {
       type: "button",
-      class: `card p-${task.priority} ${running ? "is-running" : ""} ${extraClass}`,
+      class: `card ${running ? "is-running" : ""} ${extraClass}`,
       "data-id": task.id,
       onclick: onclick || (() => openDetail(task.id)),
     },
     h("div", { class: "card__head" },
-      h("span", { class: "card__id" }, running ? `▶ ${task.id}` : task.id),
+      h("span", { class: "card__id" }, running ? h("span", { class: "pulse live", "aria-hidden": "true" }) : null, task.id),
       pips(task.priority)),
     h("div", { class: "card__title" }, task.title),
     h("div", { class: "card__meta" },
       task.role,
       showTrack && task.track ? ` · ${task.track}` : "",
-      task.claimed_by ? ` · ${task.claimed_by}` : "",
+      task.claimed_by ? [" · ", h("span", { class: "card__who" }, task.claimed_by)] : "",
       minutes !== null ? ` · ${minutes} min` : ""),
     h("div", { class: "badges" },
       task.blocked_by.length ? h("span", { class: "badge", title: "blocked by" }, `← ${task.blocked_by.join(", ")}`) : null,
@@ -748,8 +750,8 @@ function flatBoard(tasks) {
   return h("div", { class: "columns" },
     STATUS_COLUMNS.map(([status, name]) => {
       const items = tasks.filter((t) => t.status === status).sort(byNextOrder);
-      return h("section", { class: "column" },
-        h("div", { class: "label" }, h("span", {}, name), h("span", {}, items.length)),
+      return h("section", { class: `column${status === "in_progress" ? " column--run" : ""}` },
+        h("div", { class: "label" }, h("span", {}, name), h("b", {}, items.length)),
         items.length ? items.map((t) => card(t)) : h("div", { class: "muted" }, "—"));
     }));
 }
@@ -1013,7 +1015,8 @@ function pathList(paths, overlapping) {
   if (!paths.length) return h("div", { class: "muted" }, "—");
   return h("ul", {}, paths.map((p) => {
     const others = overlapping.get(p);
-    return h("li", {}, p, others ? h("span", { class: "badge badge--overlap" }, `⚠ ${others.join(", ")}`) : null);
+    const running = others?.some((id) => id.startsWith("▶"));
+    return h("li", {}, p, others ? h("span", { class: `badge${running ? " badge--conflict" : ""}` }, `${running ? "⚠" : "⧉"} ${others.join(", ")}`) : null);
   }));
 }
 
