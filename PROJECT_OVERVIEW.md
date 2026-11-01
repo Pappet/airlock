@@ -126,6 +126,7 @@ graph TD
 ### `docs/`
 - [`docs/spec/`](docs/spec/README.md): Specifications 01–05.
 - [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md): Implementation phases.
+- [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md): Work orders for Phase 3c (session continuity) and follow-ups.
 - [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md): Milestones.
 - [`docs/walkthroughs/quickstart.md`](docs/walkthroughs/quickstart.md): User walkthrough.
 - [`docs/walkthroughs/agent-validation.md`](docs/walkthroughs/agent-validation.md): Validation of the onboarding flow with real agent harnesses on OpenSHR (scenarios, runs, resulting changes).
