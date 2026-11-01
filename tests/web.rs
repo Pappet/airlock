@@ -830,6 +830,26 @@ fn project_and_overlaps_endpoints() {
     assert_eq!(b["id"], "E-2");
     assert_eq!(b["overlaps"][0]["occupied"], true);
     assert_eq!(b["stage"], 1);
+
+    // A directory entry covers the files beneath it; the file is the row.
+    add_task(&s, "E-4", &["src/render/"]);
+    add_task(&s, "E-5", &["src/render/mesh.rs"]);
+    let overlaps = s.api("GET", "/api/overlaps", None).json();
+    let row = overlaps["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == "src/render/mesh.rs")
+        .expect("the covered file is listed");
+    assert_eq!(row["tasks"], serde_json::json!(["E-4", "E-5"]));
+    assert!(
+        overlaps["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["path"] != "src/render/"),
+        "{overlaps}"
+    );
 }
 
 #[test]

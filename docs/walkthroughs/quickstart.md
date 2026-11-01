@@ -210,4 +210,4 @@ Open the printed `http://127.0.0.1:3000/#token=…` URL (the Board is the defaul
 - **Review**, **Questions**, **Leases** — approve or reject, answer and resolve, force-release.
 - **Activity** — what needs attention (failed calls, clean-room sessions writing through the CLI, bursts of errors, corrected answers, `airlock mcp` processes older than the installed build), who works on what, and a logbook of every MCP, CLI, and REST call by day. The log keeps metadata only (no task bodies, notes, or question and answer text) for 30 days. In the terminal, `airlock activity` prints the logbook (times in UTC) and `airlock activity --problems` the list of problems.
 
-Tasks without `--touch` show "no touch data": list the files a task changes so overlaps become visible.
+Tasks without `--touch` show "no touch data": list the files a task changes so overlaps become visible. A directory works too (`--touch src/render/`): it overlaps every listed file beneath it.
