@@ -905,6 +905,8 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+// Sends SIGTERM through `kill`, which Windows lacks.
+#[cfg(unix)]
 #[test]
 fn serve_registers_while_running_and_unregisters_on_shutdown() {
     let mut s = Server::start();

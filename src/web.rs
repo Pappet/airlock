@@ -93,8 +93,11 @@ async fn run(project: Project, port: u16) -> Result<()> {
         token: new_token()?,
         events,
     });
+    // Take the baselines before the URL is printed, so a change made right
+    // after startup is reported instead of becoming the baseline.
+    let baseline = Baseline::take(&state.project);
     let watched = state.clone();
-    std::thread::spawn(move || watch(&watched.project, &watched.events));
+    std::thread::spawn(move || watch(baseline, &watched.events));
     let app = router(state.clone());
     let registration = register(&state.project);
 
@@ -1036,14 +1039,38 @@ fn changed<K: Ord + Clone>(old: &BTreeMap<K, String>, new: &BTreeMap<K, String>)
 /// Polls the store and the activity log once per second and broadcasts what
 /// changed (Spec 04 §4): entity changes as `*_changed`, a growing log as
 /// `activity` with the newest entry's id.
-fn watch(project: &Project, events: &broadcast::Sender<Change>) {
-    let store = match Store::open(&project.database) {
-        Ok(store) => store,
-        Err(e) => return eprintln!("airlock serve: live updates disabled: {e:#}"),
+/// What the watcher compares against: the store's state and the newest log id
+/// at startup.
+struct Baseline {
+    store: Option<(Store, Option<i64>, Digest)>,
+    log: ActivityWatch,
+}
+
+impl Baseline {
+    fn take(project: &Project) -> Self {
+        let store = match Store::open(&project.database) {
+            Ok(store) => {
+                let version = store.data_version().ok();
+                let digest = Digest::load(&store, unix_now()).unwrap_or_default();
+                Some((store, version, digest))
+            }
+            Err(e) => {
+                eprintln!("airlock serve: live updates disabled: {e:#}");
+                None
+            }
+        };
+        Self {
+            store,
+            log: ActivityWatch::new(project),
+        }
+    }
+}
+
+fn watch(baseline: Baseline, events: &broadcast::Sender<Change>) {
+    let Baseline { store, mut log } = baseline;
+    let Some((store, mut version, mut digest)) = store else {
+        return;
     };
-    let mut version = store.data_version().ok();
-    let mut digest = Digest::load(&store, unix_now()).unwrap_or_default();
-    let mut log = ActivityWatch::new(project);
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let now = unix_now();
