@@ -895,3 +895,145 @@ fn serve_registers_while_running_and_unregisters_on_shutdown() {
     s.child.wait().unwrap();
     assert!(activity_log(&s.hub).processes(now()).unwrap().is_empty());
 }
+
+/// The REST entries of the activity log, oldest first.
+fn rest_entries(hub: &Path) -> Vec<airlock::activity::Entry> {
+    let filter = airlock::activity::Filter {
+        channel: Some(airlock::activity::Channel::Rest),
+        ..Default::default()
+    };
+    let mut entries = activity_log(hub).entries(&filter).unwrap();
+    entries.sort_by_key(|e| e.id);
+    entries
+}
+
+#[test]
+fn rest_writes_are_logged_as_rest_session() {
+    let s = Server::start();
+    add_task(&s, "E-1", &[]);
+    let r = s.api(
+        "PATCH",
+        "/api/tasks/E-1",
+        Some(serde_json::json!({ "priority": "high" })),
+    );
+    assert_eq!(r.status, 200, "{}", r.body);
+
+    let entries = rest_entries(&s.hub);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let e = &entries[0];
+    assert_eq!(e.session, "rest");
+    assert_eq!(e.role, None);
+    assert!(!e.clean_room);
+    assert_eq!(e.agent, None);
+    assert_eq!(e.command, "PATCH /api/tasks/{id}");
+    assert_eq!(e.target.as_deref(), Some("E-1"));
+    assert_eq!(e.changed, ["priority: high"]);
+    assert!(e.write && e.ok && e.error.is_none(), "{e:?}");
+}
+
+#[test]
+fn dashboard_reads_are_not_logged_but_its_writes_are() {
+    let s = Server::start();
+    add_task(&s, "E-1", &[]);
+    s.cli(&["--session", "s1", "task", "claim", "E-1"]);
+    let auth = format!("Bearer {}", s.token);
+    let host = s.host();
+    let headers = [
+        ("Host", host.as_str()),
+        ("Authorization", auth.as_str()),
+        ("Content-Type", "application/json"),
+        ("X-Airlock-Client", "dashboard"),
+    ];
+    assert_eq!(s.raw("GET", "/api/tasks", &headers, "").status, 200);
+    assert!(rest_entries(&s.hub).is_empty());
+
+    let r = s.raw("POST", "/api/tasks/E-1/release", &headers, "{}");
+    assert_eq!(r.status, 200, "{}", r.body);
+    let entries = rest_entries(&s.hub);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].session, "dashboard");
+    assert_eq!(entries[0].command, "POST /api/tasks/{id}/release");
+    assert_eq!(entries[0].target.as_deref(), Some("E-1"));
+
+    // Without the header a read is logged, as a read.
+    assert_eq!(s.api("GET", "/api/tasks", None).status, 200);
+    let entries = rest_entries(&s.hub);
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    assert_eq!(entries[1].command, "GET /api/tasks");
+    assert!(!entries[1].write);
+}
+
+#[test]
+fn question_path_ids_are_logged_as_hash_numbers() {
+    let s = Server::start();
+    s.cli(&["question", "ask", "Why?", "--topic", "melee.md"]);
+    let r = s.api(
+        "POST",
+        "/api/questions/1/answer",
+        Some(serde_json::json!({ "answer": "Because the secret sentence." })),
+    );
+    assert_eq!(r.status, 200, "{}", r.body);
+    let entries = rest_entries(&s.hub);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].command, "POST /api/questions/{id}/answer");
+    assert_eq!(entries[0].target.as_deref(), Some("#1"));
+    assert_eq!(entries[0].changed, ["answer"]);
+}
+
+#[test]
+fn rest_failure_is_logged_with_error_message() {
+    let s = Server::start();
+    add_task(&s, "E-1", &[]);
+    let r = s.api(
+        "PATCH",
+        "/api/tasks/E-1",
+        Some(serde_json::json!({ "track": "no-such-track" })),
+    );
+    assert_eq!(r.status, 409, "{}", r.body);
+    let entries = rest_entries(&s.hub);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert!(!entries[0].ok);
+    assert_eq!(
+        entries[0].error.as_deref(),
+        r.json()["error"].as_str(),
+        "{entries:?}"
+    );
+    // The client still receives the unchanged error body.
+    assert!(!r.json()["error"].as_str().unwrap().is_empty());
+}
+
+#[test]
+fn guard_rejections_are_not_logged() {
+    let s = Server::start();
+    let r = s.raw("GET", "/api/tasks", &[("Host", &s.host())], "");
+    assert_eq!(r.status, 401);
+    assert!(rest_entries(&s.hub).is_empty());
+}
+
+#[test]
+fn events_stream_is_never_logged() {
+    let s = Server::start();
+    let auth = format!("Bearer {}", s.token);
+    let mut stream = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /api/events HTTP/1.1\r\nHost: {}\r\nAuthorization: {auth}\r\n\r\n",
+        s.host()
+    )
+    .unwrap();
+    let mut seen = String::new();
+    let mut buf = [0u8; 4096];
+    while !seen.contains("text/event-stream") {
+        let n = stream.read(&mut buf).unwrap();
+        assert!(n > 0, "closed: {seen:?}");
+        seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    // A logged call after the stream opened shows what a logged entry looks like.
+    assert_eq!(s.api("GET", "/api/tasks", None).status, 200);
+    let entries = rest_entries(&s.hub);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].command, "GET /api/tasks");
+}

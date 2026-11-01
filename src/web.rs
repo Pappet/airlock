@@ -8,7 +8,7 @@
 //! invocation. A watcher thread polls `PRAGMA data_version` once per second
 //! and turns changes into server-sent events.
 
-use crate::activity::{self, ActivityLog};
+use crate::activity::{self, ActivityLog, Channel, Entry};
 use crate::app::{TaskView, TrackView, done_ids, ensure_role, unix_now};
 use crate::core::{Priority, QuestionStatus, TaskStatus, dependents};
 use crate::hub::Project;
@@ -16,9 +16,9 @@ use crate::overlap;
 use crate::store::{NewTask, NotFound, Store, TaskEdit};
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::body::Bytes;
-use axum::extract::rejection::QueryRejection;
-use axum::extract::{Path, Query, Request, State};
+use axum::body::{Body, Bytes};
+use axum::extract::rejection::{QueryRejection, RawPathParamsRejection};
+use axum::extract::{MatchedPath, Path, Query, RawPathParams, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -37,6 +37,12 @@ use tokio::sync::broadcast;
 
 /// Session id recorded for answers and force-releases made in the dashboard.
 pub const DASHBOARD_SESSION: &str = "dashboard";
+
+/// Request header with which the dashboard identifies its calls.
+const CLIENT_HEADER: &str = "x-airlock-client";
+
+/// Longest request body the activity log reads for its keys.
+const LOGGED_BODY_MAX: usize = 1024 * 1024;
 
 const INDEX_HTML: &str = include_str!("web/index.html");
 const APP_JS: &str = include_str!("web/app.js");
@@ -198,6 +204,8 @@ fn router(state: Shared) -> Router {
         .route("/api/overlaps", get(show_overlaps))
         .route("/api/events", get(events))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
+        // Inside `guard`: requests it rejects stay unlogged.
+        .layer(middleware::from_fn_with_state(state.clone(), log_call))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -281,6 +289,103 @@ async fn guard(State(state): State<Shared>, req: Request, next: Next) -> Respons
         HeaderValue::from_static("no-referrer"),
     );
     response
+}
+
+/// Records every accepted API call in the activity log, except the event
+/// stream, the activity endpoints and the dashboard's own reads. The request
+/// body is read for its keys and handed on unchanged; a failed response is
+/// read for its error message and rebuilt unchanged.
+async fn log_call(
+    State(state): State<Shared>,
+    params: Result<RawPathParams, RawPathParamsRejection>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path();
+    let dashboard = req
+        .headers()
+        .get(CLIENT_HEADER)
+        .is_some_and(|v| v.as_bytes() == DASHBOARD_SESSION.as_bytes());
+    let reads = matches!(*req.method(), Method::GET | Method::HEAD);
+    let logged = path.starts_with("/api/")
+        && !path.starts_with("/api/events")
+        && !path.starts_with("/api/activity")
+        && !(dashboard && reads);
+    // Unrouted paths (the 404 fallback) have no route pattern and stay unlogged.
+    let matched = req.extensions().get::<MatchedPath>().cloned();
+    let Some(matched) = matched.filter(|_| logged) else {
+        return next.run(req).await;
+    };
+    let method = if reads { "GET" } else { req.method().as_str() };
+    let command = format!("{method} {}", matched.as_str());
+    let path_id = params.ok().and_then(|params| path_id(&matched, &params));
+
+    let (parts, request_body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(request_body, LOGGED_BODY_MAX).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "request body too large")
+                .into_response();
+        }
+    };
+    let (mut target, changed) = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(args)) => activity::summarize_json(&command, &args),
+        _ => (None, Vec::new()),
+    };
+    target = target.or(path_id);
+    let req = Request::from_parts(parts, Body::from(bytes));
+
+    let response = next.run(req).await;
+    let status = response.status();
+    let (response, error) = if status.is_success() {
+        (response, None)
+    } else {
+        let (parts, response_body) = response.into_parts();
+        let bytes = axum::body::to_bytes(response_body, usize::MAX)
+            .await
+            .unwrap_or_default();
+        let message = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|v| v.get("error")?.as_str().map(str::to_string))
+            .unwrap_or_else(|| status.to_string());
+        (
+            Response::from_parts(parts, Body::from(bytes)),
+            Some(message),
+        )
+    };
+
+    let entry = Entry {
+        id: 0,
+        at: unix_now(),
+        session: if dashboard { DASHBOARD_SESSION } else { "rest" }.to_string(),
+        role: None,
+        clean_room: false,
+        channel: Channel::Rest,
+        agent: None,
+        write: activity::is_write(&command),
+        command,
+        target,
+        changed,
+        ok: error.is_none(),
+        error: error.as_deref().map(activity::truncate_error),
+        pid: std::process::id(),
+        build: activity::build().to_string(),
+    };
+    let database = state.project.database.clone();
+    // Blocking SQLite work; a failed write only reaches stderr.
+    let _ = tokio::task::spawn_blocking(move || activity::record_quietly(&database, &entry)).await;
+    response
+}
+
+/// The `id` of the route's path parameters, `#<n>` for a question.
+fn path_id(matched: &MatchedPath, params: &RawPathParams) -> Option<String> {
+    let (_, id) = params.iter().find(|(name, _)| *name == "id")?;
+    let question = matched.as_str().starts_with("/api/questions/");
+    Some(if question {
+        format!("#{id}")
+    } else {
+        id.to_string()
+    })
 }
 
 /// Compares secrets in time independent of where they differ.

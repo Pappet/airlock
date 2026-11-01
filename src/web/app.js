@@ -63,7 +63,7 @@ function token() {
 }
 
 async function api(method, path, body) {
-  const headers = { Authorization: `Bearer ${state.token}` };
+  const headers = { Authorization: `Bearer ${state.token}`, "X-Airlock-Client": "dashboard" };
   if (method === "POST") headers["Content-Type"] = "application/json";
   const res = await fetch(path, {
     method,
@@ -116,7 +116,7 @@ function scheduleReload() {
 async function listen() {
   for (;;) {
     try {
-      const res = await fetch("/api/events", { headers: { Authorization: `Bearer ${state.token}` } });
+      const res = await fetch("/api/events", { headers: { Authorization: `Bearer ${state.token}`, "X-Airlock-Client": "dashboard" } });
       if (res.status === 401) return tokenRejected();
       if (!res.ok) throw new Error(`events: ${res.status}`);
       setLive(true);
