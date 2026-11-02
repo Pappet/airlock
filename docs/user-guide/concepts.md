@@ -6,7 +6,7 @@ What Airlock keeps track of and the words the rest of the documentation uses. Ea
 
 ## Project and hub
 
-A **project** is one git repository with all its worktrees. Its state lives in the **hub**, outside the repository: one SQLite database per project under the platform state directory (`~/.local/state/airlock/projects/<uuid>/` on Linux; override with `AIRLOCK_HOME`). The repository only carries a one-line marker, `.airlock`, with the project id. Every worktree finds the same hub entry through the marker, so a claim made in one worktree is seen in all others at once — there is nothing to merge.
+A **project** is one git repository with all its worktrees. Its state lives in the **hub**, outside the repository: one SQLite database per project under the platform state directory (`~/.local/state/airlock/projects/<uuid>/` on Linux; [Spec 01 §3.1](../spec/01_architecture_and_data_model.md) lists macOS and Windows; override with `AIRLOCK_HOME`). The repository only carries a one-line marker, `.airlock`, with the project id. Every worktree finds the same hub entry through the marker, so a claim made in one worktree is seen in all others at once — there is nothing to merge.
 
 `airlock.toml` (committed) records which worktree hosts which roles, so `airlock init` can recreate worktrees and bindings on another machine.
 
