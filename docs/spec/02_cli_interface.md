@@ -146,8 +146,8 @@ Closes an answered question, optionally recording the spec file that now codifie
 
 ### 3.4a Inbox
 
-#### `airlock inbox [--role <role>] [--peek]`
-What changed for the role (default: the worktree binding's) since this session last looked: one line per task, question, or track, oldest first (Spec 01 §2.6), e.g. `E-15 ready — Wind gusts (critical, Navigation)` or `#34 answered (wind.md): Per watch (codified in docs/spec/wind.md)`; `Nothing new for <role>.` when empty. `--peek` shows without marking as read; `--json` prints `{ items: [...] }` as MCP `inbox` returns it. A locked worktree refuses `--role` for another role, as `start` does.
+#### `airlock inbox [--role <role>] [--peek | --wait [--timeout <secs>]]`
+What changed for the role (default: the worktree binding's) since this session last looked: one line per task, question, or track, oldest first (Spec 01 §2.6), e.g. `E-15 ready — Wind gusts (critical, Navigation)` or `#34 answered (wind.md): Per watch (codified in docs/spec/wind.md)`; `Nothing new for <role>.` when empty. `--peek` shows without marking as read; `--json` prints `{ items: [...] }` as MCP `inbox` returns it. A locked worktree refuses `--role` for another role, as `start` does. `--wait` blocks until the inbox holds something and then shows (and marks) it, or shows it empty after `--timeout` seconds (default 240); it reads the store again only when another connection committed, checked once a second, like the dashboard watcher. `--peek` and `--wait` exclude each other.
 
 ### 3.5 Servers and Export
 

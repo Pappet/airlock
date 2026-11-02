@@ -94,8 +94,14 @@ pub enum Command {
         #[arg(long, env = "AIRLOCK_ROLE")]
         role: Option<String>,
         /// Show without marking as read
-        #[arg(long)]
+        #[arg(long, conflicts_with = "wait")]
         peek: bool,
+        /// Wait until something arrives (or the timeout passes), then show it
+        #[arg(long)]
+        wait: bool,
+        /// Seconds to wait at most with --wait
+        #[arg(long, default_value_t = 240, requires = "wait")]
+        timeout: u64,
     },
     /// Check the installation, worktrees, bindings, and harness configurations
     Doctor,

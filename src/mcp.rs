@@ -27,6 +27,7 @@ const CLEAN_ROOM_TOOLS: &[&str] = &[
     "session_start",
     "task_next",
     "inbox",
+    "inbox_wait",
     "task_get",
     "task_claim",
     "task_heartbeat",
@@ -35,6 +36,11 @@ const CLEAN_ROOM_TOOLS: &[&str] = &[
     "question_ask",
     "question_list",
 ];
+
+/// `inbox_wait` waits this long by default, and at most `INBOX_WAIT_MAX_SECS`:
+/// below DSH's 300-second tool-call timeout (`airlock setup dsh`).
+const INBOX_WAIT_DEFAULT_SECS: u32 = 240;
+const INBOX_WAIT_MAX_SECS: u32 = 280;
 
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -291,7 +297,8 @@ impl Server {
         }
         // The inbox is logged by how many items it held, never by what they say.
         let target = match (name, &result) {
-            ("inbox", Ok(result)) if error.is_none() => result["structuredContent"]["items"]
+            ("inbox" | "inbox_wait", Ok(result)) if error.is_none() => result["structuredContent"]
+                ["items"]
                 .as_array()
                 .map(|items| items.len().to_string()),
             _ => target,
@@ -393,6 +400,28 @@ impl Server {
                 let inbox = self
                     .store
                     .inbox(&self.session, &role, coordinating, peek, now)?;
+                Ok(serde_json::to_value(inbox)?)
+            }
+            "inbox_wait" => {
+                let role = self.role_arg(args)?;
+                let secs = opt_u32(args, "timeout_secs")?.unwrap_or(INBOX_WAIT_DEFAULT_SECS);
+                ensure!(
+                    (1..=INBOX_WAIT_MAX_SECS).contains(&secs),
+                    "timeout_secs must be 1 to {INBOX_WAIT_MAX_SECS}, below the clients' tool-call timeouts"
+                );
+                let coordinating = !self
+                    .project
+                    .config
+                    .roles
+                    .get(&role)
+                    .is_some_and(|r| r.clean_room);
+                let inbox = crate::app::wait_inbox(
+                    &mut self.store,
+                    &self.session,
+                    &role,
+                    coordinating,
+                    Duration::from_secs(u64::from(secs)),
+                )?;
                 Ok(serde_json::to_value(inbox)?)
             }
             "task_get" => {
@@ -705,6 +734,15 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
             json!({
                 "role": { "type": "string", "description": "Role to read for; fixed when the server is role-bound" },
                 "peek": { "type": "boolean", "description": "Show without marking as read" }
+            }),
+            role_required,
+        ),
+        tool(
+            "inbox_wait",
+            "Wait until something arrives for your role (a ready task, an answer, …), then return it like inbox; an empty inbox after timeout_secs. Use it instead of ending your turn only when your instructions say you run unattended.",
+            json!({
+                "role": { "type": "string", "description": "Role to wait for; fixed when the server is role-bound" },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 280, "description": "Seconds to wait at most (default 240)" }
             }),
             role_required,
         ),

@@ -61,7 +61,7 @@ Goal: sessions learn what changed for their role at the boundary between two tas
 - [x] WO-2: `task_complete` returns the inbox and the next package; `task_claim` warns about more important ready tasks and a second lease.
 - [x] WO-3: opt-in Claude Code Stop hook (`setup claude-hooks --auto-continue`) that sends a session back to work when its inbox has news.
 - [x] Follow-ups from the first OpenSHR run: a session never sees its own changes in its inbox; `task_done` with the completion notes reaches the coordinating roles; `task hold` / `task resume` (MCP `task_hold` / `task_resume`) for tasks that wait for something outside Airlock.
-- [ ] WO-4: `inbox_wait` for sessions that run unattended.
+- [x] WO-4: `inbox_wait` for sessions that run unattended.
 - [ ] WO-5: validation on OpenSHR (Scenario I) and documentation.
 
 ---

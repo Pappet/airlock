@@ -52,6 +52,7 @@ const READ_COMMANDS: &[&str] = &[
     "session_start",
     "prompt start",
     "inbox",
+    "inbox_wait",
     "hook stop",
     "task_next",
     "task_get",
@@ -627,9 +628,12 @@ pub fn summarize_cli(command: &Command) -> (Option<String>, Vec<String>) {
             None
         }
         // The target, the number of items read, is set from the outcome.
-        Command::Inbox { role, peek } => {
+        Command::Inbox {
+            role, peek, wait, ..
+        } => {
             changed.opt("role", role);
             changed.flag("peek", *peek);
+            changed.flag("wait", *wait);
             None
         }
         Command::Role(sub) => match sub {

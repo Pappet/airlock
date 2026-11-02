@@ -220,7 +220,12 @@ pub fn run(cli: Cli) -> Result<()> {
                 };
                 out.print(&brief, || brief.markdown(via))
             }
-            Command::Inbox { role, peek } => {
+            Command::Inbox {
+                role,
+                peek,
+                wait,
+                timeout,
+            } => {
                 let role = match (role, &project.binding) {
                     (Some(role), Some(b)) if b.locked && role != b.role => bail!(
                         "this worktree is locked to role `{}`; `--role {role}` is refused",
@@ -240,7 +245,17 @@ pub fn run(cli: Cli) -> Result<()> {
                     .roles
                     .get(&role)
                     .is_some_and(|r| r.clean_room);
-                let inbox = store.inbox(&session, &role, coordinating, peek, now)?;
+                let inbox = if wait {
+                    wait_inbox(
+                        &mut store,
+                        &session,
+                        &role,
+                        coordinating,
+                        std::time::Duration::from_secs(timeout),
+                    )?
+                } else {
+                    store.inbox(&session, &role, coordinating, peek, now)?
+                };
                 inbox_count = Some(inbox.items.len());
                 out.print(&inbox, || inbox_text(&role, &inbox))
             }
@@ -1647,6 +1662,35 @@ pub(crate) fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     i64::try_from(secs).unwrap_or(i64::MAX)
+}
+
+/// Reads the inbox as soon as it holds something, or returns it empty once
+/// `timeout` has passed (Spec 01 §2.6). The store is read again only when
+/// another connection committed (`PRAGMA data_version`), checked once a second.
+pub(crate) fn wait_inbox(
+    store: &mut Store,
+    session: &str,
+    role: &str,
+    coordinating: bool,
+    timeout: std::time::Duration,
+) -> Result<Inbox> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut seen = None;
+    loop {
+        let version = store.data_version()?;
+        if seen != Some(version) {
+            seen = Some(version);
+            let inbox = store.inbox(session, role, coordinating, false, unix_now())?;
+            if !inbox.items.is_empty() {
+                return Ok(inbox);
+            }
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Ok(Inbox::default());
+        }
+        std::thread::sleep(left.min(std::time::Duration::from_secs(1)));
+    }
 }
 
 /// The inbox as text: one line per item, oldest first.

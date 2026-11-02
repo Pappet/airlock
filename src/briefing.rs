@@ -365,6 +365,11 @@ impl Briefing {
         );
         let _ = writeln!(
             out,
+            "- When nothing is ready for you and you wait for no answer, call {} instead of ending your turn — but only if your instructions say you run unattended.",
+            cmd("inbox_wait", "airlock inbox --wait")
+        );
+        let _ = writeln!(
+            out,
             "- {} before you go on: a more important task or an answer may have arrived.",
             match via {
                 Via::Mcp => "Read the `inbox` part of every `task_complete` result",

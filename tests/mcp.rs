@@ -274,7 +274,7 @@ fn unbound_session_runs_the_full_workflow() {
             ),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 21);
+    assert_eq!(s.tool_names(1).len(), 22);
     let own_id = s.tool_error(15);
     assert!(own_id.contains("ids are assigned by Airlock"), "{own_id}");
     let numeric = s.tool_error(16);
@@ -566,6 +566,7 @@ fn clean_room_session_gets_a_restricted_tool_set() {
             "session_start",
             "task_next",
             "inbox",
+            "inbox_wait",
             "task_get",
             "task_claim",
             "task_heartbeat",
@@ -618,7 +619,7 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
             call(5, "task_claim", json!({ "task_id": "L-1" })),
         ],
     );
-    assert_eq!(s.tool_names(1).len(), 21);
+    assert_eq!(s.tool_names(1).len(), 22);
     assert_eq!(
         s.ok(2)["role"],
         "engine",
@@ -1278,4 +1279,53 @@ fn the_lead_holds_and_resumes_engine_work() {
         .collect();
     assert_eq!(ids, ["E-1"], "resumed after the engine's briefing");
     assert_eq!(s.ok(2)["task"]["id"], "E-1");
+}
+
+#[test]
+fn inbox_wait_returns_when_a_task_becomes_ready() {
+    let env = Env::new();
+    let engine = ["--role", "engine", "--session", "engine-1"];
+    env.session(&engine, &[call(1, "session_start", json!({}))]);
+    // Another process creates a task for the engine two seconds into the wait.
+    let creator = {
+        let mut cmd = env.command(
+            &env.project,
+            &[
+                "task", "add", "Late", "--role", "engine", "--do", "x", "--verify", "y",
+            ],
+        );
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            assert!(cmd.output().unwrap().status.success());
+        })
+    };
+    let started = std::time::Instant::now();
+    let s = env.session(
+        &engine,
+        &[call(1, "inbox_wait", json!({ "timeout_secs": 30 }))],
+    );
+    let waited = started.elapsed();
+    creator.join().unwrap();
+    assert!(waited < std::time::Duration::from_secs(10), "{waited:?}");
+    assert_eq!(s.ok(1)["items"][0]["kind"], "task_ready");
+    assert_eq!(s.ok(1)["items"][0]["task"]["id"], "E-2");
+}
+
+#[test]
+fn inbox_wait_times_out_empty() {
+    let env = Env::new();
+    let engine = ["--role", "engine", "--session", "engine-1"];
+    let started = std::time::Instant::now();
+    let s = env.session(
+        &engine,
+        &[
+            call(1, "inbox_wait", json!({ "timeout_secs": 1 })),
+            call(2, "inbox_wait", json!({ "timeout_secs": 281 })),
+            call(3, "inbox_wait", json!({ "timeout_secs": 0 })),
+        ],
+    );
+    assert_eq!(s.ok(1)["items"], json!([]));
+    assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+    assert!(s.tool_error(2).contains("1 to 280"));
+    assert!(s.tool_error(3).contains("1 to 280"));
 }
