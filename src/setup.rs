@@ -102,11 +102,7 @@ pub(crate) fn run(
             (local_args, serde_json::to_string_pretty(&mcp_json)?, hint)
         }
         Harness::ClaudeHooks => {
-            let command = std::iter::once(&bin)
-                .chain(&hook_args)
-                .map(|a| shell_quote(a))
-                .collect::<Vec<_>>()
-                .join(" ");
+            let command = hook_command(&bin, &hook_args);
             let mut settings = json!({
                 "hooks": {
                     "SessionStart": [{
@@ -122,11 +118,10 @@ pub(crate) fn run(
                  and adds the briefing to the model's context."
             );
             if auto_continue {
-                let stop = [bin.as_str(), "-C", root.as_str(), "hook", "stop"]
-                    .iter()
-                    .map(|a| shell_quote(a))
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let stop = hook_command(
+                    &bin,
+                    &["-C".into(), root.clone(), "hook".into(), "stop".into()],
+                );
                 settings["hooks"]["Stop"] =
                     json!([{ "hooks": [{ "type": "command", "command": stop, "timeout": 15 }] }]);
                 hint.push_str(
@@ -174,6 +169,34 @@ pub(crate) fn run(
         &json!({ "role": role, "session": session, "root": root, "command": bin, "args": args, "hint": hint }),
         || text,
     )
+}
+
+/// What Claude Code expands to the directory a session was started in. Claude Code also runs
+/// the hooks in the main checkout's `.claude/settings.local.json` in sessions of its linked
+/// worktrees, so a hook names its worktree through this variable, never by path: copied
+/// into another worktree's session it then serves that worktree (and Claude Code runs
+/// identical commands once).
+pub(crate) const PROJECT_DIR_VAR: &str = "\"$CLAUDE_PROJECT_DIR\"";
+
+/// A Claude Code hook command line: `bin` and `args` shell-quoted, except that the value of
+/// `-C` becomes [`PROJECT_DIR_VAR`].
+fn hook_command(bin: &str, args: &[String]) -> String {
+    let mut words = vec![shell_quote(bin)];
+    let mut after_c = false;
+    for arg in args {
+        words.push(if after_c {
+            PROJECT_DIR_VAR.to_string()
+        } else {
+            shell_quote(arg)
+        });
+        after_c = arg == "-C";
+    }
+    words.join(" ")
+}
+
+/// Whether a `-C` value read back from a hook command names the session's own directory.
+pub(crate) fn is_project_dir_var(word: &str) -> bool {
+    matches!(word, "$CLAUDE_PROJECT_DIR" | "${CLAUDE_PROJECT_DIR}")
 }
 
 /// A word for a POSIX shell command line: unchanged when it holds only safe characters,

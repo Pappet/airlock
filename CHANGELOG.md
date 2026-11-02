@@ -28,6 +28,14 @@ role at the boundary between two tasks and when their turn ends.
 ### Changed
 - A session's inbox skips the changes it made itself (store schema 8).
 
+### Fixed
+- `setup claude-hooks` names the worktree with `-C "$CLAUDE_PROJECT_DIR"`
+  instead of a path. Claude Code also runs the main checkout's local hooks in
+  sessions of linked worktrees, so a clean-room engine session received the
+  main checkout's briefing and would have been nudged for its inbox.
+  `airlock doctor` reports such inherited hooks; re-run `setup claude-hooks`
+  where hooks were installed before.
+
 ## [0.1.0] - 2026-11-01
 
 First release: the hub store, the CLI, the MCP server, onboarding, the

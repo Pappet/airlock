@@ -890,7 +890,10 @@ fn setup_prints_claude_hooks() {
         command.ends_with(" start --hints mcp"),
         "role and session come from the binding; the briefing names MCP tools: {command}"
     );
-    assert!(command.contains(" -C "), "{command}");
+    assert!(
+        command.contains(r#" -C "$CLAUDE_PROJECT_DIR" "#),
+        "the worktree is named through Claude Code's variable: {command}"
+    );
     assert!(!command.contains("--role"), "{command}");
 
     let json = env.json(&env.engine, &["setup", "claude-hooks"]);
@@ -926,8 +929,8 @@ fn claude_hooks_run_from_paths_with_spaces() {
         serde_json::from_str(&env.ok(&spaced, &["setup", "claude-hooks"])).unwrap();
     let command = hook_command(&settings);
     assert!(
-        command.contains("'"),
-        "a path with a space is quoted: {command}"
+        command.contains(r#""$CLAUDE_PROJECT_DIR""#),
+        "the variable is double-quoted, so a path with a space stays one word: {command}"
     );
 
     // The hook runs through a shell from another directory and still briefs this worktree.
@@ -937,6 +940,7 @@ fn claude_hooks_run_from_paths_with_spaces() {
             .arg("-c")
             .arg(&command)
             .current_dir(env.tmp.path())
+            .env("CLAUDE_PROJECT_DIR", &spaced)
             .env("AIRLOCK_HOME", &env.hub)
             .env_remove("AIRLOCK_SESSION")
             .env_remove("AIRLOCK_PROJECT")
@@ -951,6 +955,81 @@ fn claude_hooks_run_from_paths_with_spaces() {
         );
         assert!(text.contains("engine"), "{text}");
     }
+}
+
+#[test]
+fn hooks_of_the_main_checkout_serve_a_linked_worktree_as_itself() {
+    // Claude Code runs the hooks in the main checkout's settings.local.json in the
+    // sessions of its linked worktrees too.
+    let env = Env::new();
+    env.ok(&env.main, &["use", "spec"]);
+    env.ok(&env.engine, &["use", "engine", "--lock"]);
+    let settings: Value =
+        serde_json::from_str(&env.ok(&env.main, &["setup", "claude-hooks", "--auto-continue"]))
+            .unwrap();
+    let dir = env.main.join(".claude");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("settings.local.json"), settings.to_string()).unwrap();
+
+    // Run in an engine session, the main checkout's SessionStart hook briefs the engine.
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(hook_command(&settings))
+            .current_dir(&env.engine)
+            .env("CLAUDE_PROJECT_DIR", &env.engine)
+            .env("AIRLOCK_HOME", &env.hub)
+            .env_remove("AIRLOCK_SESSION")
+            .env_remove("AIRLOCK_PROJECT")
+            .env_remove("AIRLOCK_ROLE")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("role **engine**"), "{text}");
+        assert!(!text.contains("role **spec**"), "{text}");
+    }
+    let doctor = env.ok(&env.engine, &["doctor"]);
+    assert!(!doctor.contains("also runs the hooks"), "{doctor}");
+
+    // A hook with a fixed -C, as written before, is flagged for the clean-room worktree.
+    let main = std::fs::canonicalize(&env.main).unwrap();
+    let mut fixed = settings.clone();
+    for event in ["SessionStart", "Stop"] {
+        let command = &mut fixed["hooks"][event][0]["hooks"][0]["command"];
+        let quoted = format!("'{}'", main.to_string_lossy());
+        *command = json!(
+            command
+                .as_str()
+                .unwrap()
+                .replace(r#""$CLAUDE_PROJECT_DIR""#, &quoted)
+        );
+    }
+    assert_ne!(fixed, settings);
+    std::fs::write(dir.join("settings.local.json"), fixed.to_string()).unwrap();
+    let out = env.run(&env.engine, &["doctor", "--json"]);
+    let findings: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let inherited: Vec<&Value> = findings
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| {
+            f["message"]
+                .as_str()
+                .unwrap()
+                .contains("also runs the hooks")
+        })
+        .collect();
+    assert_eq!(inherited.len(), 1, "{findings}");
+    assert_eq!(inherited[0]["level"], "error", "the engine is clean-room");
+    assert!(
+        inherited[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&*env.engine.file_name().unwrap().to_string_lossy()),
+        "{}",
+        inherited[0]
+    );
 }
 
 #[test]
