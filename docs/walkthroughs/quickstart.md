@@ -1,15 +1,16 @@
 # Quickstart Guide: Airlock
 
-This walkthrough sets up Airlock in a project and runs through the daily workflow.
+This walkthrough sets up Airlock in a project and runs through the daily workflow, one command at a time. For the ideas behind it see [Concepts](../user-guide/concepts.md); for a complete setup with AI agents see the walkthroughs for a [clean-room project with Claude Code](clean-room-with-claude-code.md) and for [several agents on one codebase](parallel-agents.md).
 
 ---
 
 ## 1. Installation
 
+Download the archive for Linux, macOS, or Windows from the [latest release](https://github.com/Pappet/airlock/releases/latest), check it against its `.sha256` file, and put `airlock` on your `PATH`. Or build it with Rust 1.85 or later:
+
 ```bash
-git clone https://github.com/Pappet/airlock.git
-cd airlock
-cargo install --path .
+cargo install --locked --git https://github.com/Pappet/airlock
+airlock --version
 ```
 
 ---
@@ -107,7 +108,14 @@ airlock task heartbeat E-1 --notes "Window opens; next: event loop"   # progress
 airlock task done E-1 --notes "Window and event loop implemented; cargo test setup passes."
 ```
 
-Use `airlock task done E-1 --review` to hand the task to a human for approval (`airlock task approve` / `airlock task reject --notes ...`). If a session crashes, its lease expires and the task becomes claimable again.
+`airlock task done` prints what changed for the role since the session last looked (`Since your last look:`) and the next package (`Next:`); `airlock inbox` shows the same news at any time. Use `airlock task done E-1 --review` to hand the task over for approval (`airlock task approve` / `airlock task reject --notes ...`; the feedback becomes the task's notes). If a session crashes, its lease expires and the task becomes claimable again, with its progress note.
+
+A task that waits for something outside Airlock — data you still have to deliver, a decision — is put on hold instead of being lowered in priority:
+
+```bash
+airlock task hold E-3 --reason "waits for the tide data"   # task next passes it over
+airlock task resume E-3
+```
 
 ### Connecting an AI agent over MCP
 
@@ -116,15 +124,15 @@ Agents use Airlock's MCP tools directly. `airlock setup` prints the configuratio
 ```bash
 cd ../my-project-engine
 airlock setup claude > .mcp.json   # per worktree; not `claude mcp add --scope local` (applies to all worktrees)
-mkdir -p .claude && airlock setup claude-hooks > .claude/settings.local.json   # optional, for worktrees with one fixed role; merge by hand if the file exists
+mkdir -p .claude && airlock setup claude-hooks > .claude/settings.local.json   # optional; merge by hand if the file exists
 # add --auto-continue to let the session continue by itself when Airlock has news for it
 airlock setup antigravity   # entry for the global ~/.gemini/antigravity/mcp_config.json
 airlock setup dsh > ~/.dsh/airlock/my-project-engine.yml   # patch overlay; start: dsh web --patch … --port 0
 ```
 
-Per-directory harnesses (Claude Code) only need `airlock mcp` — role and session come from the binding. In a shared checkout, a harness that works as the *other* role (e.g. lead in a checkout bound to spec) passes `--role` and its own `--session` in its configuration; give every harness its own session id. Global configurations carry the worktree with `-C <dir>`. For a clean-room role the agent only sees the tools it needs and only its own role's tasks and questions (Spec 03 §2.1).
+Per-directory harnesses (Claude Code) only need `airlock mcp` — role and session come from the binding. In a shared checkout, a harness that works as the *other* role (e.g. spec in a checkout bound to lead) is started with its identity in the environment — `AIRLOCK_SESSION=spec-1 AIRLOCK_ROLE=spec claude` — which the MCP server, the CLI, and the hooks all read; give every harness its own session id. Global configurations carry the worktree with `-C <dir>`. For a clean-room role the agent only sees the tools it needs and only its own role's tasks and questions (Spec 03 §2.1).
 
-The agent's first action is the briefing: the MCP tool `session_start`, the MCP prompt `start` (in Claude Code: `/mcp__airlock__start`), or `airlock start`. With the hook from `airlock setup claude-hooks`, Claude Code runs `airlock start` itself whenever a session starts, resumes, is cleared, or is compacted, and hands the briefing to the model — so after a compaction the agent still knows its role, rules, and claimed task. The settings file is local to the worktree and not committed; if `.claude/settings.local.json` already exists, merge the printed `hooks` key into it instead of overwriting it. With `--auto-continue`, Claude Code also asks Airlock whenever the session ends its turn: if there is news for the role the session was not told about yet — an answer, a new or more important task, for the lead a new question — the session continues instead of waiting for you, once per news and at most ten times an hour.
+The agent's first action is the briefing: the MCP tool `session_start`, the MCP prompt `start` (in Claude Code: `/mcp__airlock__start`), or `airlock start`. With the hook from `airlock setup claude-hooks`, Claude Code runs `airlock start` itself whenever a session starts, resumes, is cleared, or is compacted, and hands the briefing to the model — so after a compaction the agent still knows its role, rules, and claimed task. The settings file is local to the worktree and not committed; if `.claude/settings.local.json` already exists, merge the printed `hooks` key into it instead of overwriting it. The hooks name the worktree as `"$CLAUDE_PROJECT_DIR"`: Claude Code also runs the main checkout's local hooks in sessions of linked worktrees, and this way each copy serves the worktree it runs in. With `--auto-continue`, Claude Code also asks Airlock whenever the session ends its turn: if there is news for the role the session was not told about yet — an answer, a new or more important task, for the lead a new question — the session continues instead of waiting for you, once per news and at most ten times an hour. A session that has already stopped is not woken; one that should react to others without you (typically the lead) waits with `inbox_wait` instead of stopping — see [Let the sessions run on their own](clean-room-with-claude-code.md#7-let-the-sessions-run-on-their-own).
 
 ### Instructing agents
 
@@ -163,7 +171,10 @@ Work is coordinated through Airlock; this checkout is bound to your role and ses
   (`task_release` / `airlock task release <id>`) and explain why in a question.
 - **Ask instead of guessing:** if a specification is unclear or incomplete, ask
   with `question_ask` (`airlock question ask "…" --topic <spec>`). Answers to your
-  questions appear in the next briefing.
+  questions arrive with your next `task_complete`, in your inbox, and in the next briefing.
+- **Nothing is copied between sessions:** answers, tasks, and review feedback arrive
+  through Airlock. If you need something from the lead, say it in your completion notes
+  or ask a question.
 - **Do not change the setup:** never run `airlock use`, `airlock init`, or
   `airlock import`, and never edit `.airlock` or `airlock.toml`.
 - **Generated files are read-only:** `docs/PLAN.md`, `docs/spec/QUESTIONS.md`, and
@@ -182,13 +193,15 @@ When an implementation session hits an ambiguous spec:
 airlock question ask "Is the front arc angle rounded up or truncated?" --topic melee.md
 ```
 
-The lead session or a human answers, then resolves the question once the spec is updated:
+The lead session or a human answers — naming the spec the answer was written into — and resolves the question once the asker has it:
 
 ```bash
 airlock question list --status open
-airlock question answer 1 "Truncated towards zero, as in section 3.2."
-airlock question resolve 1 --spec docs/spec/melee.md
+airlock question answer 1 "Truncated towards zero, as in section 3.2." --spec docs/spec/melee.md
+airlock question resolve 1
 ```
+
+The answer reaches the asking session through its inbox and next briefing. A wrong answer is corrected by answering again, also after resolving; the earlier answer is kept.
 
 ---
 
@@ -221,3 +234,5 @@ Open the printed `http://127.0.0.1:3000/#token=…` URL (the Board is the defaul
 - **Activity** — what needs attention (failed calls, clean-room sessions writing through the CLI, bursts of errors, corrected answers, `airlock mcp` processes older than the installed build), who works on what, and a logbook of every MCP, CLI, and REST call by day. The log keeps metadata only (no task bodies, notes, or question and answer text) for 30 days. In the terminal, `airlock activity` prints the logbook (times in UTC) and `airlock activity --problems` the list of problems.
 
 Tasks without `--touch` show "no touch data": list the files a task changes so overlaps become visible. A directory works too (`--touch src/render/`): it overlaps every listed file beneath it.
+
+When something does not work as described, see [Troubleshooting](../user-guide/troubleshooting.md).

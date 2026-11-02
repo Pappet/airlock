@@ -6,6 +6,11 @@ All notable changes to Airlock are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- User guide (`docs/user-guide/`: where to start, concepts, troubleshooting)
+  and walkthroughs for a clean-room project with Claude Code and for several
+  agents on one codebase; the quickstart covers 0.2.
+
 ### Changed
 - `airlock mcp` reads its role from `AIRLOCK_ROLE` like `start`, `inbox`, and
   the Claude Code hooks, so a harness started with `AIRLOCK_SESSION` and
