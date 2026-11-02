@@ -34,8 +34,12 @@ role at the boundary between two tasks and when their turn ends.
   instead of a path. Claude Code also runs the main checkout's local hooks in
   sessions of linked worktrees, so a clean-room engine session received the
   main checkout's briefing and would have been nudged for its inbox.
-  `airlock doctor` reports such inherited hooks; re-run `setup claude-hooks`
+  `airlock doctor` reports such inherited hooks (from the main checkout's
+  `settings.local.json` and `settings.json`); re-run `setup claude-hooks`
   where hooks were installed before.
+- The Markdown briefing stays under 8 KB, so Claude Code's SessionStart hook
+  puts it into context instead of a file: when it would be larger, new
+  answers are listed by reference with the command to read them.
 
 ## [0.1.0] - 2026-11-01
 

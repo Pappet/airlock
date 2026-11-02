@@ -414,6 +414,60 @@ fn start_briefs_claims_next_work_and_answers() {
 }
 
 #[test]
+fn a_briefing_too_big_for_the_hook_lists_new_answers_by_reference() {
+    let env = Env::new();
+    env.add_engine_task("E-1");
+    env.ok(&env.engine, &["use", "engine"]);
+    env.ok(
+        &env.engine,
+        &["question", "ask", "Arc width?", "--topic", "melee.md"],
+    );
+    env.ok(
+        &env.engine,
+        &["question", "ask", "Reach?", "--topic", "melee.md"],
+    );
+    let long = "x".repeat(9000);
+    env.ok(
+        &env.main,
+        &[
+            "question",
+            "answer",
+            "1",
+            &long,
+            "--spec",
+            "docs/spec/melee.md",
+        ],
+    );
+    env.ok(&env.main, &["question", "answer", "2", "SHORT-ANSWER"]);
+
+    let text = env.ok(&env.engine, &["start", "--hints", "mcp"]);
+    assert!(text.len() <= 8 * 1024, "{} bytes", text.len());
+    assert!(
+        !text.contains(&long) && !text.contains("SHORT-ANSWER"),
+        "{text}"
+    );
+    assert!(
+        text.contains("New answers, too long to show here: read each with `question_list`")
+            && text.contains("- **#1 (melee.md)** — codified in `docs/spec/melee.md`")
+            && text.contains("- **#2 (melee.md)**"),
+        "{text}"
+    );
+    assert!(
+        text.contains("## Next work package"),
+        "the work package stays"
+    );
+    let brief = env.json(&env.engine, &["start"]);
+    assert!(
+        brief["answered_questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|q| q["answer"] == long.as_str()),
+        "the structured form keeps everything"
+    );
+}
+
+#[test]
 fn answers_already_shown_are_one_line_and_hints_can_name_mcp_tools() {
     let env = Env::new();
     env.add_engine_task("E-1");
@@ -1022,6 +1076,16 @@ fn hooks_of_the_main_checkout_serve_a_linked_worktree_as_itself() {
         .collect();
     assert_eq!(inherited.len(), 1, "{findings}");
     assert_eq!(inherited[0]["level"], "error", "the engine is clean-room");
+
+    // The same hooks in the main checkout's committed settings.json are reported too.
+    std::fs::remove_file(dir.join("settings.local.json")).unwrap();
+    std::fs::write(dir.join("settings.json"), fixed.to_string()).unwrap();
+    let doctor = env.run(&env.engine, &["doctor"]);
+    let text = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        text.contains("also runs the hooks") && text.contains("settings.json here"),
+        "{text}"
+    );
     assert!(
         inherited[0]["message"]
             .as_str()
