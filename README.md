@@ -120,7 +120,7 @@ airlock sync                                  # export snapshot and views for gi
 airlock serve                                 # the dashboard on 127.0.0.1
 ```
 
-Full tour: [Quickstart walkthrough](docs/walkthroughs/quickstart.md).
+Full tour: [Quickstart walkthrough](docs/walkthroughs/quickstart.md) · all docs: [User guide](docs/user-guide/README.md).
 
 ## Features
 
@@ -144,8 +144,9 @@ Phases 1–4, 3c and 3d are done: store, CLI, sync/import, MCP server, onboardin
 
 ## Documentation
 
+- [User guide](docs/user-guide/README.md) — where to start, [concepts](docs/user-guide/concepts.md), [troubleshooting](docs/user-guide/troubleshooting.md)
+- Walkthroughs: [quickstart](docs/walkthroughs/quickstart.md), [a clean-room project with Claude Code](docs/walkthroughs/clean-room-with-claude-code.md), [several agents on one codebase](docs/walkthroughs/parallel-agents.md)
 - [Specs](docs/spec/README.md) — architecture and data model, CLI, MCP protocol, dashboard and REST API, git sync and the airlock boundary, onboarding
-- [Quickstart walkthrough](docs/walkthroughs/quickstart.md)
 - [Project overview for contributors](PROJECT_OVERVIEW.md)
 
 ## Development

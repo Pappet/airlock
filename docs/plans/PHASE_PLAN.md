@@ -82,4 +82,4 @@ Goal: sessions learn what changed for their role at the boundary between two tas
 ## Phase 5: Polish & Packaging
 - [x] Global installation (`cargo install --path .`) and release builds (v0.1.0, five targets, `.github/workflows/release.yml`).
 - [x] Role templates for `airlock init --template` — done in Phase 3b (`single`, `clean-room`, `parallel`); more templates as needed.
-- [ ] User documentation and walkthroughs.
+- [x] User documentation and walkthroughs: [user guide](../user-guide/README.md) (concepts, troubleshooting), walkthroughs for a [clean-room project with Claude Code](../walkthroughs/clean-room-with-claude-code.md) and [several agents](../walkthroughs/parallel-agents.md), refreshed quickstart.

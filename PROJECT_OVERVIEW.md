@@ -136,7 +136,9 @@ graph TD
 - [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md): Work orders for Phase 3c (session continuity) and follow-ups.
 - [`docs/plans/AGENT_HANDOFF.md`](docs/plans/AGENT_HANDOFF.md): Work orders for Phase 3d (handoff between sessions).
 - [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md): Milestones.
-- [`docs/walkthroughs/quickstart.md`](docs/walkthroughs/quickstart.md): User walkthrough.
+- [`docs/user-guide/`](docs/user-guide/README.md): User guide — where to start, concepts, troubleshooting.
+- [`docs/walkthroughs/quickstart.md`](docs/walkthroughs/quickstart.md): User walkthrough, one command at a time.
+- [`docs/walkthroughs/clean-room-with-claude-code.md`](docs/walkthroughs/clean-room-with-claude-code.md), [`parallel-agents.md`](docs/walkthroughs/parallel-agents.md): End-to-end setups with agents.
 - [`docs/walkthroughs/agent-validation.md`](docs/walkthroughs/agent-validation.md): Validation of the onboarding flow with real agent harnesses on OpenSHR (scenarios, runs, resulting changes).
 
 ---
