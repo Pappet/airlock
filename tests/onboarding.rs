@@ -1327,9 +1327,16 @@ fn a_correction_in_the_second_of_the_previous_briefing_is_shown() {
 
 /// Runs `airlock hook stop` in `dir` as Claude Code does: hook JSON on stdin.
 fn stop_hook(env: &Env, dir: &Path) -> (bool, String) {
+    stop_hook_with(env, dir, &[])
+}
+
+/// `stop_hook` for a Claude Code started with `vars` in its environment.
+fn stop_hook_with(env: &Env, dir: &Path, vars: &[(&str, &str)]) -> (bool, String) {
     use std::io::Write;
     let mut child = env
         .cmd(dir, &["hook", "stop"])
+        .env_remove("AIRLOCK_ROLE")
+        .envs(vars.iter().copied())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1463,6 +1470,47 @@ fn stop_hook_continues_once_per_news() {
     // A broken hub never traps a session: silence, exit 0.
     std::fs::write(env.engine.join(".airlock"), "not json").unwrap();
     assert_eq!(stop_hook(&env, &env.engine), (true, String::new()));
+}
+
+#[test]
+fn stop_hook_reads_the_session_from_the_environment() {
+    let env = Env::new();
+    // A shared checkout bound to spec, where a lead session also runs; its
+    // Claude Code was started with AIRLOCK_SESSION and AIRLOCK_ROLE.
+    env.ok(&env.main, &["use", "spec"]);
+    env.ok(&env.engine, &["use", "engine", "--lock"]);
+    let lead = [("AIRLOCK_SESSION", "lead-1"), ("AIRLOCK_ROLE", "lead")];
+    for dir in [&env.main, &env.engine] {
+        env.ok(dir, &["start"]);
+    }
+    let out = env.cmd(&env.main, &["start"]).envs(lead).output().unwrap();
+    assert!(out.status.success());
+
+    env.ok(
+        &env.engine,
+        &["question", "ask", "Arc?", "--topic", "melee.md"],
+    );
+    let (_, out) = stop_hook_with(&env, &env.main, &lead);
+    assert!(out.contains("1 new for lead"), "{out}");
+    // The binding's session has its own cursor and its own nudge.
+    let (_, out) = stop_hook(&env, &env.main);
+    assert!(out.contains("1 new for spec"), "{out}");
+    assert_eq!(
+        stop_hook_with(&env, &env.main, &lead),
+        (true, String::new())
+    );
+
+    // A locked worktree keeps its role, but a second session of it has its own inbox.
+    let second = [("AIRLOCK_SESSION", "engine-2"), ("AIRLOCK_ROLE", "lead")];
+    let out = env
+        .cmd(&env.engine, &["start"])
+        .env("AIRLOCK_SESSION", "engine-2")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    env.ok(&env.main, &["question", "answer", "1", "Front 90°"]);
+    let (_, out) = stop_hook_with(&env, &env.engine, &second);
+    assert!(out.contains("1 new for engine"), "{out}");
 }
 
 #[test]

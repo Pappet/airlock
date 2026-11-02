@@ -172,7 +172,7 @@ Replaces the project's tasks, tracks, questions, and roles with a snapshot (defa
 | `airlock role list` / `role set <name> …` / `role remove <name>` | Manage roles, their instructions, and their reading list |
 | `airlock doctor` | Check binary, project, worktrees, bindings, and harness configurations; exits `1` on errors |
 | `airlock setup <claude\|claude-hooks\|antigravity\|dsh> [--role <role>] [--auto-continue]` | Print the MCP configuration of this worktree for a harness; `claude-hooks`: a Claude Code SessionStart hook that runs `airlock start --hints mcp`, with `--auto-continue` also a Stop hook (Spec 06 §6) |
-| `airlock hook stop` | Run by the Claude Code Stop hook: prints a block decision when the inbox has news the session was not yet nudged about; never fails, never prints an error (Spec 06 §6.1). Not listed in `--help`. |
+| `airlock hook stop [--role <role>]` | Run by the Claude Code Stop hook: prints a block decision when the inbox has news the session was not yet nudged about; session and role from `--session` / `AIRLOCK_SESSION` and `--role` / `AIRLOCK_ROLE`, else the binding's; never fails, never prints an error (Spec 06 §6.1). Not listed in `--help`. |
 
 ### 3.7 `airlock activity`
 

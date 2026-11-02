@@ -13,7 +13,7 @@
 - **Language:** Rust (edition 2024, MSRV 1.85)
 - **Interfaces:** CLI (`clap`), MCP server over stdio, local web dashboard (`axum`)
 - **Persistence:** one SQLite database (WAL) per project in the hub directory (`~/.local/state/airlock/projects/<uuid>/` on Linux, override with `AIRLOCK_HOME`), referenced from the repository by a `.airlock` marker file; next to it a second database, `activity.db`, for the activity log and the process registry
-- **Status:** Phases 1–4 implemented (hub store, CLI, sync and import, MCP server, onboarding, web dashboard), plus tracks, the activity log with answer corrections, and Phase 3c session continuity (SessionStart hook, progress notes, directory overlap). Open: the agent validation with Antigravity and DSH (Phase 3b). See [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md) and [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md)
+- **Status:** Phases 1–4 implemented (hub store, CLI, sync and import, MCP server, onboarding, web dashboard), plus tracks, the activity log with answer corrections, Phase 3c session continuity (SessionStart hook, progress notes, directory overlap), and Phase 3d handoff between sessions (events and inbox, next package on completion, Stop hook, task hold). Open: the agent validation with Antigravity and DSH (Phase 3b) and a validation run of the Stop hook. See [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md), [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md) and [`docs/plans/AGENT_HANDOFF.md`](docs/plans/AGENT_HANDOFF.md)
 - **License:** MIT
 
 ---
@@ -98,9 +98,10 @@ graph TD
 - [`src/layout.rs`](src/layout.rs): `airlock.toml` layout model and the init templates.
 - [`src/git.rs`](src/git.rs): Thin `git` wrappers for setup and checks (never used to locate state).
 - [`src/doctor.rs`](src/doctor.rs): `airlock doctor` — binary, project, marker, worktrees, bindings, harness configurations.
-- [`src/setup.rs`](src/setup.rs): `airlock setup` — MCP configuration snippets for Claude Code, Antigravity, and DSH, and the Claude Code SessionStart hook; shell quoting for hook commands.
+- [`src/setup.rs`](src/setup.rs): `airlock setup` — MCP configuration snippets for Claude Code, Antigravity, and DSH, and the Claude Code SessionStart and Stop hooks; shell quoting for hook commands.
+- [`src/hook.rs`](src/hook.rs): `airlock hook stop` — the Claude Code Stop hook: peeks at the session's inbox and sends it back to work on news, within the hourly limit; never fails.
 - [`src/hub.rs`](src/hub.rs): Hub directory, project registry (`project.json`), `.airlock` marker discovery and project resolution.
-- [`src/store.rs`](src/store.rs): SQLite store — schema and migrations, WAL setup, worktree bindings, immediate write transactions, lazy lease expiry, task and question transitions.
+- [`src/store.rs`](src/store.rs): SQLite store — schema and migrations, WAL setup, worktree bindings, immediate write transactions, lazy lease expiry, task and question transitions, task hold, events and per-session inbox cursors.
 - [`src/core.rs`](src/core.rs): Domain model — `Task`, `TaskState`, derived `TaskStatus`, leases, `Question`, dependency graph validation.
 - [`src/config.rs`](src/config.rs): Hub-side project configuration (`ProjectConfig`, `RoleConfig`, `ExportConfig`).
 - [`src/snapshot.rs`](src/snapshot.rs): Canonical JSON snapshot model, serializer, and graph validation.
@@ -133,6 +134,7 @@ graph TD
 - [`docs/spec/`](docs/spec/README.md): Specifications 01–06.
 - [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md): Implementation phases.
 - [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md): Work orders for Phase 3c (session continuity) and follow-ups.
+- [`docs/plans/AGENT_HANDOFF.md`](docs/plans/AGENT_HANDOFF.md): Work orders for Phase 3d (handoff between sessions).
 - [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md): Milestones.
 - [`docs/walkthroughs/quickstart.md`](docs/walkthroughs/quickstart.md): User walkthrough.
 - [`docs/walkthroughs/agent-validation.md`](docs/walkthroughs/agent-validation.md): Validation of the onboarding flow with real agent harnesses on OpenSHR (scenarios, runs, resulting changes).

@@ -55,14 +55,15 @@ Goal: a Claude Code session that runs out of context, crashes, or is compacted i
 - [x] WO-5: directory entries in `touch` lists count as overlap for the files beneath them.
 - [x] WO-6: documentation housekeeping (`PROJECT_OVERVIEW.md` dependencies and status, tool counts, phase markers).
 
-## Phase 3d: Handoff Between Sessions (planned)
+## Phase 3d: Handoff Between Sessions
 Goal: sessions learn what changed for their role at the boundary between two tasks and when their turn ends, so the human no longer copies output between lead and engine, and nothing but packages, answers, and review feedback crosses the airlock. Work orders in [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md).
 - [x] WO-1: events written with each change, a per-session inbox (`airlock inbox`, MCP `inbox`).
 - [x] WO-2: `task_complete` returns the inbox and the next package; `task_claim` warns about more important ready tasks and a second lease.
 - [x] WO-3: opt-in Claude Code Stop hook (`setup claude-hooks --auto-continue`) that sends a session back to work when its inbox has news.
 - [x] Follow-ups from the first OpenSHR run: a session never sees its own changes in its inbox; `task_done` with the completion notes reaches the coordinating roles; `task hold` / `task resume` (MCP `task_hold` / `task_resume`) for tasks that wait for something outside Airlock.
 - [x] WO-4: `inbox_wait` for sessions that run unattended.
-- [ ] WO-5: validation on OpenSHR (Scenario I) and documentation.
+- [x] WO-5 documentation; validation run 5 on OpenSHR covered the task boundary ([`agent-validation.md`](../walkthroughs/agent-validation.md)). The Stop hook reads `AIRLOCK_SESSION` / `AIRLOCK_ROLE`, so a lead session in a shared checkout can have it too.
+- [ ] WO-5 validation: a Stop-hook nudge chain on OpenSHR (engine asks and stops, lead nudged, answers, engine nudged).
 
 ---
 
@@ -79,6 +80,6 @@ Goal: sessions learn what changed for their role at the boundary between two tas
 ---
 
 ## Phase 5: Polish & Packaging
-- [ ] Global installation (`cargo install --path .`) and release builds.
+- [x] Global installation (`cargo install --path .`) and release builds (v0.1.0, five targets, `.github/workflows/release.yml`).
 - [x] Role templates for `airlock init --template` — done in Phase 3b (`single`, `clean-room`, `parallel`); more templates as needed.
 - [ ] User documentation and walkthroughs.

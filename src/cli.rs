@@ -42,7 +42,12 @@ pub struct Cli {
 pub enum HookEvent {
     /// Claude Code `Stop`: block the stop when the inbox has news (reads the
     /// hook JSON on stdin)
-    Stop,
+    Stop {
+        /// Role whose inbox to read [default: the worktree binding's]; with
+        /// `--session`, for a session in a shared checkout
+        #[arg(long, env = "AIRLOCK_ROLE")]
+        role: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -470,7 +475,7 @@ impl Command {
             Self::Inbox { .. } => "inbox",
             Self::Doctor => "doctor",
             Self::Setup { .. } => "setup",
-            Self::Hook(HookEvent::Stop) => "hook stop",
+            Self::Hook(HookEvent::Stop { .. }) => "hook stop",
             Self::Role(sub) => match sub {
                 RoleCommand::List => "role list",
                 RoleCommand::Set { .. } => "role set",

@@ -12,7 +12,7 @@ Runs 1 to 3 were reconstructed by reading the harnesses' transcripts by hand. La
 
 | | Scenario | Checks |
 |---|---|---|
-| A | Connection | server starts; first line of `session_start` shows the right role and session; tool count (9 clean-room, 18 otherwise) |
+| A | Connection | server starts; first line of `session_start` shows the right role and session; tool count (11 clean-room, 22 otherwise since Phase 3d) |
 | B | Work cycle | `session_start` → claim → heartbeat → complete with notes; dependents become ready; `review: true` → approve / reject, feedback in the next briefing |
 | C | Questions across the airlock | engine asks, spec answers with `spec_file` and resolves; answer appears in the engine's next briefing |
 | D | Restart | agent stopped mid-task and restarted: briefing names the held task and lease; work continues without a new claim |
@@ -20,6 +20,7 @@ Runs 1 to 3 were reconstructed by reading the harnesses' transcripts by hand. La
 | F | Guardrails | engine asks for a foreign task or `question_answer`: understandable refusal, sensible reaction |
 | G | Export | `doc_sync` writes `PLAN.md` / `QUESTIONS.md`; after merging into `engine`, `airlock sync` succeeds |
 | H | Agent behavior | calls `session_start` unprompted; heartbeats; useful notes; asks instead of guessing; understands Airlock errors |
+| I | Handoff between sessions | at a task boundary the engine takes the next package from `task_complete` and gets answers and new tasks in its inbox, without the human copying anything; with auto-continue the Stop hook sends a session that ends its turn with news back to work (Phase 3d) |
 
 ## Status
 
@@ -33,6 +34,7 @@ Runs 1 to 3 were reconstructed by reading the harnesses' transcripts by hand. La
 | F Guardrails | ✅ run 3: claim of a blocked task refused, agent checked prerequisites and moved on; ⚠ engine creates and edits tasks through the CLI | — | — |
 | G Export | ✅ run 3: `doc_sync` / `airlock sync` after each plan change, outputs committed | — | — |
 | H Behavior | ✅ runs 1–3: asked before changing bindings; `session_start` first in every session; ⚠ run 2: wrong instruction for completing `ready` tasks; ⚠ run 3: works around refusals instead of reporting them; ⚠ run 4: calls `session_start` again although the hook delivered the briefing, and did not refresh its progress note before `/compact` | — | — |
+| I Handoff | ✅ run 5: task boundary — `next` from `task_complete` claimed without `task_next`, the answer to #50 and a new package arrived in the `task_complete` inbox; ⚠ a Stop-hook nudge was not yet observed | — | — |
 
 ## Runs
 
@@ -132,3 +134,33 @@ Runs 1 to 3 were reconstructed by reading the harnesses' transcripts by hand. La
 
 **Lesson:** the hook plus the progress note make a crashed or compacted session pick up its task without help, as long as the briefing fits into context. The briefing's size is part of the hook's contract, so old answers must not pile up in it.
 
+
+### Run 5 — 2026-11-01 to 2026-11-02, Claude Code, main checkout (lead) and engine worktree (Scenario I)
+
+**Method:** an evening of normal work by the user, not a staged run. The engine worktree had the Stop hook from `airlock setup claude-hooks --auto-continue`; the main checkout had none, because it is rebound between lead and spec (Run 4, problem 3). The engine was restarted at 00:29:31 onto the build with WO-2 and WO-3 (PRs #36, #37). Evidence comes from `airlock activity --since`, the `events` table, and the inbox cursors. Times are CET.
+
+**Observed:**
+
+| Time | Session | Call | What happened |
+|---|---|---|---|
+| 00:22:14 | engine | `task_complete E-116` | Old build: the agent called `task_next` and `inbox` itself (00:22:20), as OpenSHR's instructions now say, and claimed E-117 (`high`) |
+| 00:26:33 | engine | `question_ask` (#50) | Event `question_asked` for the coordinating roles |
+| 00:29:31 | engine | `start` | Restart onto the WO-2/WO-3 build; the SessionStart hook delivered the briefing |
+| 00:29:51 | engine | `task_complete E-117` | The result named E-115 as `next`; claimed 7 s later without `task_next` |
+| 00:30:32 | engine | `task_complete E-115`, `task_claim E-118` | The same, 5 s apart; both `normal`, the older first |
+| 00:34:15 | lead | `inbox` → 1 | The lead read #50 when the user turned to it; no hook in the main checkout |
+| 00:37:41 | lead | `question_answer #50` with `spec_file` | |
+| 00:43:23 | engine | `question_ask` (#51) | Still open when this was written |
+| 00:43:31 | engine | `task_complete E-118` | The inbox in the result held the answer to #50 and the new package E-120 (cursor 10 → 17); the user copied nothing |
+
+**Not observed:** a Stop-hook nudge. When the engine ended its turn after E-118, its inbox held nothing new (its cursor was at the newest engine event, and #51 was its own), so the hook let it stop, as it should; turns without news are not logged. The lead has no hook, so the second half of Scenario I (lead nudged by a question, engine nudged by the answer) is still open. It could not have run as installed: the hook read the binding's session, and the main checkout was bound to `spec-1` while the lead ran as `lead-1` (problem 4).
+
+**Problems:**
+1. **The lead saw its own changes.** The inbox reads at 00:23:05 (3 items) and 00:41:28 (4 items) were mostly `task_ready` and `task_changed` events the lead had caused itself by creating and releasing tasks.
+2. **Follow-ups reached the lead only through the user.** The engine wrote in its completion notes which follow-up work it needed; the lead learned about it only when the user passed it on.
+3. **Waiting tasks parked as `low`.** Five lead tasks waited for trace captures from the user. The lead lowered their priority and changed their titles (00:38–00:43), with two refusals on the way: ``task `L-59` is in_progress; use --force to edit it anyway`` and ``task `L-60` is not claimed``. A `low` task is still handed out once nothing else is ready.
+4. **The Stop hook followed the binding only.** Like the SessionStart hook (Run 4, problem 3), `hook stop` read the session bound to the worktree. In OpenSHR's main checkout, bound to `spec` while the lead runs as `lead-1` from its own `.mcp.json`, a lead hook would have watched the spec session's inbox.
+
+**Changes in Airlock:** PR #38: events carry the session that caused them, and a session's inbox skips its own (problem 1); `task_done` with the completion notes goes to the coordinating roles (problem 2); `task hold` / `task resume` and MCP `task_hold` / `task_resume` (problem 3). PR #39 added `inbox_wait`, not used in this run. PR #40: `hook stop` and `start` take the session and role from `AIRLOCK_SESSION` / `AIRLOCK_ROLE` before the binding, so a lead session started with `AIRLOCK_SESSION=lead-1 AIRLOCK_ROLE=lead claude` gets its own nudges in the shared checkout (problem 4). OpenSHR's `CLAUDE.md` / `docs/PROCESS.md` describe the task boundary (one task at a time, the next one from Airlock, no copying between sessions), the completion notes as the way to ask the lead for follow-ups, and `task hold`.
+
+**Lesson:** at the task boundary the handoff works without the human: the engine went through four packages in priority order and received an answer and a new package without anyone copying text. What still needed the human was the other direction, the engine's requests to the lead; `task_done` covers that now, and the Stop hook still has to prove itself in a run with hooks on both sides.
