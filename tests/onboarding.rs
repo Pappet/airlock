@@ -994,11 +994,19 @@ fn hooks_of_the_main_checkout_serve_a_linked_worktree_as_itself() {
 
     // A hook with a fixed -C, as written before, is flagged for the clean-room worktree.
     let main = std::fs::canonicalize(&env.main).unwrap();
-    let fixed = settings
-        .to_string()
-        .replace(r#"\"$CLAUDE_PROJECT_DIR\""#, &main.to_string_lossy());
-    assert_ne!(fixed, settings.to_string());
-    std::fs::write(dir.join("settings.local.json"), fixed).unwrap();
+    let mut fixed = settings.clone();
+    for event in ["SessionStart", "Stop"] {
+        let command = &mut fixed["hooks"][event][0]["hooks"][0]["command"];
+        let quoted = format!("'{}'", main.to_string_lossy());
+        *command = json!(
+            command
+                .as_str()
+                .unwrap()
+                .replace(r#""$CLAUDE_PROJECT_DIR""#, &quoted)
+        );
+    }
+    assert_ne!(fixed, settings);
+    std::fs::write(dir.join("settings.local.json"), fixed.to_string()).unwrap();
     let out = env.run(&env.engine, &["doctor", "--json"]);
     let findings: Value = serde_json::from_slice(&out.stdout).unwrap();
     let inherited: Vec<&Value> = findings
