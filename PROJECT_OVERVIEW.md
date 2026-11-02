@@ -13,7 +13,7 @@
 - **Language:** Rust (edition 2024, MSRV 1.85)
 - **Interfaces:** CLI (`clap`), MCP server over stdio, local web dashboard (`axum`)
 - **Persistence:** one SQLite database (WAL) per project in the hub directory (`~/.local/state/airlock/projects/<uuid>/` on Linux, override with `AIRLOCK_HOME`), referenced from the repository by a `.airlock` marker file; next to it a second database, `activity.db`, for the activity log and the process registry
-- **Status:** Phases 1–4 implemented (hub store, CLI, sync and import, MCP server, onboarding, web dashboard), plus tracks, the activity log with answer corrections, Phase 3c session continuity (SessionStart hook, progress notes, directory overlap), and Phase 3d handoff between sessions (events and inbox, next package on completion, Stop hook, task hold). Open: the agent validation with Antigravity and DSH (Phase 3b) and a validation run of the Stop hook. See [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md), [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md) and [`docs/plans/AGENT_HANDOFF.md`](docs/plans/AGENT_HANDOFF.md)
+- **Status:** Phases 1–4 implemented (hub store, CLI, sync and import, MCP server, onboarding, web dashboard), plus tracks, the activity log with answer corrections, Phase 3c session continuity (SessionStart hook, progress notes, directory overlap), and Phase 3d handoff between sessions (events and inbox, next package on completion, Stop hook, task hold). Open: the agent validation with Antigravity and DSH (Phase 3b). See [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md), [`docs/plans/SESSION_CONTINUITY.md`](docs/plans/SESSION_CONTINUITY.md) and [`docs/plans/AGENT_HANDOFF.md`](docs/plans/AGENT_HANDOFF.md)
 - **License:** MIT
 
 ---
