@@ -140,7 +140,7 @@ Full tour: [Quickstart walkthrough](docs/walkthroughs/quickstart.md).
 
 ## Status
 
-Phases 1–4, 3c and 3d are done: store, CLI, sync/import, MCP server, onboarding, dashboard, activity log, session continuity, handoff between sessions. Still open: the validation of the Stop hook on a real project and the agent validation with Antigravity and DSH. Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md) · validation runs: [`docs/walkthroughs/agent-validation.md`](docs/walkthroughs/agent-validation.md).
+Phases 1–4, 3c and 3d are done: store, CLI, sync/import, MCP server, onboarding, dashboard, activity log, session continuity, handoff between sessions. Still open: the agent validation with Antigravity and DSH. Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md) · validation runs: [`docs/walkthroughs/agent-validation.md`](docs/walkthroughs/agent-validation.md).
 
 ## Documentation
 

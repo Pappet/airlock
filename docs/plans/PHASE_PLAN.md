@@ -63,7 +63,7 @@ Goal: sessions learn what changed for their role at the boundary between two tas
 - [x] Follow-ups from the first OpenSHR run: a session never sees its own changes in its inbox; `task_done` with the completion notes reaches the coordinating roles; `task hold` / `task resume` (MCP `task_hold` / `task_resume`) for tasks that wait for something outside Airlock.
 - [x] WO-4: `inbox_wait` for sessions that run unattended.
 - [x] WO-5 documentation; validation run 5 on OpenSHR covered the task boundary ([`agent-validation.md`](../walkthroughs/agent-validation.md)). The Stop hook reads `AIRLOCK_SESSION` / `AIRLOCK_ROLE`, so a lead session in a shared checkout can have it too.
-- [ ] WO-5 validation: a Stop-hook nudge chain on OpenSHR (engine asks and stops, lead nudged, answers, engine nudged).
+- [x] WO-5 validation: Stop-hook nudges for lead and engine, the lead waiting with `inbox_wait`, and two hours of lead–engine work without copying (run 5, 2 Nov).
 
 ---
 
