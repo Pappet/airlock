@@ -94,7 +94,7 @@ Waits until the role's inbox holds something, then returns it like `inbox` (read
 - **Returns:** `{ task_id, lease_expires_at, progress }` (`progress` is `null` when the task has no note)
 
 ### 3.4a `task_hold` / `task_resume`
-Put an `open` task on hold because it waits for something outside Airlock, or take it off hold (Spec 01 §2.1, *On Hold*). Not in the clean-room tool set.
+Put an `open` task, or the session's own claimed one (released and held at once), on hold because it waits for something outside Airlock, or take it off hold (Spec 01 §2.1, *On Hold*). Not in the clean-room tool set.
 - **Parameters:** `task_hold`: `task_id` (string), `reason` (string, required); `task_resume`: `task_id` (string)
 - **Returns:** `{ task_id, hold }` / `{ task_id }`. `task_next` passes a held task over and `task_claim` refuses it with the reason; `task_get` and task lists carry `hold`.
 

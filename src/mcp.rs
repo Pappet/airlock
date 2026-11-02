@@ -466,7 +466,7 @@ impl Server {
             "task_hold" => {
                 let id = str_arg(args, "task_id")?;
                 let reason = str_arg(args, "reason")?;
-                let task = self.store.hold(&id, &reason, now)?;
+                let task = self.store.hold(&id, &self.session, &reason, now)?;
                 Ok(json!({ "task_id": task.id, "hold": task.hold }))
             }
             "task_resume" => {
@@ -791,7 +791,7 @@ fn tool_definitions(role_bound: bool) -> Vec<Value> {
         ),
         tool(
             "task_hold",
-            "Put an open task on hold because it waits for something outside Airlock (a capture, a decision): task_next passes it over and claims are refused until task_resume. Holding again replaces the reason. Keeps the task's priority.",
+            "Put an open task, or your own claimed one (released and held at once, progress note kept), on hold because it waits for something outside Airlock (a capture, a decision): task_next passes it over and claims are refused until task_resume. Holding again replaces the reason. Keeps the task's priority.",
             json!({ "task_id": task_id, "reason": { "type": "string", "description": "What the task waits for" } }),
             &["task_id", "reason"],
         ),

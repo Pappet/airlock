@@ -719,16 +719,35 @@ impl Store {
     }
 
     /// Puts an open task on hold: `task next` passes it over and claims are
-    /// refused until it is resumed. Holding again replaces the reason.
-    pub fn hold(&mut self, id: &str, reason: &str, now: i64) -> Result<Task> {
+    /// refused until it is resumed. Holding again replaces the reason. The
+    /// lease holder (`session`) may hold its own claimed task: it is released
+    /// and held in one step, keeping its progress note.
+    pub fn hold(&mut self, id: &str, session: &str, reason: &str, now: i64) -> Result<Task> {
         ensure!(
             !reason.trim().is_empty(),
             "a hold needs a reason: what the task waits for"
         );
         let tx = self.write(now)?;
         let task = load_task(&tx, id)?;
+        if task.state == TaskState::InProgress {
+            ensure!(
+                task.claimed_by.as_deref() == Some(session),
+                "task `{id}` is claimed by {}; only open tasks and your own claimed ones can be put on hold",
+                lease_holder(&task, now)
+            );
+            set_state(
+                &tx,
+                id,
+                TaskState::InProgress,
+                TaskState::Open,
+                None,
+                None,
+                None,
+                now,
+            )?;
+        }
         ensure!(
-            task.state == TaskState::Open,
+            matches!(task.state, TaskState::Open | TaskState::InProgress),
             "task `{id}` is {}; only open tasks can be put on hold",
             task.state.as_str()
         );

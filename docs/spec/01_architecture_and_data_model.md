@@ -86,7 +86,7 @@ stateDiagram-v2
 | finish | `task done [--review]` | `task_complete` | lease holder; others with `--force` |
 | approve | `task approve` | — | human / lead (CLI, dashboard) |
 | reject | `task reject --notes` | — | human / lead (CLI, dashboard) |
-| hold | `task hold --reason` | `task_hold` | any non-clean-room session; `open` tasks only |
+| hold | `task hold --reason` | `task_hold` | any non-clean-room session for `open` tasks; the lease holder also for its own claimed task (released and held at once) |
 | resume | `task resume` | `task_resume` | any non-clean-room session |
 
 Editing changes only the content fields (`title`, `role`, `priority`, `track`, `blocked_by`, `read`, `touch`, `do`, `verify`) and is not a transition: state, claim, lease, and `notes` stay as they are, and the id never changes. A task that is `in_progress`, `in_review`, or `done` is edited only with `--force`, since a session may be working from the old content.
@@ -95,7 +95,7 @@ Leaving `in_progress` always clears `claimed_by` and `lease_expires_at`. `done` 
 
 #### On Hold
 
-A task that waits for something outside Airlock — a capture the user still has to record, a decision — is put **on hold** with a reason (`task hold <id> --reason "…"`, MCP `task_hold`). It is not a state: the task stays `open` with its effective status (`ready` or `blocked`) and keeps its priority, so the order of the work is not bent to keep it out of the way. While it is on hold, `task next` (and the briefing's next package) passes it over, a claim is refused with the reason, and a `task_ready` event is neither written nor shown for it. `task resume` takes it off hold; if it is ready, its role is told again (`task_ready`, §2.6). Only `open` tasks can be put on hold (release a claimed one first); holding again replaces the reason. Coordinating roles hold and resume; the clean-room tool set has neither tool. The hold is machine-local like a claim: it is not exported (Spec 05 §3.2), and an import drops it. `task list` marks a held task `ready (held)` / `blocked (held)`, `task show` prints the reason, and the dashboard shows an "on hold" badge.
+A task that waits for something outside Airlock — a capture the user still has to record, a decision — is put **on hold** with a reason (`task hold <id> --reason "…"`, MCP `task_hold`). It is not a state: the task stays `open` with its effective status (`ready` or `blocked`) and keeps its priority, so the order of the work is not bent to keep it out of the way. While it is on hold, `task next` (and the briefing's next package) passes it over, a claim is refused with the reason, and a `task_ready` event is neither written nor shown for it. `task resume` takes it off hold; if it is ready, its role is told again (`task_ready`, §2.6). Only `open` tasks can be put on hold, with one exception: the lease holder may hold its own claimed task, which releases and holds it in one step and keeps its progress note for whoever resumes it. Holding again replaces the reason. Coordinating roles hold and resume; the clean-room tool set has neither tool. The hold is machine-local like a claim: it is not exported (Spec 05 §3.2), and an import drops it. `task list` marks a held task `ready (held)` / `blocked (held)`, `task show` prints the reason, and the dashboard shows an "on hold" badge.
 
 #### Dependency Rules
 

@@ -238,7 +238,7 @@ pub enum TaskCommand {
         #[arg(long)]
         notes: Option<String>,
     },
-    /// Put an open task on hold: `task next` passes it over until it is resumed
+    /// Put an open task, or your own claimed one, on hold: `task next` passes it over until it is resumed
     Hold {
         id: String,
         /// What the task waits for (a capture, a decision)

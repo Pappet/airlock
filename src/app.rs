@@ -795,7 +795,7 @@ fn task(
             print_lease(out, &task, "Renewed", now)
         }
         TaskCommand::Hold { id, reason } => {
-            let task = store.hold(&id, &reason, now)?;
+            let task = store.hold(&id, session, &reason, now)?;
             out.print(&json!({ "task_id": task.id, "hold": task.hold }), || {
                 format!("{} is on hold: {reason}", task.id)
             })
