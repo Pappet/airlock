@@ -132,6 +132,7 @@ Full tour: [Quickstart walkthrough](docs/walkthroughs/quickstart.md).
 | **Questions** | `open → answered → resolved`, linked to the spec file that codifies the answer; answers can be corrected later, earlier versions are kept. |
 | **MCP server** | `airlock mcp` over stdio: 22 tools (`session_start`, `task_next`, `task_claim`, `task_heartbeat`, `question_ask`, `inbox`, …), bound to a role; clean-room roles get a restricted set. |
 | **Onboarding** | `init --template clean-room\|parallel\|single`, `use <role>`, `start`, `doctor`, `setup claude\|antigravity\|dsh\|claude-hooks`. |
+| **Handoff between sessions** | Every change writes an event; each session reads what is new for its role from its inbox. `task_complete` returns the inbox and the next package, and an opt-in Claude Code Stop hook sends a session back to work when news arrives, so nobody copies output between sessions. |
 | **Session continuity** | Progress notes on a lease, a SessionStart hook for Claude Code, briefings that stay short across restarts and `/compact`. |
 | **Export to git** | `airlock sync` writes a byte-stable snapshot (`docs/.airlock-state.json`, the only import source) plus `docs/PLAN.md` and `docs/spec/QUESTIONS.md`; conflicts in generated files are cleared by running `sync` again. |
 | **Activity log** | Every MCP, CLI, and REST call recorded next to the store — session, role, command, target, result — without any free text; pruned after 30 days. `airlock activity` and the dashboard's Activity tab show what needs attention. |
@@ -139,7 +140,7 @@ Full tour: [Quickstart walkthrough](docs/walkthroughs/quickstart.md).
 
 ## Status
 
-Phases 1–4 and 3c are done: store, CLI, sync/import, MCP server, onboarding, dashboard, activity log, session continuity. Agent validation with Antigravity and DSH is still open. Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md) · validation runs: [`docs/walkthroughs/agent-validation.md`](docs/walkthroughs/agent-validation.md).
+Phases 1–4, 3c and 3d are done: store, CLI, sync/import, MCP server, onboarding, dashboard, activity log, session continuity, handoff between sessions. Still open: the validation of the Stop hook on a real project and the agent validation with Antigravity and DSH. Progress: [`docs/plans/PHASE_PLAN.md`](docs/plans/PHASE_PLAN.md) · validation runs: [`docs/walkthroughs/agent-validation.md`](docs/walkthroughs/agent-validation.md).
 
 ## Documentation
 

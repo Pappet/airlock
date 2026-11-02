@@ -26,12 +26,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Runs one parsed invocation against the hub at `$AIRLOCK_HOME` or the platform default.
 pub fn run(cli: Cli) -> Result<()> {
     // Harness hooks never fail and never print an error (Spec 06 §6).
-    if let Command::Hook(HookEvent::Stop) = cli.command {
+    if let Command::Hook(HookEvent::Stop { role }) = cli.command {
         if let (Ok(hub), Ok(current)) = (Hub::locate(), std::env::current_dir()) {
             let cwd = cli
                 .directory
                 .map_or(current.clone(), |dir| current.join(dir));
-            crate::hook::stop(&hub, &cwd, cli.project.as_deref());
+            let who = crate::hook::Who {
+                session: cli.session.as_deref(),
+                role: role.as_deref(),
+            };
+            crate::hook::stop(&hub, &cwd, cli.project.as_deref(), who);
         }
         return Ok(());
     }

@@ -6,6 +6,28 @@ All notable changes to Airlock are recorded here. The format follows
 
 ## [Unreleased]
 
+Handoff between sessions (Phase 3d): sessions learn what changed for their
+role at the boundary between two tasks and when their turn ends.
+
+### Added
+- Events written in the same transaction as each change, and a per-session
+  inbox: `airlock inbox [--peek]`, MCP `inbox` (store schema 7).
+- `task_complete` / `task done` return the inbox and the next package;
+  `task_claim` warns about a more important ready task and a second lease.
+- `airlock setup claude-hooks --auto-continue`: an opt-in Claude Code Stop
+  hook that sends a session back to work when its inbox has news, at most
+  `auto_continue_limit` times an hour (default 10). It reads the session and
+  role from `AIRLOCK_SESSION` / `AIRLOCK_ROLE` before the binding, so it
+  also works for a second role in a shared checkout.
+- `task hold` / `task resume` (MCP `task_hold` / `task_resume`) for tasks
+  that wait for something outside Airlock; held tasks are never handed out.
+- `task_done` news with the completion notes for the coordinating roles.
+- `inbox_wait` (MCP) and `airlock inbox --wait` for sessions that run
+  unattended.
+
+### Changed
+- A session's inbox skips the changes it made itself (store schema 8).
+
 ## [0.1.0] - 2026-11-01
 
 First release: the hub store, the CLI, the MCP server, onboarding, the

@@ -5,7 +5,7 @@
 use crate::activity::{self, Channel, Entry, Filter};
 use crate::app::{existing_activity_log, unix_now};
 use crate::core::{EventKind, Inbox, InboxItem};
-use crate::hub::{Hub, Project};
+use crate::hub::{Binding, Hub, Project};
 use crate::store::Store;
 use anyhow::Result;
 use serde_json::json;
@@ -15,31 +15,56 @@ use std::path::Path;
 /// One hour: the window of the nudge limit.
 const LIMIT_WINDOW_SECS: i64 = 60 * 60;
 
+/// The session and role given to the hook (`--session` / `--role`, or
+/// `AIRLOCK_SESSION` / `AIRLOCK_ROLE` from the environment Claude Code was
+/// started with); each falls back to the worktree binding's.
+#[derive(Clone, Copy, Default)]
+pub struct Who<'a> {
+    pub session: Option<&'a str>,
+    pub role: Option<&'a str>,
+}
+
+impl Who<'_> {
+    /// Whose inbox the hook reads. A locked worktree keeps its role; without a
+    /// binding both session and role must be given.
+    fn resolve(self, binding: Option<&Binding>) -> Option<(String, String)> {
+        match binding {
+            Some(b) => {
+                let role = if b.locked { None } else { self.role };
+                Some((
+                    self.session.unwrap_or(&b.session).to_string(),
+                    role.unwrap_or(&b.role).to_string(),
+                ))
+            }
+            None => Some((self.session?.to_string(), self.role?.to_string())),
+        }
+    }
+}
+
 /// Runs the Stop hook for the worktree at `cwd`; prints the block decision
 /// when the session should continue, nothing otherwise.
-pub fn stop(hub: &Hub, cwd: &Path, project: Option<&str>) {
+pub fn stop(hub: &Hub, cwd: &Path, project: Option<&str>, who: Who) {
     // The hook JSON (`session_id`, `stop_hook_active`, …) is read and dropped:
     // Claude Code's session id is not Airlock's, and the nudge state below
     // already keeps a continued session from looping.
     let mut input = String::new();
     let _ = std::io::stdin().take(1 << 20).read_to_string(&mut input);
-    if let Ok(Some(reason)) = decide(hub, cwd, project) {
+    if let Ok(Some(reason)) = decide(hub, cwd, project, who) {
         println!("{}", json!({ "decision": "block", "reason": reason }));
     }
 }
 
-/// The reason to continue, if the binding's session has news it was not yet
-/// nudged about and the hourly limit allows another nudge.
-fn decide(hub: &Hub, cwd: &Path, project: Option<&str>) -> Result<Option<String>> {
+/// The reason to continue, if the session has news it was not yet nudged
+/// about and the hourly limit allows another nudge.
+fn decide(hub: &Hub, cwd: &Path, project: Option<&str>, who: Who) -> Result<Option<String>> {
     let project = hub.resolve(project, cwd)?;
-    let Some(binding) = project.binding.clone() else {
+    let Some((session, role)) = who.resolve(project.binding.as_ref()) else {
         return Ok(None);
     };
     let limit = project.config.auto_continue_limit;
     if limit == 0 {
         return Ok(None);
     }
-    let (session, role) = (binding.session, binding.role);
     let coordinating = !project
         .config
         .roles
