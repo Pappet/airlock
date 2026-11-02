@@ -530,9 +530,10 @@ fn check_harnesses(
     }
 }
 
-/// Claude Code also runs the hooks in the main checkout's `.claude/settings.local.json` in
-/// sessions of a linked worktree. One that names a directory with `-C` instead of
-/// `$CLAUDE_PROJECT_DIR` briefs or nudges the main checkout's session there (Spec 06 §6).
+/// Claude Code also runs the hooks in the main checkout's `.claude/settings.local.json` (and,
+/// to be safe, its `settings.json`) in sessions of a linked worktree. One that names a
+/// directory with `-C` instead of `$CLAUDE_PROJECT_DIR` briefs or nudges the main checkout's
+/// session there (Spec 06 §6).
 fn check_inherited_hooks(
     report: &mut Report,
     project: &Project,
@@ -540,8 +541,27 @@ fn check_inherited_hooks(
     main: &Path,
     worktree: &Path,
 ) {
-    let path = main.join(".claude").join("settings.local.json");
-    let Some(json) = std::fs::read_to_string(&path)
+    for name in ["settings.local.json", "settings.json"] {
+        check_inherited_file(
+            report,
+            project,
+            bindings,
+            &main.join(".claude").join(name),
+            main,
+            worktree,
+        );
+    }
+}
+
+fn check_inherited_file(
+    report: &mut Report,
+    project: &Project,
+    bindings: &BTreeMap<String, Binding>,
+    path: &Path,
+    main: &Path,
+    worktree: &Path,
+) {
+    let Some(json) = std::fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
     else {

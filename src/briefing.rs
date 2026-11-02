@@ -194,8 +194,24 @@ pub fn build(
     })
 }
 
+/// Bytes the Markdown briefing aims to stay under. Claude Code puts a hook's output
+/// into the model's context only up to about 10 KB; above that it saves it to a
+/// file and shows a preview (Spec 06 §6).
+pub const BRIEFING_BUDGET: usize = 8 * 1024;
+
 impl Briefing {
+    /// The briefing as Markdown. When it would exceed [`BRIEFING_BUDGET`], new and
+    /// corrected answers are listed by reference only, with how to read them.
     pub fn markdown(&self, via: Via) -> String {
+        let full = self.render(via, false);
+        if full.len() <= BRIEFING_BUDGET {
+            full
+        } else {
+            self.render(via, true)
+        }
+    }
+
+    fn render(&self, via: Via, answers_by_reference: bool) -> String {
         let cmd = |mcp: &str, cli: &str| match via {
             Via::Mcp => format!("`{mcp}`"),
             Via::Cli => format!("`{cli}`"),
@@ -303,7 +319,11 @@ impl Briefing {
                  The new answer replaces the old one; adjust work built on the old one.\n\n",
             );
             for q in &self.corrected_answers {
-                question_item(&mut out, q, "");
+                if answers_by_reference {
+                    reference_item(&mut out, q, "");
+                } else {
+                    question_item(&mut out, q, "");
+                }
             }
         }
 
@@ -318,13 +338,24 @@ impl Briefing {
             };
             let (earlier, new): (Vec<&Question>, Vec<&Question>) =
                 self.answered_questions.iter().partition(|q| seen(q));
+            if answers_by_reference && !new.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "New answers, too long to show here: read each with {} before you rely on it.\n",
+                    cmd("question_list", "airlock question show <id>")
+                );
+            }
             for q in new {
                 let mark = if q.corrected_at.is_some() {
                     " (corrected)"
                 } else {
                     ""
                 };
-                question_item(&mut out, q, mark);
+                if answers_by_reference {
+                    reference_item(&mut out, q, mark);
+                } else {
+                    question_item(&mut out, q, mark);
+                }
             }
             if !earlier.is_empty() {
                 let _ = writeln!(
@@ -338,17 +369,12 @@ impl Briefing {
                     cmd("question_list", "airlock question show <id>")
                 );
                 for q in earlier {
-                    let spec = q
-                        .spec_file
-                        .as_deref()
-                        .map(|f| format!(" — codified in `{f}`"))
-                        .unwrap_or_default();
                     let mark = if q.corrected_at.is_some() {
                         " (corrected)"
                     } else {
                         ""
                     };
-                    let _ = writeln!(out, "- **#{} ({})**{mark}{spec}", q.id, q.topic);
+                    reference_item(&mut out, q, mark);
                 }
             }
         }
@@ -421,6 +447,16 @@ fn question_item(out: &mut String, q: &Question, mark: &str) {
             .trim_end()
             .replace('\n', "\n  ")
     );
+}
+
+/// One answered question by reference: id, topic, and the spec file that codifies it.
+fn reference_item(out: &mut String, q: &Question, mark: &str) {
+    let spec = q
+        .spec_file
+        .as_deref()
+        .map(|f| format!(" — codified in `{f}`"))
+        .unwrap_or_default();
+    let _ = writeln!(out, "- **#{} ({})**{mark}{spec}", q.id, q.topic);
 }
 
 /// `progress_label` names the progress note: the holder's own ("Progress") or one
