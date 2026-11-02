@@ -783,6 +783,11 @@ fn summarize_task(sub: &TaskCommand, changed: &mut Changed) -> Option<String> {
             changed.flag("force", *force);
             Some(id.clone())
         }
+        TaskCommand::Hold { id, .. } => {
+            changed.0.push("reason".to_string());
+            Some(id.clone())
+        }
+        TaskCommand::Resume { id } => Some(id.clone()),
         TaskCommand::Done {
             id,
             notes,

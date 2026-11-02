@@ -10,7 +10,7 @@ a CLI for people, an MCP server for agents, and a live dashboard for both.
 [![CI](https://github.com/Pappet/airlock/actions/workflows/ci.yml/badge.svg)](https://github.com/Pappet/airlock/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](Cargo.toml)
-[![MCP](https://img.shields.io/badge/MCP-19%20tools-8A2BE2.svg)](docs/spec/03_mcp_protocol.md)
+[![MCP](https://img.shields.io/badge/MCP-21%20tools-8A2BE2.svg)](docs/spec/03_mcp_protocol.md)
 
 <img src="docs/images/social-preview.png" alt="The Airlock dashboard: a board grouped by track, with running leases and open questions" width="920">
 
@@ -127,10 +127,10 @@ Full tour: [Quickstart walkthrough](docs/walkthroughs/quickstart.md).
 | | |
 |---|---|
 | **Hub store** | SQLite (WAL) per project under the platform state directory, found from the repo by a one-line `.airlock` marker. Safe for many processes at once: immediate transactions, conditional state transitions. |
-| **Tasks** | `open → in_progress → (in_review →) done` with claim, heartbeat, release, approve, reject; `blocked`/`ready` derived from `blocked_by`; ids assigned per role (`E-7`, `S-2`). |
+| **Tasks** | `open → in_progress → (in_review →) done` with claim, heartbeat, release, approve, reject; `blocked`/`ready` derived from `blocked_by`; ids assigned per role (`E-7`, `S-2`); a task waiting for something outside Airlock is put on hold (`task hold` / `task resume`). |
 | **Tracks and priority** | Named lines of work with their own priority; `task next` orders by track priority, then task priority, then age. |
 | **Questions** | `open → answered → resolved`, linked to the spec file that codifies the answer; answers can be corrected later, earlier versions are kept. |
-| **MCP server** | `airlock mcp` over stdio: 19 tools (`session_start`, `task_next`, `task_claim`, `task_heartbeat`, `question_ask`, `inbox`, …), bound to a role; clean-room roles get a restricted set. |
+| **MCP server** | `airlock mcp` over stdio: 21 tools (`session_start`, `task_next`, `task_claim`, `task_heartbeat`, `question_ask`, `inbox`, …), bound to a role; clean-room roles get a restricted set. |
 | **Onboarding** | `init --template clean-room\|parallel\|single`, `use <role>`, `start`, `doctor`, `setup claude\|antigravity\|dsh\|claude-hooks`. |
 | **Session continuity** | Progress notes on a lease, a SessionStart hook for Claude Code, briefings that stay short across restarts and `/compact`. |
 | **Export to git** | `airlock sync` writes a byte-stable snapshot (`docs/.airlock-state.json`, the only import source) plus `docs/PLAN.md` and `docs/spec/QUESTIONS.md`; conflicts in generated files are cleared by running `sync` again. |

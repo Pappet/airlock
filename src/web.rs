@@ -489,6 +489,7 @@ where
     let state = state.clone();
     tokio::task::spawn_blocking(move || {
         let mut store = Store::open(&state.project.database)
+            .and_then(|mut store| store.act_as(DASHBOARD_SESSION).map(|()| store))
             .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
         f(&mut store, &state.project, unix_now())
             .map(axum::Json)

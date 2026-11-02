@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 /// Schema migrations; entry `n` upgrades `user_version` `n` to `n + 1`.
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
 ];
 
 const SCHEMA_V1: &str = "
@@ -179,6 +179,14 @@ CREATE TABLE inbox_cursors (
 ) STRICT;
 ";
 
+/// Who caused an event (the acting session, so a session's own changes stay
+/// out of its inbox), and tasks on hold (Spec 01 §2.1): the reason a
+/// coordinating role gave, machine-local like a claim.
+const SCHEMA_V8: &str = "
+ALTER TABLE events ADD COLUMN actor TEXT;
+ALTER TABLE tasks ADD COLUMN hold TEXT;
+";
+
 /// Events older than this are pruned on write.
 const EVENT_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
 
@@ -190,7 +198,7 @@ SELECT id, title, role, state, priority,
        (SELECT json_group_array(blocked_by)
           FROM (SELECT blocked_by FROM task_deps WHERE task_id = t.id ORDER BY rowid)),
        read, touch, do, verify, notes, claimed_by, lease_expires_at, created_at, updated_at, track,
-       progress
+       progress, hold
   FROM tasks t";
 
 const SELECT_TRACKS: &str =
@@ -319,7 +327,19 @@ impl Store {
         }
         tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
         tx.commit()?;
+        // The acting session lives in a connection-local table, so every event
+        // written through this connection records it (`emit`).
+        conn.execute_batch("CREATE TEMP TABLE actor (session TEXT)")?;
         Ok(Self { conn })
+    }
+
+    /// Records `session` as the actor of the events this store writes from
+    /// now on, so its own changes stay out of its inbox (Spec 01 §2.6).
+    pub fn act_as(&mut self, session: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM temp.actor", [])?;
+        self.conn
+            .execute("INSERT INTO temp.actor (session) VALUES (?1)", [session])?;
+        Ok(())
     }
 
     /// SQLite's `PRAGMA data_version`: changes whenever another connection
@@ -645,6 +665,11 @@ impl Store {
         let tx = self.write(now)?;
         let tasks = load_tasks(&tx)?;
         let task = find(&tasks, id)?;
+        if let Some(reason) = &task.hold {
+            bail!(
+                "task `{id}` is on hold ({reason}); a coordinating role resumes it with `task resume`"
+            );
+        }
         match status_of(&tasks, task) {
             TaskStatus::Ready => {}
             TaskStatus::Blocked => bail!("task `{id}` is blocked by unfinished prerequisites"),
@@ -690,6 +715,40 @@ impl Store {
             params![now + lease_secs, now, id, session, progress],
         )?;
         ensure!(changed == 1, "task `{id}` changed concurrently; retry");
+        commit_task(tx, id)
+    }
+
+    /// Puts an open task on hold: `task next` passes it over and claims are
+    /// refused until it is resumed. Holding again replaces the reason.
+    pub fn hold(&mut self, id: &str, reason: &str, now: i64) -> Result<Task> {
+        ensure!(
+            !reason.trim().is_empty(),
+            "a hold needs a reason: what the task waits for"
+        );
+        let tx = self.write(now)?;
+        let task = load_task(&tx, id)?;
+        ensure!(
+            task.state == TaskState::Open,
+            "task `{id}` is {}; only open tasks can be put on hold",
+            task.state.as_str()
+        );
+        tx.execute(
+            "UPDATE tasks SET hold = ?1, updated_at = ?2 WHERE id = ?3 AND state = 'open'",
+            params![reason, now, id],
+        )?;
+        commit_task(tx, id)
+    }
+
+    /// Takes a task off hold; when it is ready, its role hears about it again.
+    pub fn resume(&mut self, id: &str, now: i64) -> Result<Task> {
+        let tx = self.write(now)?;
+        let task = load_task(&tx, id)?;
+        ensure!(task.hold.is_some(), "task `{id}` is not on hold");
+        tx.execute(
+            "UPDATE tasks SET hold = NULL, updated_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        emit_if_ready(&tx, id, EventKind::TaskReady, now)?;
         commit_task(tx, id)
     }
 
@@ -764,6 +823,19 @@ impl Store {
             )?;
             Vec::new()
         };
+        if to == TaskState::Done {
+            let role = &task.role;
+            emit(
+                &tx,
+                now,
+                EventKind::TaskDone,
+                COORDINATORS,
+                Some(role),
+                Some(id),
+                None,
+                None,
+            )?;
+        }
         for ready in &now_ready {
             emit_if_ready(&tx, ready, EventKind::TaskReady, now)?;
         }
@@ -790,6 +862,17 @@ impl Store {
             now,
         )?;
         let now_ready = newly_ready(&tx, id)?;
+        let role = &task.role;
+        emit(
+            &tx,
+            now,
+            EventKind::TaskDone,
+            COORDINATORS,
+            Some(role),
+            Some(id),
+            None,
+            None,
+        )?;
         for ready in &now_ready {
             emit_if_ready(&tx, ready, EventKind::TaskReady, now)?;
         }
@@ -1034,6 +1117,7 @@ impl Store {
             "SELECT seq, at, kind, task_id, question_id, track FROM events
               WHERE seq > ?1
                 AND (role = ?2 OR (?3 AND role = ?4 AND (origin IS NULL OR origin <> ?2)))
+                AND (actor IS NULL OR actor <> ?5)
               ORDER BY seq",
         )?;
         type Row6 = (
@@ -1045,16 +1129,19 @@ impl Store {
             Option<String>,
         );
         let rows: Vec<Row6> = stmt
-            .query_map(params![cursor, role, coordinating, COORDINATORS], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            })?
+            .query_map(
+                params![cursor, role, coordinating, COORDINATORS, session],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
         let last = rows.last().map_or(cursor, |r| r.0);
@@ -1085,7 +1172,8 @@ impl Store {
                 EventKind::TaskReady
                 | EventKind::TaskChanged
                 | EventKind::TaskRejected
-                | EventKind::TaskInReview => {
+                | EventKind::TaskInReview
+                | EventKind::TaskDone => {
                     let Some(task) = task_id
                         .as_deref()
                         .and_then(|id| tasks.iter().find(|t| t.id == id))
@@ -1095,8 +1183,11 @@ impl Store {
                     let status = status_of(&tasks, task);
                     let current = match kind {
                         EventKind::TaskInReview => status == TaskStatus::InReview,
+                        EventKind::TaskDone => status == TaskStatus::Done,
                         EventKind::TaskRejected => task.role == role,
-                        _ => task.role == role && status == TaskStatus::Ready,
+                        _ => {
+                            task.role == role && status == TaskStatus::Ready && task.hold.is_none()
+                        }
                     };
                     if !current {
                         continue;
@@ -1110,6 +1201,11 @@ impl Store {
                             priority: task.priority,
                             track: task.track.clone(),
                             status,
+                            notes: if kind == EventKind::TaskDone {
+                                task.notes.clone()
+                            } else {
+                                None
+                            },
                         }),
                         question: None,
                         track: None,
@@ -1569,8 +1665,8 @@ fn emit(
 ) -> Result<()> {
     let question_id = question_id.map(sql_id).transpose()?;
     conn.execute(
-        "INSERT INTO events (at, kind, role, origin, task_id, question_id, track)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO events (at, kind, role, origin, task_id, question_id, track, actor)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT session FROM temp.actor))",
         params![
             now,
             kind.as_str(),
@@ -1588,7 +1684,8 @@ fn emit(
 fn emit_if_ready(conn: &Connection, id: &str, kind: EventKind, now: i64) -> Result<()> {
     let tasks = load_tasks(conn)?;
     let task = find(&tasks, id)?;
-    if status_of(&tasks, task) == TaskStatus::Ready {
+    // A task on hold is not up for taking; resuming it announces it.
+    if task.hold.is_none() && status_of(&tasks, task) == TaskStatus::Ready {
         emit(conn, now, kind, &task.role, None, Some(id), None, None)?;
     }
     Ok(())
@@ -1743,6 +1840,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         updated_at: row.get(14)?,
         track: row.get(15)?,
         progress: row.get(16)?,
+        hold: row.get(17)?,
     })
 }
 

@@ -21,6 +21,7 @@ pub fn task(id: &str, state: TaskState, blocked_by: &[&str]) -> Task {
         claimed_by: None,
         lease_expires_at: None,
         progress: None,
+        hold: None,
         created_at: 1_700_000_000,
         updated_at: 1_700_000_000,
     }

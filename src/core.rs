@@ -214,6 +214,11 @@ pub struct Task {
     /// `done` or `in_review`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<String>,
+    /// Why the task is on hold: it waits for something outside Airlock (a
+    /// capture, a decision) and `task next` passes it over until it is resumed.
+    /// Set and cleared by coordinating roles; machine-local like a claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<String>,
     /// Unix timestamp (seconds) of creation
     pub created_at: i64,
     /// Unix timestamp (seconds) of the last modification
@@ -513,6 +518,8 @@ pub enum EventKind {
     QuestionAsked,
     /// A question was answered or its answer corrected
     QuestionAnswered,
+    /// A task was completed or approved
+    TaskDone,
 }
 
 impl EventKind {
@@ -525,6 +532,7 @@ impl EventKind {
             Self::TaskInReview => "task_in_review",
             Self::QuestionAsked => "question_asked",
             Self::QuestionAnswered => "question_answered",
+            Self::TaskDone => "task_done",
         }
     }
 
@@ -537,6 +545,7 @@ impl EventKind {
             Self::TaskInReview,
             Self::QuestionAsked,
             Self::QuestionAnswered,
+            Self::TaskDone,
         ]
         .into_iter()
         .find(|k| k.as_str() == s)
@@ -574,6 +583,9 @@ pub struct InboxTask {
     pub priority: Priority,
     pub track: Option<String>,
     pub status: TaskStatus,
+    /// The completion notes (`task_done`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

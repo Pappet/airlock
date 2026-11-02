@@ -944,9 +944,10 @@ fn inbox_on_the_cli_and_events_never_reach_the_snapshot() {
     env.ok(&project, &["sync"]);
     let state = read(&project.join("docs/.airlock-state.json"));
 
-    // Claim and release L-1: an event, but no change to what `sync` exports.
-    env.ok(&project, &["task", "claim", "L-1"]);
-    env.ok(&project, &["task", "release", "L-1"]);
+    // Another session claims and releases L-1: an event, but no change to what `sync`
+    // exports. (A session never sees its own changes in its inbox.)
+    env.ok(&project, &["task", "claim", "L-1", "--session", "lead-2"]);
+    env.ok(&project, &["task", "release", "L-1", "--session", "lead-2"]);
     let lead = env.ok(&project, &["inbox", "--role", "lead", "--peek"]);
     assert!(lead.contains("L-1 ready"), "{lead}");
     env.ok(&project, &["inbox", "--role", "lead"]);
@@ -959,8 +960,8 @@ fn inbox_on_the_cli_and_events_never_reach_the_snapshot() {
     assert_eq!(read(&project.join("docs/.airlock-state.json")), state);
 
     // Completing L-1 unblocks E-1 for the engine.
-    env.ok(&project, &["task", "claim", "L-1"]);
-    env.ok(&project, &["task", "done", "L-1"]);
+    env.ok(&project, &["task", "claim", "L-1", "--session", "lead-2"]);
+    env.ok(&project, &["task", "done", "L-1", "--session", "lead-2"]);
     let engine = env.json(&project, &["inbox", "--role", "engine"]);
     assert_eq!(engine["items"][0]["kind"], "task_ready");
     assert_eq!(engine["items"][0]["task"]["id"], "E-1");
@@ -1010,4 +1011,42 @@ fn task_done_prints_the_news_and_the_next_task() {
     let done = env.json(&project, &["task", "done", "E-4", "--session", "engine-1"]);
     assert_eq!(done["next"]["id"], "E-3");
     assert_eq!(done["inbox"]["items"], serde_json::json!([]));
+}
+
+#[test]
+fn held_tasks_are_marked_and_passed_over_on_the_cli() {
+    let env = Env::new();
+    let project = env.dir("project");
+    env.ok(&project, &["init"]);
+    add(&env, &project, "E-1", &[]);
+    add(&env, &project, "E-2", &[]);
+    let out = env.ok(
+        &project,
+        &["task", "hold", "E-1", "--reason", "BF003 capture"],
+    );
+    assert_eq!(out.trim(), "E-1 is on hold: BF003 capture");
+    let list = env.ok(&project, &["task", "list"]);
+    assert!(list.contains("E-1  ready (held)"), "{list}");
+    assert!(
+        env.ok(&project, &["task", "show", "E-1"])
+            .contains("on hold: BF003 capture")
+    );
+    let next = env.json(&project, &["task", "next", "--role", "engine"]);
+    assert_eq!(next["id"], "E-2");
+    assert!(
+        env.fail(&project, &["task", "claim", "E-1"])
+            .contains("on hold")
+    );
+    assert_eq!(
+        env.ok(&project, &["task", "resume", "E-1"]).trim(),
+        "Resumed E-1"
+    );
+    assert!(!env.ok(&project, &["task", "list"]).contains("(held)"));
+    // The reason is free text: logged as a key only.
+    env.ok(&project, &["task", "hold", "E-2", "--reason", "SECRET"]);
+    let log = env.ok(&project, &["activity", "--json"]);
+    assert!(
+        !log.contains("SECRET") && log.contains("task hold"),
+        "{log}"
+    );
 }
