@@ -1,7 +1,7 @@
 name: Release
 
 # Tag a commit on main as v<version> (matching Cargo.toml) and push the tag:
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v0.2.0 && git push origin v0.2.0
 # This creates the GitHub release from the CHANGELOG section of that version
 # and attaches a binary archive per target, each with a SHA-256 checksum.
 

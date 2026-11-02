@@ -6,8 +6,19 @@ All notable changes to Airlock are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+
 Handoff between sessions (Phase 3d): sessions learn what changed for their
 role at the boundary between two tasks and when their turn ends.
+
+### Upgrading
+- The store migrates to schema 8 on first use; older binaries then refuse
+  it. Restart every running session (`airlock mcp`, `airlock serve`) after
+  installing.
+- Re-run `airlock setup claude-hooks` wherever Claude Code hooks were
+  installed and merge its `hooks` key: hooks now name the worktree with
+  `$CLAUDE_PROJECT_DIR`. `airlock doctor` reports hooks that still carry a
+  fixed path (an error in a clean-room worktree).
 
 ### Added
 - Events written in the same transaction as each change, and a per-session
@@ -37,9 +48,10 @@ role at the boundary between two tasks and when their turn ends.
   `airlock doctor` reports such inherited hooks (from the main checkout's
   `settings.local.json` and `settings.json`); re-run `setup claude-hooks`
   where hooks were installed before.
-- The Markdown briefing stays under 8 KB, so Claude Code's SessionStart hook
-  puts it into context instead of a file: when it would be larger, new
-  answers are listed by reference with the command to read them.
+- The Markdown briefing aims to stay under 8 KB, so Claude Code's
+  SessionStart hook puts it into context instead of a file: when it would be
+  larger, new and corrected answers are listed by reference with the command
+  to read them (the work package, rules and workflow are never shortened).
 
 ## [0.1.0] - 2026-11-01
 
@@ -86,5 +98,6 @@ dashboard, the activity log, and session continuity.
   call without free text, pruned after 30 days; `airlock activity` and the
   dashboard's Activity tab show what needs attention.
 
-[Unreleased]: https://github.com/Pappet/airlock/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Pappet/airlock/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Pappet/airlock/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Pappet/airlock/releases/tag/v0.1.0
