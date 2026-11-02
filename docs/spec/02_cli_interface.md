@@ -103,7 +103,7 @@ Extends the current session's lease from now. Fails if the session does not hold
 Returns a claimed task to `open`. Without `--force`, only the lease holder may release.
 
 #### `airlock task hold <id> --reason <text>` / `airlock task resume <id>`
-Puts an `open` task on hold with the reason it waits for, or takes it off hold (Spec 01 §2.1, *On Hold*). A held task keeps its priority; `task next` passes it over and `task claim` refuses it with the reason. `--reason` is free text and logged as a key only.
+Puts an `open` task, or the session's own claimed one (released and held at once), on hold with the reason it waits for, or takes it off hold (Spec 01 §2.1, *On Hold*). A held task keeps its priority; `task next` passes it over and `task claim` refuses it with the reason. `--reason` is free text and logged as a key only.
 
 #### `airlock task done <id> [--notes <text>] [--review] [--force]`
 Finishes a claimed task: `done`, or `in_review` with `--review`. Without `--force`, only the lease holder may finish it. Prints the ids of tasks that became ready, then what changed for the task's role since this session last looked (`Since your last look:` with the inbox lines, Spec 01 §2.6; the inbox is marked as read) and the next task `task next` hands out (`Next: E-3 (critical, Navigation) Hotfix`, or `Next: nothing ready for <role>`). `--json` carries `inbox` and `next` as MCP `task_complete` does.

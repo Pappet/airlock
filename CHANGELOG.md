@@ -21,6 +21,7 @@ role at the boundary between two tasks and when their turn ends.
   also works for a second role in a shared checkout.
 - `task hold` / `task resume` (MCP `task_hold` / `task_resume`) for tasks
   that wait for something outside Airlock; held tasks are never handed out.
+  The lease holder can hold its own claimed task in one step.
 - `task_done` news with the completion notes for the coordinating roles.
 - `inbox_wait` (MCP) and `airlock inbox --wait` for sessions that run
   unattended.

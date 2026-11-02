@@ -1754,6 +1754,35 @@ fn completions_reach_the_coordinating_roles_with_their_notes() {
 }
 
 #[test]
+fn the_lease_holder_holds_its_own_task_in_one_step() {
+    let (_dir, mut store) = open();
+    store.add_task(role_task("lead", "L", &[]), 1).unwrap(); // L-1
+    store.claim("L-1", "lead-1", 600, 2).unwrap();
+    store
+        .heartbeat(
+            "L-1",
+            "lead-1",
+            600,
+            Some("probe written; needs the capture"),
+            3,
+        )
+        .unwrap();
+    let held = store
+        .hold("L-1", "lead-1", "waits for the bf006 capture", 4)
+        .unwrap();
+    assert_eq!(held.state, TaskState::Open, "released");
+    assert_eq!(held.claimed_by, None);
+    assert_eq!(held.hold.as_deref(), Some("waits for the bf006 capture"));
+    assert_eq!(
+        held.progress.as_deref(),
+        Some("probe written; needs the capture"),
+        "the progress note is kept for whoever resumes it"
+    );
+    store.resume("L-1", 5).unwrap();
+    store.claim("L-1", "lead-1", 600, 6).unwrap();
+}
+
+#[test]
 fn holding_a_task_keeps_it_from_being_claimed_until_resumed() {
     let (_dir, mut store) = open();
     store.inbox("engine-1", "engine", false, false, 0).unwrap();
@@ -1764,8 +1793,10 @@ fn holding_a_task_keeps_it_from_being_claimed_until_resumed() {
         .add_task(role_task("engine", "E", &["E-2"]), 1)
         .unwrap(); // E-3, blocked
 
-    assert!(err(store.hold("E-1", "  ", 2)).contains("needs a reason"));
-    let held = store.hold("E-1", "waits for a BF003 capture", 2).unwrap();
+    assert!(err(store.hold("E-1", "lead-1", "  ", 2)).contains("needs a reason"));
+    let held = store
+        .hold("E-1", "lead-1", "waits for a BF003 capture", 2)
+        .unwrap();
     assert_eq!(held.hold.as_deref(), Some("waits for a BF003 capture"));
     assert_eq!(held.priority, Priority::Normal, "the priority stays");
     let refused = err(store.claim("E-1", "engine-1", 600, 3));
@@ -1774,9 +1805,14 @@ fn holding_a_task_keeps_it_from_being_claimed_until_resumed() {
         "{refused}"
     );
     // A blocked task can be held too; becoming ready then announces nothing.
-    store.hold("E-3", "capture", 3).unwrap();
+    store.hold("E-3", "lead-1", "capture", 3).unwrap();
     store.claim("E-2", "engine-1", 600, 4).unwrap();
-    assert!(err(store.hold("E-2", "x", 4)).contains("only open tasks"));
+    let refused = err(store.hold("E-2", "lead-1", "x", 4));
+    assert!(
+        refused.contains("only open tasks and your own claimed ones")
+            && refused.contains("claimed by engine-1"),
+        "{refused}"
+    );
     store
         .complete("E-2", "engine-1", None, false, false, 5)
         .unwrap();
