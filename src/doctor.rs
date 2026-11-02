@@ -330,6 +330,11 @@ fn check_harnesses(
             .is_some_and(|names| !names.is_empty());
         check_claude_hooks(report, bindings, worktree, has_mcp);
     }
+    if let Some((main, linked)) = worktrees.split_first() {
+        for worktree in linked {
+            check_inherited_hooks(report, project, bindings, main, worktree);
+        }
+    }
     if let Some(home) = &home {
         // Claude Code keys its local scope by repository, so an entry made in one worktree
         // applies to all of them: check it against every worktree.
@@ -525,6 +530,77 @@ fn check_harnesses(
     }
 }
 
+/// Claude Code also runs the hooks in the main checkout's `.claude/settings.local.json` in
+/// sessions of a linked worktree. One that names a directory with `-C` instead of
+/// `$CLAUDE_PROJECT_DIR` briefs or nudges the main checkout's session there (Spec 06 §6).
+fn check_inherited_hooks(
+    report: &mut Report,
+    project: &Project,
+    bindings: &BTreeMap<String, Binding>,
+    main: &Path,
+    worktree: &Path,
+) {
+    let path = main.join(".claude").join("settings.local.json");
+    let Some(json) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
+        return;
+    };
+    let here = binding_key(worktree).ok();
+    let fixed: Vec<String> = ["SessionStart", "Stop"]
+        .into_iter()
+        .flat_map(|event| airlock_hooks(&json, event))
+        .filter_map(|command| {
+            let words = crate::setup::shell_words(&command);
+            let dir = words
+                .iter()
+                .position(|w| w == "-C")
+                .and_then(|i| words.get(i + 1))?;
+            (!crate::setup::is_project_dir_var(dir) && binding_key(Path::new(dir)).ok() != here)
+                .then(|| dir.clone())
+        })
+        .collect();
+    let Some(dir) = fixed.first() else {
+        return;
+    };
+    let clean_room = here
+        .as_ref()
+        .and_then(|k| bindings.get(k))
+        .and_then(|b| project.config.roles.get(&b.role))
+        .is_some_and(|r| r.clean_room);
+    report.add(
+        if clean_room {
+            Level::Error
+        } else {
+            Level::Warn
+        },
+        "harness",
+        format!(
+            "{}: Claude Code also runs the hooks in {} here, and `-C {dir}` there briefs or nudges \
+             that worktree's session in this one; run `airlock setup claude-hooks` in {} again \
+             (it names the worktree with $CLAUDE_PROJECT_DIR) and merge its `hooks` key",
+            worktree.display(),
+            path.display(),
+            main.display()
+        ),
+    );
+}
+
+/// The commands of one hook event in a Claude Code settings file that run airlock.
+fn airlock_hooks(json: &Value, event: &str) -> Vec<String> {
+    json.pointer(&format!("/hooks/{event}"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|group| group.get("hooks")?.as_array())
+        .flatten()
+        .filter_map(|hook| hook.get("command")?.as_str())
+        .filter(|command| command.contains("airlock"))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Checks the Claude Code SessionStart hooks of one worktree that run airlock (Spec 06 §5).
 fn check_claude_hooks(
     report: &mut Report,
@@ -555,18 +631,9 @@ fn check_claude_hooks(
                 continue;
             }
         };
-        let stops = json
-            .pointer("/hooks/Stop")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|group| group.get("hooks")?.as_array())
-            .flatten()
-            .filter_map(|hook| hook.get("command")?.as_str())
-            .filter(|command| command.contains("airlock"));
-        for command in stops {
+        for command in airlock_hooks(&json, "Stop") {
             auto_continue = true;
-            let words = crate::setup::shell_words(command);
+            let words = crate::setup::shell_words(&command);
             let label = format!("Claude Code Stop hook in {}", path.display());
             let program = words.first().map(String::as_str).unwrap_or_default();
             let dir = words
@@ -577,7 +644,7 @@ fn check_claude_hooks(
             if !Path::new(program).is_file() {
                 warnings.push(format!("command {program} not found"));
             }
-            if let Some(dir) = dir {
+            if let Some(dir) = dir.filter(|d| !crate::setup::is_project_dir_var(d)) {
                 if binding_key(Path::new(dir)).ok() != here {
                     warnings.push(format!(
                         "-C {dir} is not this worktree; the hook reads another worktree's inbox"
@@ -604,18 +671,9 @@ fn check_claude_hooks(
                 );
             }
         }
-        let commands = json
-            .pointer("/hooks/SessionStart")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|group| group.get("hooks")?.as_array())
-            .flatten()
-            .filter_map(|hook| hook.get("command")?.as_str())
-            .filter(|command| command.contains("airlock"));
-        for command in commands {
+        for command in airlock_hooks(&json, "SessionStart") {
             found = true;
-            let words = crate::setup::shell_words(command);
+            let words = crate::setup::shell_words(&command);
             let flag = |name: &str| {
                 words
                     .iter()
@@ -639,7 +697,7 @@ fn check_claude_hooks(
                     "command `{program}` is looked up in Claude Code's PATH, which can differ from your shell's{suggestion}"
                 ));
             }
-            if let Some(dir) = flag("-C") {
+            if let Some(dir) = flag("-C").filter(|d| !crate::setup::is_project_dir_var(d)) {
                 if binding_key(Path::new(dir)).ok() != here {
                     warnings.push(format!(
                         "-C {dir} is not this worktree; the hook briefs another worktree's session"
