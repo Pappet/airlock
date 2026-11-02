@@ -350,7 +350,8 @@ fn start_briefs_claims_next_work_and_answers() {
     let mcp = env.ok(&env.engine, &["start", "--hints", "mcp"]);
     assert!(
         mcp.contains("take the next task from `task_complete`'s `next` field or from `task_next`")
-            && mcp.contains("Read the `inbox` part of every `task_complete` result"),
+            && mcp.contains("Read the `inbox` part of every `task_complete` result")
+            && mcp.contains("call `inbox_wait` instead of ending your turn — but only if your instructions say you run unattended"),
         "{mcp}"
     );
 

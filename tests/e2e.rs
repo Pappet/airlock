@@ -1050,3 +1050,28 @@ fn held_tasks_are_marked_and_passed_over_on_the_cli() {
         "{log}"
     );
 }
+
+#[test]
+fn inbox_wait_on_the_cli() {
+    let env = Env::new();
+    let project = project_with_tasks(&env);
+    env.ok(&project, &["inbox", "--role", "engine"]);
+    // Nothing arrives: an empty inbox after the timeout.
+    let started = std::time::Instant::now();
+    let out = env.ok(
+        &project,
+        &["inbox", "--role", "engine", "--wait", "--timeout", "1"],
+    );
+    assert_eq!(out.trim(), "Nothing new for engine.");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+    // Something is there already: returned at once.
+    env.ok(&project, &["task", "claim", "L-1", "--session", "lead-2"]);
+    env.ok(&project, &["task", "done", "L-1", "--session", "lead-2"]);
+    let started = std::time::Instant::now();
+    let out = env.ok(&project, &["inbox", "--role", "engine", "--wait"]);
+    assert!(out.contains("E-1 ready"), "{out}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let clash = env.run(&project, &["inbox", "--peek", "--wait"]);
+    assert_eq!(clash.status.code(), Some(2), "a usage error");
+    assert!(String::from_utf8_lossy(&clash.stderr).contains("cannot be used with"));
+}

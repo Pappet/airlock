@@ -49,7 +49,7 @@ At startup, a server that resolved its project registers itself in the process r
 
 If the bound role has `clean_room: true` in the project config, the server exposes only:
 
-`session_start`, `task_next`, `inbox`, `task_get`, `task_claim`, `task_heartbeat`, `task_release`, `task_complete`, `question_ask`, `question_list`
+`session_start`, `task_next`, `inbox`, `inbox_wait`, `task_get`, `task_claim`, `task_heartbeat`, `task_release`, `task_complete`, `question_ask`, `question_list`
 
 restricted to the bound role's tasks (including `task_get`) and the session's own questions (`question_list`). `task_create`, `task_update`, `task_hold`, `task_resume`, `track_list`, `track_create`, `track_update`, `track_remove`, `question_answer`, `question_resolve`, and `doc_sync` are not listed at all. This keeps an agent from accidentally answering its own questions or browsing other roles' work; it is a guardrail, not a security boundary (Spec 05 §4). Task ids, role names, and track names (which appear in the work packages of the role's own tasks) are coordination metadata, not material from the analysis side, so naming them would be harmless; clean-room errors nevertheless name only the session's own role ("task `L-1` is not available to role `engine`"), keeping the session's view limited to its own work.
 
@@ -75,6 +75,11 @@ Returns the next ready task for a role (Spec 01 §2.1 selection order: track pri
 What changed for the role since this session last looked (Spec 01 §2.6): ready, changed, or rejected tasks of the role, answers to its questions, changed track priorities; for coordinating roles also open questions and tasks in review from other roles. Part of the clean-room tool set; a clean-room session never sees questions or reviews.
 - **Parameters:** `role` (string; required unless bound), `peek` (boolean, optional: show without marking as read)
 - **Returns:** `{ items: [{ kind, at, task?: { id, title, priority, track, status }, question?: { id, topic, question?, answer?, spec_file?, corrected? }, track?: { name, priority } }] }`, oldest first, one item per task, question, or track. A session's first call returns no items and starts its cursor at the newest event.
+
+### 3.1b `inbox_wait`
+Waits until the role's inbox holds something, then returns it like `inbox` (read and marked); returns it empty when `timeout_secs` have passed. Meant for sessions that run unattended: instead of ending its turn with nothing to do, such a session waits for the next task or answer (Spec 06 §3.1). The server reads the store again only when another connection committed (`PRAGMA data_version`, checked once a second); while it waits, it answers no other request. Part of the clean-room tool set.
+- **Parameters:** `role` (string; required unless bound), `timeout_secs` (integer 1–280, default 240: below DSH's 300-second tool-call timeout, Spec 06 §6)
+- **Returns:** `{ items: [...] }` as `inbox`.
 
 ### 3.2 `task_get`
 - **Parameters:** `task_id` (string)
