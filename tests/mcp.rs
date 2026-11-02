@@ -62,7 +62,8 @@ impl Env {
             .current_dir(cwd)
             .env("AIRLOCK_HOME", &self.hub)
             .env_remove("AIRLOCK_PROJECT")
-            .env_remove("AIRLOCK_SESSION");
+            .env_remove("AIRLOCK_SESSION")
+            .env_remove("AIRLOCK_ROLE");
         cmd
     }
 
@@ -78,10 +79,16 @@ impl Env {
 
     /// Runs one server session: sends `lines`, closes stdin, returns responses by id.
     fn session(&self, args: &[&str], lines: &[String]) -> Session {
+        self.session_with(args, &[], lines)
+    }
+
+    /// `session` for a server started with `vars` in its environment.
+    fn session_with(&self, args: &[&str], vars: &[(&str, &str)], lines: &[String]) -> Session {
         let mut argv = vec!["mcp"];
         argv.extend_from_slice(args);
         let mut child = self
             .command(&self.project, &argv)
+            .envs(vars.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -634,6 +641,22 @@ fn bound_lead_session_keeps_all_tools_but_works_only_its_own_tasks() {
             .contains("claimed by: mcp-"),
         "generated session id"
     );
+}
+
+#[test]
+fn a_server_started_with_session_and_role_in_its_environment_acts_as_them() {
+    // A shared checkout bound to spec; the lead's harness was started with
+    // AIRLOCK_SESSION and AIRLOCK_ROLE, and its .mcp.json says only `airlock mcp`.
+    let env = Env::new();
+    env.cli(&["use", "spec"]);
+    let s = env.session_with(
+        &[],
+        &[("AIRLOCK_SESSION", "lead-1"), ("AIRLOCK_ROLE", "lead")],
+        &[call(1, "session_start", json!({}))],
+    );
+    let brief = s.ok(1);
+    assert_eq!(brief["session"], "lead-1");
+    assert_eq!(brief["role"], "lead", "not the bound spec");
 }
 
 #[test]

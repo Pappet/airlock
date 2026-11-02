@@ -140,7 +140,8 @@ pub enum Command {
     /// Run as an MCP (Model Context Protocol) server over stdio
     Mcp {
         /// Bind the server to one role; clean-room roles get a restricted tool set
-        #[arg(long)]
+        /// [default: the worktree binding's]
+        #[arg(long, env = "AIRLOCK_ROLE")]
         role: Option<String>,
     },
     /// Serve the local web dashboard and REST API on 127.0.0.1

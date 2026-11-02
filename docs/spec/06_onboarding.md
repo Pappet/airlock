@@ -43,10 +43,10 @@ When an invocation's project root has a binding:
 | Setting | Precedence |
 |---|---|
 | Session (CLI and MCP) | `--session` / `AIRLOCK_SESSION` → binding → default (`human:$USER` for the CLI, `mcp-<id>` for MCP) |
-| Role of `airlock mcp` | `--role` → binding → unbound |
-| Role of `airlock start` and `airlock task next` | `--role` / `AIRLOCK_ROLE` → binding → none (`start`) or error (`task next`) |
+| Role of `airlock mcp` | `--role` / `AIRLOCK_ROLE` → binding → unbound |
+| Role of `airlock start`, `airlock task next`, `airlock inbox`, `airlock hook stop` | `--role` / `AIRLOCK_ROLE` → binding → none (`start`) or error (`task next`) |
 
-A locked binding rejects `airlock mcp --role <other>` and `airlock start --role <other>`. In a shared checkout (lead next to spec), a session working in the role that is *not* bound passes its role and session explicitly — in its MCP configuration, or with `AIRLOCK_ROLE` / `AIRLOCK_SESSION` for the CLI. CLI commands other than `mcp` are not restricted by the role.
+A locked binding rejects `airlock mcp --role <other>` and `airlock start --role <other>`. In a shared checkout (lead next to spec), a session working in the role that is *not* bound passes its role and session explicitly — in its MCP configuration, or by starting its harness with `AIRLOCK_ROLE` / `AIRLOCK_SESSION` in the environment, which the MCP server, the CLI, and the Claude Code hooks all read (`AIRLOCK_SESSION=lead-1 AIRLOCK_ROLE=lead claude` next to a plain `airlock mcp` in `.mcp.json`). CLI commands other than `mcp` are not restricted by the role.
 
 ### 2.4 `-C <dir>`
 The global option `-C <dir>` makes Airlock behave as if started in `<dir>` (like `git -C`): marker discovery, project root, and binding all use that directory, and relative paths such as `import --from` resolve against it. Harnesses whose MCP configuration is global and that cannot set a working directory use `airlock -C <worktree> mcp`.

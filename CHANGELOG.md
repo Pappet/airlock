@@ -6,6 +6,11 @@ All notable changes to Airlock are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- `airlock mcp` reads its role from `AIRLOCK_ROLE` like `start`, `inbox`, and
+  the Claude Code hooks, so a harness started with `AIRLOCK_SESSION` and
+  `AIRLOCK_ROLE` acts as one identity in a shared checkout.
+
 ## [0.2.0] - 2026-11-02
 
 Handoff between sessions (Phase 3d): sessions learn what changed for their
