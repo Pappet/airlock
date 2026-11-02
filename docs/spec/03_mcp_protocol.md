@@ -40,7 +40,7 @@ At startup, a server that resolved its project registers itself in the process r
 
 - **Project:** resolved once at startup from `--project`/`AIRLOCK_PROJECT` or the `.airlock` marker above the server's working directory (Spec 02 §2.2). Startup fails if no project resolves. The project configuration (roles) is re-read on every tool call, so an `airlock import` takes effect without a restart.
 - **Session:** `--session`/`AIRLOCK_SESSION`, otherwise the worktree binding's session (Spec 06 §2.3), otherwise `mcp-<8 hex digits>` generated at startup. Every mutating tool acts as this session; tools take no session parameter.
-- **Role (optional):** `--role <role>` binds the server to one role, otherwise the worktree binding's role applies; startup fails for an unknown role, and a locked binding refuses a different `--role`. A bound server:
+- **Role (optional):** `--role <role>` (or `AIRLOCK_ROLE`) binds the server to one role, otherwise the worktree binding's role applies; startup fails for an unknown role, and a locked binding refuses a different `--role`. A bound server:
   - fills the `role` of `task_next` from the binding and rejects a different one;
   - runs the session tools `task_claim`, `task_heartbeat`, `task_release`, and `task_complete` only on tasks of the bound role;
   - leaves `task_create` and `task_update` unrestricted — their `role` names the role the work is *for*, so a bound lead session can create and edit engine tasks.
